@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.venv/
+coverage.xml
+htmlcov/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.backup-pre-*/

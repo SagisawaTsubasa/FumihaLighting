@@ -1,0 +1,337 @@
+{
+  "config": {
+    "step": {
+      "lux_zone": {
+        "title": "Add a constant-illuminance zone",
+        "description": "One entry per zone. Afterwards you control the zone through the virtual light this integration creates: ON = closed-loop constant illuminance, setting a brightness = manual passthrough. The real light is driven automatically.",
+        "data": {
+          "zone_name": "Zone name",
+          "light_entity": "Light",
+          "lux_entity": "Illuminance sensor"
+        },
+        "data_description": {
+          "zone_name": "Zone name only (e.g. Bathroom) — it becomes the device name.",
+          "light_entity": "The real dimmable light to drive.",
+          "lux_entity": "Sensor that measures the light (illuminance device class preferred)."
+        }
+      },
+      "lux_reconfigure": {
+        "title": "Reconfigure zone",
+        "description": "Re-bind the dimmable light and illuminance sensor, or rename the zone. The runtime reloads with the new binding. Re-binding clears the calibration curve — run calibration again afterwards.",
+        "data": {
+          "zone_name": "Zone name",
+          "light_entity": "Light",
+          "lux_entity": "Illuminance sensor"
+        },
+        "data_description": {
+          "zone_name": "Shown as the device name.",
+          "light_entity": "The real dimmable light to drive.",
+          "lux_entity": "Sensor that measures the light (illuminance device class preferred)."
+        }
+      },
+      "time_details": {
+        "title": "Time details",
+        "description": "Only fields relevant to your choices are shown. Transition duration 0 = instant switch.",
+        "data": {
+          "trigger_time": "Night start fixed time",
+          "start_offset": "Night start offset (minutes, negative = earlier)",
+          "end_time": "Night end fixed time",
+          "end_offset": "Night end offset (minutes, negative = earlier)",
+          "sun_entity": "Sun entity (default: built-in sun.sun; custom entities need next_rising / next_setting attributes)",
+          "start_transition": "Night start transition duration (minutes, 0 = off)",
+          "end_transition": "Night end transition duration (minutes, 0 = off)",
+          "transition_interval": "Transition step interval (minutes)"
+        }
+      },
+      "extra_count": {
+        "title": "Extra time periods",
+        "data": {
+          "extra_count": "Number of extra periods (max 5)"
+        }
+      },
+      "extra_period": {
+        "title": "Extra period ({position})",
+        "description": "An extra period is a single anchor time: its parameters apply from the start time until the next anchor (e.g. night start).",
+        "data": {
+          "name": "Name (optional, display only)",
+          "start": "Starts at",
+          "brightness": "Brightness (%)",
+          "color_temp_kelvin": "Color temperature",
+          "transition": "Transition duration (minutes, 0 = instant switch)"
+        }
+      },
+      "lights": {
+        "title": "Select lights",
+        "data": {
+          "lights": "Light entities"
+        }
+      },
+      "lights_extra": {
+        "title": "Per-light extra settings",
+        "description": "Enable custom parameters per light. Only enabled lights get their own settings page.\n\n{lights}",
+        "data": {}
+      },
+      "settings": {
+        "title": "Period parameters",
+        "data": {
+          "brightness": "Night brightness (%)",
+          "color_temp_kelvin": "Night color temperature",
+          "day_brightness": "Daytime brightness (%)",
+          "day_color_temp_kelvin": "Daytime color temperature",
+          "tolerance_brightness": "Brightness tolerance (%)",
+          "tolerance_kelvin": "Color temperature tolerance",
+          "verify_delay": "Verify delay after control",
+          "settle_delay": "Settle delay after turn-on",
+          "turn_on_listen": "Apply settings when a light turns on",
+          "only_when_on": "Only adjust lights that are already on",
+          "respect_manual": "Respect manual changes"
+        },
+        "data_description": {
+          "respect_manual": "While a transition is running, a light you adjusted manually is left alone for the rest of that band; it rejoins the schedule at the next anchor or when turned off and on again."
+        }
+      },
+      "per_light": {
+        "title": "Per-light override ({position})",
+        "description": "Light: {name} (`{entity}`). Set custom parameters for this light, replacing the global values. Fields: night, daytime (if enabled), then one brightness/color-temperature pair per extra period (extra_0 = period 1, etc.).",
+        "data": {
+          "brightness": "Night brightness (%)",
+          "color_temp_kelvin": "Night color temperature",
+          "day_brightness": "Daytime brightness (%)",
+          "day_color_temp_kelvin": "Daytime color temperature",
+          "extra_0_brightness": "Extra period 1 brightness (%)",
+          "extra_0_kelvin": "Extra period 1 color temperature",
+          "extra_1_brightness": "Extra period 2 brightness (%)",
+          "extra_1_kelvin": "Extra period 2 color temperature",
+          "extra_2_brightness": "Extra period 3 brightness (%)",
+          "extra_2_kelvin": "Extra period 3 color temperature",
+          "extra_3_brightness": "Extra period 4 brightness (%)",
+          "extra_3_kelvin": "Extra period 4 color temperature",
+          "extra_4_brightness": "Extra period 5 brightness (%)",
+          "extra_4_kelvin": "Extra period 5 color temperature"
+        }
+      },
+      "anl_user": {
+        "title": "Time settings",
+        "description": "Choose how each anchor of the night period is determined and which features are enabled. Only relevant fields are shown on the next page.",
+        "data": {
+          "start_mode": "Night starts at",
+          "end_mode": "Night ends / daytime starts at",
+          "transition_enabled": "Enable gradual transitions between periods",
+          "day_enabled": "Apply daytime settings after night ends",
+          "extra_enabled": "Enable extra time periods"
+        }
+      },
+      "anl_reconfigure": {
+        "title": "Time settings",
+        "description": "Choose how each anchor of the night period is determined and which features are enabled. Only relevant fields are shown on the next page.",
+        "data": {
+          "start_mode": "Night starts at",
+          "end_mode": "Night ends / daytime starts at",
+          "transition_enabled": "Enable gradual transitions between periods",
+          "day_enabled": "Apply daytime settings after night ends",
+          "extra_enabled": "Enable extra time periods"
+        }
+      },
+      "user": {
+        "title": "What is this entry?",
+        "description": "Pick the kind of lighting entry to add; each kind has its own wizard.",
+        "data": {
+          "kind": "Entry kind"
+        }
+      }
+    },
+    "error": {
+      "entity_missing": "Entity not found in Home Assistant.",
+      "light_no_brightness": "This light does not support brightness control.",
+      "light_is_virtual": "That light is generated by Lux Balance itself; pick the real light instead.",
+      "unique_id_mismatch": "The new light + sensor pair is already used by another entry.",
+      "no_lights": "Please select at least one light"
+    },
+    "abort": {
+      "already_configured": "This zone (light + sensor pair) is already configured.",
+      "reconfigure_successful": "Configuration changes have been saved.",
+      "unique_id_mismatch": "The new light + sensor pair is already used by another entry."
+    }
+  },
+  "options": {
+    "step": {
+      "lux_init": {
+        "title": "Closed-loop control",
+        "description": "Behavior while the light is on. Adjust the target on the 'target illuminance' number entity.",
+        "data": {
+          "scan_interval_s": "Adjustment interval (seconds)",
+          "deadband_pct": "Deadband (%)",
+          "min_brightness_pct": "Minimum brightness (%)",
+          "auto_turn_off": "Auto turn off when ambient meets target"
+        },
+        "data_description": {
+          "scan_interval_s": "Closed-loop re-evaluation period while the light is on.",
+          "deadband_pct": "Adjustments smaller than this are skipped to avoid flicker.",
+          "min_brightness_pct": "Lower bound for computed brightness; guards the unstable low-end LED region.",
+          "auto_turn_off": "Turn the light off after two consecutive cycles with ambient at or above target."
+        }
+      },
+      "lux_advanced": {
+        "title": "Calibration & fallback",
+        "description": "Fallback and calibration tuning.",
+        "data": {
+          "calibrate_step_pct": "Calibration step (%)",
+          "manual_slope": "Manual curve (lux per 1%)"
+        },
+        "data_description": {
+          "calibrate_step_pct": "Sweep step during calibration (5 = fine, 10 = coarse; auto-upgrades to 10 after repeated timeouts).",
+          "manual_slope": "Fallback linear curve (added lux per 1% brightness) when no calibration has been run; 0 disables."
+        }
+      },
+      "time_details": {
+        "title": "Time details",
+        "description": "Only fields relevant to your choices are shown. Transition duration 0 = instant switch.",
+        "data": {
+          "trigger_time": "Night start fixed time",
+          "start_offset": "Night start offset (minutes, negative = earlier)",
+          "end_time": "Night end fixed time",
+          "end_offset": "Night end offset (minutes, negative = earlier)",
+          "sun_entity": "Sun entity (default: built-in sun.sun; custom entities need next_rising / next_setting attributes)",
+          "start_transition": "Night start transition duration (minutes, 0 = off)",
+          "end_transition": "Night end transition duration (minutes, 0 = off)",
+          "transition_interval": "Transition step interval (minutes)"
+        }
+      },
+      "extra_count": {
+        "title": "Extra time periods",
+        "data": {
+          "extra_count": "Number of extra periods (max 5)"
+        }
+      },
+      "extra_period": {
+        "title": "Extra period ({position})",
+        "description": "An extra period is a single anchor time: its parameters apply from the start time until the next anchor (e.g. night start).",
+        "data": {
+          "name": "Name (optional, display only)",
+          "start": "Starts at",
+          "brightness": "Brightness (%)",
+          "color_temp_kelvin": "Color temperature",
+          "transition": "Transition duration (minutes, 0 = instant switch)"
+        }
+      },
+      "lights": {
+        "title": "Select lights",
+        "data": {
+          "lights": "Light entities"
+        }
+      },
+      "lights_extra": {
+        "title": "Per-light extra settings",
+        "description": "Enable custom parameters per light. Only enabled lights get their own settings page.\n\n{lights}",
+        "data": {}
+      },
+      "settings": {
+        "title": "Period parameters",
+        "data": {
+          "brightness": "Night brightness (%)",
+          "color_temp_kelvin": "Night color temperature",
+          "day_brightness": "Daytime brightness (%)",
+          "day_color_temp_kelvin": "Daytime color temperature",
+          "tolerance_brightness": "Brightness tolerance (%)",
+          "tolerance_kelvin": "Color temperature tolerance",
+          "verify_delay": "Verify delay after control",
+          "settle_delay": "Settle delay after turn-on",
+          "turn_on_listen": "Apply settings when a light turns on",
+          "only_when_on": "Only adjust lights that are already on",
+          "respect_manual": "Respect manual changes"
+        },
+        "data_description": {
+          "respect_manual": "While a transition is running, a light you adjusted manually is left alone for the rest of that band; it rejoins the schedule at the next anchor or when turned off and on again."
+        }
+      },
+      "per_light": {
+        "title": "Per-light override ({position})",
+        "description": "Light: {name} (`{entity}`). Set custom parameters for this light, replacing the global values. Fields: night, daytime (if enabled), then one brightness/color-temperature pair per extra period (extra_0 = period 1, etc.).",
+        "data": {
+          "brightness": "Night brightness (%)",
+          "color_temp_kelvin": "Night color temperature",
+          "day_brightness": "Daytime brightness (%)",
+          "day_color_temp_kelvin": "Daytime color temperature",
+          "extra_0_brightness": "Extra period 1 brightness (%)",
+          "extra_0_kelvin": "Extra period 1 color temperature",
+          "extra_1_brightness": "Extra period 2 brightness (%)",
+          "extra_1_kelvin": "Extra period 2 color temperature",
+          "extra_2_brightness": "Extra period 3 brightness (%)",
+          "extra_2_kelvin": "Extra period 3 color temperature",
+          "extra_3_brightness": "Extra period 4 brightness (%)",
+          "extra_3_kelvin": "Extra period 4 color temperature",
+          "extra_4_brightness": "Extra period 5 brightness (%)",
+          "extra_4_kelvin": "Extra period 5 color temperature"
+        }
+      },
+      "anl_init": {
+        "title": "Time settings",
+        "description": "Choose how each anchor of the night period is determined and which features are enabled. Only relevant fields are shown on the next page.",
+        "data": {
+          "start_mode": "Night starts at",
+          "end_mode": "Night ends / daytime starts at",
+          "transition_enabled": "Enable gradual transitions between periods",
+          "day_enabled": "Apply daytime settings after night ends",
+          "extra_enabled": "Enable extra time periods"
+        }
+      }
+    },
+    "error": {
+      "no_lights": "Please select at least one light"
+    }
+  },
+  "services": {
+    "calibrate": {
+      "name": "Start calibration",
+      "description": "Run the automatic curve calibration sweep: the light steps 0→100% and back, about 15-25 minutes total — stay out of the bathroom while it runs. Only one zone per bathroom can calibrate at a time: without a target the first calibratable zone starts (others are skipped and logged); with a target the call raises when it matches no zone or is blocked by the calibration mutex."
+    },
+    "trigger_now": {
+      "name": "Trigger now",
+      "description": "Re-anchor every night-light group now: clear manual overrides and re-apply the current band's parameters."
+    }
+  },
+  "entity": {
+    "light": {
+      "adaptive_light": {
+        "name": "Adaptive light"
+      }
+    },
+    "number": {
+      "target_illuminance": {
+        "name": "Target illuminance"
+      }
+    },
+    "button": {
+      "calibrate": {
+        "name": "Start calibration"
+      }
+    },
+    "sensor": {
+      "status": {
+        "name": "Runtime status",
+        "state": {
+          "idle": "Idle",
+          "active": "Compensating",
+          "calibrating": "Calibrating",
+          "passthrough": "Manual brightness"
+        }
+      }
+    }
+  },
+  "selector": {
+    "anchor_mode": {
+      "options": {
+        "fixed": "Fixed time",
+        "sunset": "Sunset",
+        "sunrise": "Sunrise"
+      }
+    },
+    "entry_kind": {
+      "options": {
+        "lux": "Constant-illuminance zone",
+        "anl": "Night-light group"
+      }
+    }
+  },
+  "title": "Fumiha Lighting"
+}

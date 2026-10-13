@@ -1,0 +1,218 @@
+"""Lux zone flow mixin (carried over from lux_balance's config flow).
+
+Public step ids are prefixed ``lux_`` to share the merged translation
+namespace; entry data gains ``kind="lux"`` so the merged integration can
+dispatch setup, options and reconfigure.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import voluptuous as vol
+
+from homeassistant import config_entries
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import selector
+
+from ..const import CONF_KIND, KIND_LUX
+from .const import (
+    CONF_AUTO_TURN_OFF,
+    CONF_CAL_STEP_PCT,
+    CONF_DEADBAND_PCT,
+    CONF_LIGHT_ENTITY,
+    CONF_LUX_ENTITY,
+    CONF_MANUAL_SLOPE,
+    CONF_MIN_BRIGHTNESS_PCT,
+    CONF_SCAN_INTERVAL_S,
+    CONF_TARGET_LUX,
+    CONF_ZONE_NAME,
+    DOMAIN,
+    merged_options,
+)
+from .store import ZoneStorage
+
+# Color modes that imply the light can dim (anything but plain on/off).
+_BRIGHTNESS_MODES = {
+    "brightness",
+    "color_temp",
+    "hs",
+    "rgb",
+    "rgbw",
+    "rgbww",
+    "xy",
+    "white",
+}
+
+
+def _user_schema() -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required(CONF_ZONE_NAME): selector.TextSelector(
+                selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
+            ),
+            vol.Required(CONF_LIGHT_ENTITY): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="light")
+            ),
+            vol.Required(CONF_LUX_ENTITY): selector.EntitySelector(
+                selector.EntitySelectorConfig(
+                    domain="sensor", device_class="illuminance"
+                )
+            ),
+        }
+    )
+
+
+def _validate_binding(
+    hass: HomeAssistant, user_input: dict[str, Any] | None
+) -> dict[str, str]:
+    """Validate the light/lux binding shared by the user and reconfigure steps."""
+    if user_input is None:
+        return {}
+    light_entity: str = user_input[CONF_LIGHT_ENTITY]
+    registry_entry = er.async_get(hass).async_get(light_entity)
+    state = hass.states.get(light_entity)
+    if registry_entry is None and state is None:
+        return {"base": "entity_missing"}
+    if registry_entry is not None and registry_entry.platform == DOMAIN:
+        return {"base": "light_is_virtual"}
+    # BLE 灯经常离线：只有在线时才做亮度能力校验，离线不拦配置
+    online = state is not None and state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+    if online and not _BRIGHTNESS_MODES & set(
+        state.attributes.get("supported_color_modes") or []
+    ):
+        return {"base": "light_no_brightness"}
+    return {}
+
+
+class LuxZoneFlowMixin:
+    """Lux-zone steps mixed into the merged config flow."""
+
+    VERSION = 1
+
+    async def async_step_lux_zone(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        errors = _validate_binding(self.hass, user_input)
+        if user_input is not None and not errors:
+            light_entity: str = user_input[CONF_LIGHT_ENTITY]
+            lux_entity: str = user_input[CONF_LUX_ENTITY]
+            await self.async_set_unique_id(f"lux:{light_entity}::{lux_entity}")
+            self._abort_if_unique_id_configured()
+            return self.async_create_entry(
+                title=str(user_input[CONF_ZONE_NAME]),
+                data={CONF_KIND: KIND_LUX, **user_input},
+            )
+        return self.async_show_form(
+            step_id="lux_zone",
+            data_schema=self.add_suggested_values_to_schema(_user_schema(), user_input),
+            errors=errors,
+        )
+
+    async def async_step_lux_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Re-bind the zone's light/lux sensor or rename it."""
+        entry = self._get_reconfigure_entry()
+        errors = _validate_binding(self.hass, user_input)
+        if user_input is not None and not errors:
+            light_entity: str = user_input[CONF_LIGHT_ENTITY]
+            lux_entity: str = user_input[CONF_LUX_ENTITY]
+            new_unique_id = f"lux:{light_entity}::{lux_entity}"
+            await self.async_set_unique_id(new_unique_id, raise_on_progress=False)
+            if entry.unique_id != self.unique_id:
+                # 组合真的变化时才查重；未变的纯改名会命中条目自身
+                self._abort_if_unique_id_configured(error="unique_id_mismatch")
+            if light_entity != entry.data.get(CONF_LIGHT_ENTITY) or (
+                lux_entity != entry.data.get(CONF_LUX_ENTITY)
+            ):
+                # 校准曲线与旧灯/传感器绑定，改绑后不再对应——清除并回落
+                # 到手动系数（改绑后需重新校准）
+                await ZoneStorage(self.hass, entry.entry_id).async_remove()
+            return self.async_update_reload_and_abort(
+                entry,
+                title=str(user_input[CONF_ZONE_NAME]),
+                unique_id=self.unique_id,
+                data={CONF_KIND: KIND_LUX, **user_input},
+            )
+        return self.async_show_form(
+            step_id="lux_reconfigure",
+            data_schema=self.add_suggested_values_to_schema(
+                _user_schema(), user_input or entry.data
+            ),
+            errors=errors,
+        )
+
+
+class LuxZoneOptionsFlow(config_entries.OptionsFlow):
+    """Runtime-tunable options for one zone, split into two pages."""
+
+    async def async_step_lux_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """闭环调节：扫描间隔 / 死区 / 最小亮度 / 自动关灯。"""
+        current = merged_options(self.config_entry.options)
+        if user_input is not None:
+            self._cache = {**current, **user_input}
+            return await self.async_step_lux_advanced()
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_SCAN_INTERVAL_S): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=10, max=300, step=5, unit_of_measurement="s"
+                    )
+                ),
+                vol.Required(CONF_DEADBAND_PCT): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1, max=20, step=1, unit_of_measurement="%"
+                    )
+                ),
+                vol.Required(CONF_MIN_BRIGHTNESS_PCT): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1, max=50, step=1, unit_of_measurement="%"
+                    )
+                ),
+                vol.Required(CONF_AUTO_TURN_OFF): selector.BooleanSelector(),
+            }
+        )
+        return self.async_show_form(
+            step_id="lux_init",
+            data_schema=self.add_suggested_values_to_schema(schema, current),
+        )
+
+    async def async_step_lux_advanced(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """校准与降级：校准步长 / 手动斜率。"""
+        if user_input is not None:
+            self._cache.update(user_input)
+            data = {
+                key: value
+                for key, value in self._cache.items()
+                if key != CONF_TARGET_LUX  # 目标照度由 number 实体唯一持有
+            }
+            return self.async_create_entry(title="", data=data)
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_CAL_STEP_PCT): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=2, max=20, step=1, unit_of_measurement="%"
+                    )
+                ),
+                vol.Required(CONF_MANUAL_SLOPE): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0,
+                        max=10,
+                        step=0.1,
+                        unit_of_measurement="lx/%",
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(
+            step_id="lux_advanced",
+            data_schema=self.add_suggested_values_to_schema(schema, self._cache),
+        )

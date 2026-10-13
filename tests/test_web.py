@@ -455,4 +455,5 @@ def test_manifest_declares_web_dependencies():
     assert m["domain"] == "fumiha_lighting"
     assert m["dependencies"] == ["http", "frontend"]
     assert m["after_dependencies"] == ["fumiha_hub"]
-    assert m["version"] == "1.0.1"
+    # 版本随影子/正式版流动，只断字段在位
+    assert isinstance(m["version"], str) and m["version"]

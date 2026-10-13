@@ -17,15 +17,15 @@ URL_BASE = "/fumiha_lighting"
 API_BASE = "/api/fumiha_lighting"
 
 # Page descriptors for the Fumiha Hub registry.
-PAGE_LUX_ID = "luxbalance.main"
-PAGE_LUX_TITLE = "亮度均衡"
+PAGE_LUX_ID = "luxshadow.main"
+PAGE_LUX_TITLE = "亮度均衡·影子"
 PAGE_LUX_ICON = "mdi:tune-vertical"
 PAGE_LUX_ELEMENT = "lux-balance-page"
 PAGE_LUX_MODULE = "page-lux.js"
 PAGE_LUX_ORDER = 10
 
-PAGE_ANL_ID = "anl.main"
-PAGE_ANL_TITLE = "夜灯助手"
+PAGE_ANL_ID = "anlshadow.main"
+PAGE_ANL_TITLE = "夜灯助手·影子"
 PAGE_ANL_ICON = "mdi:weather-night"
 PAGE_ANL_ELEMENT = "anl-page"
 PAGE_ANL_MODULE = "page-anl.js"

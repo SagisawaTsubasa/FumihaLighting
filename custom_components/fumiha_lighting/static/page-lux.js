@@ -496,6 +496,6 @@ class LuxBalancePage extends HTMLElement {
  * assigned BEFORE the define call — upgrading an in-DOM element fires its
  * connectedCallback synchronously, and that callback reads the promise. */
 window.__luxBalancePageReady = ensureKit();
-if (!customElements.get("lux-balance-page")) {
-  customElements.define("lux-balance-page", LuxBalancePage);
+if (!customElements.get("lux-shadow-page")) {
+  customElements.define("lux-shadow-page", LuxBalancePage);
 }

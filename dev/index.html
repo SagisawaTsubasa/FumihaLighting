@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<!-- Fumiha Lighting dev harness — REAL shell + BOTH page modules over mockHass.
+  ?dark=1 ?failapi=1 ?badlux=1 ?badanl=1 ?standalone=1 -->
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fumiha Lighting dev harness</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  fumiha-hub-panel { display: block; height: 100%; }
+  .fx-dialog { border: 1px solid var(--fx-edge); border-radius: 10px; padding: 16px 18px; background: var(--fx-panel); color: var(--fx-txt); min-width: 280px; max-width: 90vw; }
+  .fx-dialog::backdrop { background: rgba(0,0,0,.35); }
+</style>
+</head>
+<body>
+<fumiha-hub-panel id="hub"></fumiha-hub-panel>
+<script type="module" src="/fumiha_hub/fumiha-hub.js"></script>
+<script>
+  var params = new URLSearchParams(location.search);
+  if (params.has("dark")) {
+    var darkVars = {
+      "primary-background-color": "#111111", "card-background-color": "#1c1c1c",
+      "secondary-background-color": "#282828", "divider-color": "#333333",
+      "primary-text-color": "#e1e1e1", "secondary-text-color": "#9b9b9b",
+      "primary-color": "#03a9f4", "success-color": "#43a047",
+      "warning-color": "#ffb300", "error-color": "#ff5252",
+    };
+    Object.keys(darkVars).forEach(function (k) {
+      document.documentElement.style.setProperty("--" + k, darkVars[k]);
+    });
+  }
+  var luxModule = params.has("badlux")
+    ? "/fumiha_lighting/missing-lux.js?ver=1.0.0"
+    : "/fumiha_lighting/page-lux.js?ver=1.0.0";
+  var anlModule = params.has("badanl")
+    ? "/fumiha_lighting/missing-anl.js?ver=1.0.0"
+    : "/fumiha_lighting/page-anl.js?ver=1.0.0";
+  var failApi = params.has("failapi");
+  window.__servicePosts = [];
+
+  function luxZones() {
+    return [{
+      entry_id: "lux1", zone_name: "卫生间", mode: "active", cal_progress: "",
+      target_lux: 150.0, commanded_pct: 45.0, target_min: 10, target_max: 500,
+      lux_stale: false,
+      curve: { source: "calibrated", max_lux: 186.3, slope_20_80: 2.41,
+        points: [[0, 0], [10, 18.2], [30, 112.4], [55, 176.9], [80, 185.1], [100, 186.3]] },
+      decisions: ["22:41:03 [lux] lux=42 环境=42 需求=108 → set 45%"],
+      ambient_lux_est: 42.5, needed_lux: 107.5,
+      last_adjustment: "2026-10-13T12:00:00+08:00",
+      light_entity: "light.bath", lux_entity: "sensor.bath_lux",
+    }];
+  }
+  function anlManagers() {
+    return [{
+      entry_id: "anl1", title: "自动夜灯", current_mode: "night",
+      next_anchor: "2026-10-13T23:30:00+08:00",
+      anchors: [{ time: "23:30", mode: "night" }, { time: "06:56", mode: "day" }],
+      lights: [
+        { entity_id: "light.bedroom", state: "verified", manual_override: false,
+          mismatch_steps: 0, target: [12, 2700], applied: [12, 2700], last_error: null },
+        { entity_id: "light.hallway", state: "mismatch", manual_override: true,
+          mismatch_steps: 2, target: [12, 2700], applied: null, last_error: null },
+      ],
+      start_mode: "sunset", end_mode: "sunrise",
+      transition_enabled: false, day_enabled: true, respect_manual: true,
+    }];
+  }
+
+  var mockHass = {
+    language: "zh-Hans",
+    themes: { darkMode: params.has("dark") },
+    callService: async function () {},
+    fetchWithAuth: async function (path, options) {
+      var method = (options && options.method) || "GET";
+      if (failApi && method === "GET") {
+        return new Response(JSON.stringify({ error: "simulated failure" }), { status: 500 });
+      }
+      if (method === "POST") {
+        window.__servicePosts.push({ path: path, body: options && options.body });
+        return new Response(JSON.stringify({ ok: true, started: true, triggered: 1 }), { status: 200 });
+      }
+      if (path.indexOf("/api/fumiha_hub/panels") === 0) {
+        return new Response(JSON.stringify({
+          dir_rev: 7,
+          panels: [
+            { id: "luxbalance.main", title: "亮度均衡", icon: "mdi:tune-vertical",
+              order: 10, version: "1.0.0", module_url: luxModule, element: "lux-balance-page" },
+            { id: "anl.main", title: "夜灯助手", icon: "mdi:weather-night",
+              order: 20, version: "1.0.0", module_url: anlModule, element: "anl-page" },
+          ],
+        }), { status: 200 });
+      }
+      if (path.indexOf("/api/fumiha_lighting/lux/overview") === 0) {
+        return new Response(JSON.stringify({ zones: luxZones() }), { status: 200 });
+      }
+      if (path.indexOf("/api/fumiha_lighting/anl/snapshot") === 0) {
+        return new Response(JSON.stringify({ managers: anlManagers() }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: "no route: " + path }), { status: 404 });
+    },
+  };
+  window.__mockHass = mockHass;
+
+  var panel = document.getElementById("hub");
+  if (params.has("standalone")) {
+    panel.remove();
+  } else {
+    customElements.whenDefined("fumiha-hub-panel").then(function () {
+      panel.hass = mockHass;
+    });
+  }
+</script>
+</body>
+</html>

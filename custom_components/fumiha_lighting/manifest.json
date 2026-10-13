@@ -1,0 +1,21 @@
+{
+  "domain": "fumiha_lighting",
+  "name": "Fumiha Lighting 文羽照明",
+  "after_dependencies": [
+    "fumiha_hub"
+  ],
+  "codeowners": [
+    "@SagisawaTsubasa"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "http",
+    "frontend"
+  ],
+  "documentation": "https://github.com/SagisawaTsubasa/FumihaLighting",
+  "integration_type": "hub",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/SagisawaTsubasa/FumihaLighting/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}

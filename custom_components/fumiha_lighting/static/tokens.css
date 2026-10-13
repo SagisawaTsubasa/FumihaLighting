@@ -1,0 +1,561 @@
+/* ==========================================================================
+   Fumiha Hub — design tokens + shared component classes.
+
+   Loaded inside each page's shadow root via <link rel="stylesheet">.
+   Structural tokens ride on HA theme variables (hardcoded fallbacks, same
+   pattern as the WHA panel) so the shell follows the user's theme and dark
+   mode automatically — deliberately NOT the Codex fixed dark palette.
+
+   Naming: fx-* = structural tokens + shell chrome; cx-* = shared component
+   classes (port of the Codex tokens.css component layer). Pages use the
+   cx-* classes; only the shell uses the fx-shell* chrome.
+
+   Contrast note: semantic colors use HA's theme-adjusted --success-color /
+   --warning-color / --error-color where available; the hardcoded fallbacks
+   are tuned for white backgrounds and are re-checked against dark themes
+   during the visual pass (L3).
+   ========================================================================== */
+
+/* Tokens land on :host (shadow trees — production) and on body (document —
+ * mockup pages). Inside a shadow root the body selector matches nothing,
+ * so the dual selector is side-effect free. */
+:host,
+body {
+  /* surfaces */
+  --fx-bg: var(--primary-background-color, #f2f4f7);
+  --fx-panel: var(--card-background-color, #ffffff);
+  --fx-raise: var(--secondary-background-color, #e8ecf1);
+  --fx-edge: var(--divider-color, #d9dee5);
+
+  /* text */
+  --fx-txt: var(--primary-text-color, #1f2933);
+  --fx-sub: var(--secondary-text-color, #61707d);
+
+  /* accent + semantics */
+  --fx-accent: var(--primary-color, #00778b);
+  --fx-ok: var(--success-color, #2e7d32);
+  --fx-warn: var(--warning-color, #9a6b00);
+  --fx-err: var(--error-color, #c62828);
+  --fx-err-text: var(--error-color, #b3261e);
+
+  /* type */
+  --fx-mono: "Cascadia Mono", Consolas, "JetBrains Mono", ui-monospace, monospace;
+  --fx-sans: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+
+  display: block;
+  /* Height follows the panel container (HA's custom-panel slot is viewport
+   * minus the top bar — 100vh would overflow by exactly that much, see
+   * the two baseline panels' :host{height:100%}). For page elements whose
+   * parent is auto-height this resolves to auto, which is intended.
+   * (FXH-F-006) */
+  height: 100%;
+  min-height: 100%;
+  box-sizing: border-box;
+  font-family: var(--fx-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fx-txt);
+  background: var(--fx-bg);
+}
+
+:host *,
+body * {
+  box-sizing: border-box;
+}
+
+/* --------------------------------------------------------------------------
+   Shell chrome (only the fumiha-hub-panel element uses these)
+   -------------------------------------------------------------------------- */
+
+.fx-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.fx-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 16px;
+  background: var(--fx-panel);
+  border-bottom: 1px solid var(--fx-edge);
+  flex: none;
+}
+
+.fx-topbar h1 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0.2px;
+}
+
+.fx-meta {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--fx-mono);
+  font-size: 11px;
+  color: var(--fx-sub);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 8px status lamp; `err` gets a static double ring so state is never carried
+   by animation alone (reduced-motion safe, Codex a11y lesson). */
+.fx-lamp {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fx-sub);
+  flex: none;
+  position: relative;
+}
+
+.fx-lamp.ok {
+  background: var(--fx-ok);
+}
+
+.fx-lamp.err {
+  background: var(--fx-err);
+}
+
+.fx-lamp.err::before,
+.fx-lamp.err::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1px solid var(--fx-err);
+}
+
+.fx-lamp.err::after {
+  inset: -8px;
+  opacity: 0.4;
+}
+
+.fx-lamp.warn {
+  background: var(--fx-warn);
+}
+
+@keyframes fx-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.fx-lamp.breath {
+  animation: fx-breathe 2.4s ease-in-out infinite;
+}
+
+/* mobile sidebar opener (hidden unless the shell sets display when narrow) */
+.fx-menubtn {
+  display: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid var(--fx-edge);
+  background: transparent;
+  color: var(--fx-txt);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  flex: none;
+}
+
+.fx-menubtn:hover {
+  border-color: var(--fx-accent);
+  color: var(--fx-accent);
+}
+
+/* tab strip */
+.fx-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 12px 0;
+  background: var(--fx-panel);
+  border-bottom: 1px solid var(--fx-edge);
+  overflow-x: auto;
+  scrollbar-width: thin;
+  flex: none;
+}
+
+.fx-tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  cursor: pointer;
+  color: var(--fx-sub);
+  background: transparent;
+  font: inherit;
+  white-space: nowrap;
+  min-height: 24px;
+}
+
+.fx-tab:hover {
+  color: var(--fx-txt);
+  background: color-mix(in srgb, var(--fx-accent) 7%, transparent);
+}
+
+.fx-tab[aria-selected="true"] {
+  color: var(--fx-txt);
+  background: var(--fx-bg);
+  border-color: var(--fx-edge);
+  position: relative;
+  top: 1px;
+}
+
+/* provider badge: first segment of the page id, mono lowercase */
+.fx-badge {
+  font-family: var(--fx-mono);
+  font-size: 9.5px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 4px;
+  background: var(--fx-raise);
+  color: var(--fx-sub);
+  text-transform: lowercase;
+  letter-spacing: 0.3px;
+}
+
+.fx-tab[aria-selected="true"] .fx-badge {
+  background: color-mix(in srgb, var(--fx-accent) 16%, transparent);
+  color: var(--fx-accent);
+}
+
+.fx-content {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+.fx-page {
+  display: block;
+}
+
+/* page wrapper inside pages: centered column like the two existing panels */
+.fx-body {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px 16px 64px;
+}
+
+/* --------------------------------------------------------------------------
+   Shared components (cx-*) — pages build everything from these
+   -------------------------------------------------------------------------- */
+
+.fx-card {
+  background: var(--fx-panel);
+  border: 1px solid var(--fx-edge);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+
+.fx-card > h2 {
+  font-size: 13.5px;
+  font-weight: 600;
+  margin: 0 0 10px;
+  color: var(--fx-txt);
+}
+
+.fx-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+/* big number + label */
+.cx-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cx-metric .v {
+  font-family: var(--fx-mono);
+  font-size: 24px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+
+.cx-metric .l {
+  font-size: 11px;
+  color: var(--fx-sub);
+}
+
+/* status chip row: lamp + label pills */
+.cx-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cx-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--fx-edge);
+  background: var(--fx-raise);
+  font-size: 11.5px;
+  color: var(--fx-txt);
+}
+
+.cx-chip.tone-ok { color: var(--fx-ok); border-color: color-mix(in srgb, var(--fx-ok) 40%, transparent); }
+.cx-chip.tone-warn { color: var(--fx-warn); border-color: color-mix(in srgb, var(--fx-warn) 40%, transparent); }
+.cx-chip.tone-err { color: var(--fx-err-text); border-color: color-mix(in srgb, var(--fx-err) 40%, transparent); }
+
+/* tables: sticky header, mono numerics */
+.cx-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.cx-table th {
+  text-align: left;
+  color: var(--fx-sub);
+  font-weight: 500;
+  font-size: 11px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--fx-edge);
+  position: sticky;
+  top: 0;
+  background: var(--fx-panel);
+  z-index: 1;
+}
+
+.cx-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--fx-edge);
+  vertical-align: top;
+}
+
+.cx-table tr:last-child td {
+  border-bottom: none;
+}
+
+.cx-table .num {
+  font-family: var(--fx-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* progress bar */
+.cx-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--fx-raise);
+  overflow: hidden;
+}
+
+.cx-bar .fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--fx-accent);
+  transition: width 0.3s ease;
+}
+
+.cx-bar.tone-ok .fill { background: var(--fx-ok); }
+.cx-bar.tone-warn .fill { background: var(--fx-warn); }
+.cx-bar.tone-err .fill { background: var(--fx-err); }
+
+/* buttons */
+.cx-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--fx-edge);
+  background: var(--fx-panel);
+  color: var(--fx-txt);
+  font: inherit;
+  cursor: pointer;
+  min-height: 24px;
+}
+
+.cx-btn:hover:not(:disabled) {
+  border-color: var(--fx-accent);
+  color: var(--fx-accent);
+}
+
+.cx-btn.primary {
+  background: var(--fx-accent);
+  border-color: var(--fx-accent);
+  color: #ffffff;
+}
+
+.cx-btn.primary:hover:not(:disabled) {
+  color: #ffffff;
+  filter: brightness(1.08);
+}
+
+.cx-btn.danger {
+  color: var(--fx-err-text);
+  border-color: color-mix(in srgb, var(--fx-err) 45%, transparent);
+}
+
+.cx-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* callout note */
+.cx-note {
+  border-left: 3px solid var(--fx-accent);
+  background: var(--fx-raise);
+  padding: 8px 12px;
+  border-radius: 0 8px 8px 0;
+  font-size: 12.5px;
+}
+
+.cx-note.warn { border-left-color: var(--fx-warn); }
+.cx-note.err { border-left-color: var(--fx-err); }
+
+/* key-value grid */
+.cx-kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.cx-kv dt {
+  color: var(--fx-sub);
+  font-size: 12px;
+}
+
+.cx-kv dd {
+  margin: 0;
+  font-family: var(--fx-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+}
+
+/* mono log block */
+.cx-log {
+  font-family: var(--fx-mono);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
+/* small mono pill (provider marks, versions) */
+.cx-tag {
+  font-family: var(--fx-mono);
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--fx-raise);
+  color: var(--fx-sub);
+}
+
+/* text/number input (pages build forms from these) */
+.cx-input {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--fx-edge);
+  background: var(--fx-panel);
+  color: var(--fx-txt);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  min-height: 24px;
+  width: 110px;
+}
+
+.cx-input:focus-visible {
+  outline: 2px solid var(--fx-accent);
+  outline-offset: 1px;
+}
+
+/* --------------------------------------------------------------------------
+   Feedback: toast, error card, empty state
+   -------------------------------------------------------------------------- */
+
+.fx-toast {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--fx-panel);
+  border: 1px solid var(--fx-ok);
+  color: var(--fx-txt);
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 12.5px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  z-index: 20;
+  max-width: min(80vw, 560px);
+}
+
+.fx-toast.err {
+  border-color: var(--fx-err);
+  color: var(--fx-err-text);
+}
+
+.fx-error {
+  border: 1px solid var(--fx-err);
+  background: var(--fx-panel);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.fx-error .msg {
+  color: var(--fx-err-text);
+  font-family: var(--fx-mono);
+  font-size: 12px;
+  word-break: break-word;
+  margin: 6px 0 12px;
+}
+
+.fx-empty {
+  color: var(--fx-sub);
+  text-align: center;
+  padding: 48px 16px;
+  font-size: 13px;
+}
+
+/* native <dialog> used by kit.confirmDialog — must live here so production
+ * pages get the same look as the dev harness (FXH-F-009) */
+.fx-dialog {
+  border: 1px solid var(--fx-edge);
+  border-radius: 10px;
+  padding: 16px 18px;
+  background: var(--fx-panel);
+  color: var(--fx-txt);
+  min-width: 280px;
+  max-width: 90vw;
+}
+
+.fx-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+/* --------------------------------------------------------------------------
+   a11y
+   -------------------------------------------------------------------------- */
+
+:focus-visible {
+  outline: 2px solid var(--fx-accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

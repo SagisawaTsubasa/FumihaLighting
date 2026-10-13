@@ -1,0 +1,337 @@
+{
+  "config": {
+    "step": {
+      "lux_zone": {
+        "title": "添加恒照度区域",
+        "description": "每个区域一条配置。之后在自动化里控制它生成的虚拟灯：开＝闭环恒照度，设亮度＝手动直通；真实灯由集成自动驱动。",
+        "data": {
+          "zone_name": "区域名称",
+          "light_entity": "灯",
+          "lux_entity": "照度传感器"
+        },
+        "data_description": {
+          "zone_name": "只填区域名（如：卫生间），它将作为设备名。",
+          "light_entity": "要驱动的真实可调光灯。",
+          "lux_entity": "测量该灯照度的传感器（优先选照度类）。"
+        }
+      },
+      "lux_reconfigure": {
+        "title": "重新配置区域",
+        "description": "重新绑定可调光灯与照度传感器，或修改区域名称。保存后运行时自动重载。改绑会清除已标定的校准曲线——请重新校准。",
+        "data": {
+          "zone_name": "区域名称",
+          "light_entity": "灯",
+          "lux_entity": "照度传感器"
+        },
+        "data_description": {
+          "zone_name": "显示为设备名称。",
+          "light_entity": "要驱动的真实可调光灯。",
+          "lux_entity": "测量该灯照度的传感器（优先选照度类）。"
+        }
+      },
+      "time_details": {
+        "title": "时间详情",
+        "description": "只显示与你的选择相关的字段。过渡时长为 0 表示立即切换。",
+        "data": {
+          "trigger_time": "夜间开始固定时间",
+          "start_offset": "夜间开始偏移（分钟，负数=提前）",
+          "end_time": "夜间结束固定时间",
+          "end_offset": "夜间结束偏移（分钟，负数=提前）",
+          "sun_entity": "日出日落实体（默认内置 sun.sun；自定义实体需含 next_rising / next_setting 属性）",
+          "start_transition": "夜间开始过渡时长（分钟，0=关闭）",
+          "end_transition": "夜间结束过渡时长（分钟，0=关闭）",
+          "transition_interval": "渐变步进间隔（分钟）"
+        }
+      },
+      "extra_count": {
+        "title": "额外时段",
+        "data": {
+          "extra_count": "额外时段数量（最多 5 个）"
+        }
+      },
+      "extra_period": {
+        "title": "额外时段（{position}）",
+        "description": "额外时段是一个单时间锚点：从开始时间起生效，持续到下一个锚点（如夜间开始）。",
+        "data": {
+          "name": "名称（可选，仅用于显示）",
+          "start": "开始时间",
+          "brightness": "亮度（%）",
+          "color_temp_kelvin": "色温",
+          "transition": "过渡时长（分钟，0=立即切换）"
+        }
+      },
+      "lights": {
+        "title": "选择灯具",
+        "data": {
+          "lights": "灯具实体"
+        }
+      },
+      "lights_extra": {
+        "title": "逐灯额外设置",
+        "description": "为每盏灯选择是否使用单独参数，只有打开的灯才会出现对应的设置页面。\n\n{lights}",
+        "data": {}
+      },
+      "settings": {
+        "title": "各时段参数",
+        "data": {
+          "brightness": "夜间亮度（%）",
+          "color_temp_kelvin": "夜间色温",
+          "day_brightness": "日间亮度（%）",
+          "day_color_temp_kelvin": "日间色温",
+          "tolerance_brightness": "亮度容差（%）",
+          "tolerance_kelvin": "色温容差",
+          "verify_delay": "控制后验证延迟",
+          "settle_delay": "开灯后稳定延迟",
+          "turn_on_listen": "开灯时自动应用当前时段参数",
+          "only_when_on": "仅调整已开启的灯",
+          "respect_manual": "尊重手动调节"
+        },
+        "data_description": {
+          "respect_manual": "过渡进行期间，被手动调节过的灯在本过渡带内不再干预；下个锚点归位，关→开也会重新加入曲线。"
+        }
+      },
+      "per_light": {
+        "title": "逐灯参数覆盖（{position}）",
+        "description": "灯具：{name}（`{entity}`）。为此灯单独设置各时段参数，替代全局设定。字段顺序：夜间、日间（若启用），之后每个额外时段一对亮度/色温（extra_0 = 时段 1，依此类推）。",
+        "data": {
+          "brightness": "夜间亮度（%）",
+          "color_temp_kelvin": "夜间色温",
+          "day_brightness": "日间亮度（%）",
+          "day_color_temp_kelvin": "日间色温",
+          "extra_0_brightness": "额外时段 1 亮度 (%)",
+          "extra_0_kelvin": "额外时段 1 色温",
+          "extra_1_brightness": "额外时段 2 亮度 (%)",
+          "extra_1_kelvin": "额外时段 2 色温",
+          "extra_2_brightness": "额外时段 3 亮度 (%)",
+          "extra_2_kelvin": "额外时段 3 色温",
+          "extra_3_brightness": "额外时段 4 亮度 (%)",
+          "extra_3_kelvin": "额外时段 4 色温",
+          "extra_4_brightness": "额外时段 5 亮度 (%)",
+          "extra_4_kelvin": "额外时段 5 色温"
+        }
+      },
+      "anl_user": {
+        "title": "时间设置",
+        "description": "选择夜间各锚点的确定方式以及启用哪些功能。下一页只会显示与选择相关的字段。",
+        "data": {
+          "start_mode": "夜间开始方式",
+          "end_mode": "夜间结束/日间开始方式",
+          "transition_enabled": "启用时段间渐变过渡",
+          "day_enabled": "夜间结束后应用日间参数",
+          "extra_enabled": "启用额外时段"
+        }
+      },
+      "anl_reconfigure": {
+        "title": "时间设置",
+        "description": "选择夜间各锚点的确定方式以及启用哪些功能。下一页只会显示与选择相关的字段。",
+        "data": {
+          "start_mode": "夜间开始方式",
+          "end_mode": "夜间结束/日间开始方式",
+          "transition_enabled": "启用时段间渐变过渡",
+          "day_enabled": "夜间结束后应用日间参数",
+          "extra_enabled": "启用额外时段"
+        }
+      },
+      "user": {
+        "title": "这个条目是什么？",
+        "description": "选择要添加的照明条目类型；恒照度区域与夜灯组各有独立的配置向导。",
+        "data": {
+          "kind": "条目类型"
+        }
+      }
+    },
+    "error": {
+      "entity_missing": "在 Home Assistant 中找不到该实体。",
+      "light_no_brightness": "这盏灯不支持亮度调节。",
+      "light_is_virtual": "这盏灯是 Lux Balance 自己生成的虚拟灯，请改选真实的灯。",
+      "unique_id_mismatch": "新的灯 + 传感器组合已被其他条目使用。",
+      "no_lights": "请至少选择一盏灯"
+    },
+    "abort": {
+      "already_configured": "该区域（灯 + 传感器组合）已配置过。",
+      "reconfigure_successful": "配置更改已保存。",
+      "unique_id_mismatch": "新的灯 + 传感器组合已被其他条目使用。"
+    }
+  },
+  "options": {
+    "step": {
+      "lux_init": {
+        "title": "闭环调节",
+        "description": "灯亮时的闭环行为。目标照度请在「目标照度」数字实体上调整。",
+        "data": {
+          "scan_interval_s": "调节间隔（秒）",
+          "deadband_pct": "死区（%）",
+          "min_brightness_pct": "最小亮度（%）",
+          "auto_turn_off": "环境达标自动关灯"
+        },
+        "data_description": {
+          "scan_interval_s": "灯亮时的闭环重估周期。",
+          "deadband_pct": "小于该比例的调整会被跳过，避免频闪。",
+          "min_brightness_pct": "计算亮度的下限，规避 LED 低亮不稳定区。",
+          "auto_turn_off": "环境光连续 2 周期达到目标后自动关灯。"
+        }
+      },
+      "lux_advanced": {
+        "title": "校准与降级",
+        "description": "校准与回退参数。",
+        "data": {
+          "calibrate_step_pct": "校准步长（%）",
+          "manual_slope": "手动曲线（lux / 1%）"
+        },
+        "data_description": {
+          "calibrate_step_pct": "校准扫描步长（5=细扫，10=粗扫；连续超时自动升为 10）。",
+          "manual_slope": "未校准时的回退线性曲线（每 1% 亮度增加的 lux）；0 为禁用。"
+        }
+      },
+      "time_details": {
+        "title": "时间详情",
+        "description": "只显示与你的选择相关的字段。过渡时长为 0 表示立即切换。",
+        "data": {
+          "trigger_time": "夜间开始固定时间",
+          "start_offset": "夜间开始偏移（分钟，负数=提前）",
+          "end_time": "夜间结束固定时间",
+          "end_offset": "夜间结束偏移（分钟，负数=提前）",
+          "sun_entity": "日出日落实体（默认内置 sun.sun；自定义实体需含 next_rising / next_setting 属性）",
+          "start_transition": "夜间开始过渡时长（分钟，0=关闭）",
+          "end_transition": "夜间结束过渡时长（分钟，0=关闭）",
+          "transition_interval": "渐变步进间隔（分钟）"
+        }
+      },
+      "extra_count": {
+        "title": "额外时段",
+        "data": {
+          "extra_count": "额外时段数量（最多 5 个）"
+        }
+      },
+      "extra_period": {
+        "title": "额外时段（{position}）",
+        "description": "额外时段是一个单时间锚点：从开始时间起生效，持续到下一个锚点（如夜间开始）。",
+        "data": {
+          "name": "名称（可选，仅用于显示）",
+          "start": "开始时间",
+          "brightness": "亮度（%）",
+          "color_temp_kelvin": "色温",
+          "transition": "过渡时长（分钟，0=立即切换）"
+        }
+      },
+      "lights": {
+        "title": "选择灯具",
+        "data": {
+          "lights": "灯具实体"
+        }
+      },
+      "lights_extra": {
+        "title": "逐灯额外设置",
+        "description": "为每盏灯选择是否使用单独参数，只有打开的灯才会出现对应的设置页面。\n\n{lights}",
+        "data": {}
+      },
+      "settings": {
+        "title": "各时段参数",
+        "data": {
+          "brightness": "夜间亮度（%）",
+          "color_temp_kelvin": "夜间色温",
+          "day_brightness": "日间亮度（%）",
+          "day_color_temp_kelvin": "日间色温",
+          "tolerance_brightness": "亮度容差（%）",
+          "tolerance_kelvin": "色温容差",
+          "verify_delay": "控制后验证延迟",
+          "settle_delay": "开灯后稳定延迟",
+          "turn_on_listen": "开灯时自动应用当前时段参数",
+          "only_when_on": "仅调整已开启的灯",
+          "respect_manual": "尊重手动调节"
+        },
+        "data_description": {
+          "respect_manual": "过渡进行期间，被手动调节过的灯在本过渡带内不再干预；下个锚点归位，关→开也会重新加入曲线。"
+        }
+      },
+      "per_light": {
+        "title": "逐灯参数覆盖（{position}）",
+        "description": "灯具：{name}（`{entity}`）。为此灯单独设置各时段参数，替代全局设定。字段顺序：夜间、日间（若启用），之后每个额外时段一对亮度/色温（extra_0 = 时段 1，依此类推）。",
+        "data": {
+          "brightness": "夜间亮度（%）",
+          "color_temp_kelvin": "夜间色温",
+          "day_brightness": "日间亮度（%）",
+          "day_color_temp_kelvin": "日间色温",
+          "extra_0_brightness": "额外时段 1 亮度 (%)",
+          "extra_0_kelvin": "额外时段 1 色温",
+          "extra_1_brightness": "额外时段 2 亮度 (%)",
+          "extra_1_kelvin": "额外时段 2 色温",
+          "extra_2_brightness": "额外时段 3 亮度 (%)",
+          "extra_2_kelvin": "额外时段 3 色温",
+          "extra_3_brightness": "额外时段 4 亮度 (%)",
+          "extra_3_kelvin": "额外时段 4 色温",
+          "extra_4_brightness": "额外时段 5 亮度 (%)",
+          "extra_4_kelvin": "额外时段 5 色温"
+        }
+      },
+      "anl_init": {
+        "title": "时间设置",
+        "description": "选择夜间各锚点的确定方式以及启用哪些功能。下一页只会显示与选择相关的字段。",
+        "data": {
+          "start_mode": "夜间开始方式",
+          "end_mode": "夜间结束/日间开始方式",
+          "transition_enabled": "启用时段间渐变过渡",
+          "day_enabled": "夜间结束后应用日间参数",
+          "extra_enabled": "启用额外时段"
+        }
+      }
+    },
+    "error": {
+      "no_lights": "请至少选择一盏灯"
+    }
+  },
+  "services": {
+    "calibrate": {
+      "name": "开始校准",
+      "description": "启动恒照度曲线自动校准：灯从 0 到 100% 再回扫一遍，全程约 15~25 分钟，期间请不要在卫生间活动。同一卫生间一次只能校准一个区：不带目标时启动第一个可校准区域（其余跳过并记日志）；带目标时若目标未命中任何区域、或命中区域因校准互斥未能启动，服务会抛错。"
+    },
+    "trigger_now": {
+      "name": "立即触发",
+      "description": "对所有夜灯组立即执行锚点归位：清除手动接管标记并重新下发当前时段参数。"
+    }
+  },
+  "entity": {
+    "light": {
+      "adaptive_light": {
+        "name": "恒照度灯"
+      }
+    },
+    "number": {
+      "target_illuminance": {
+        "name": "目标照度"
+      }
+    },
+    "button": {
+      "calibrate": {
+        "name": "开始校准"
+      }
+    },
+    "sensor": {
+      "status": {
+        "name": "运行状态",
+        "state": {
+          "idle": "空闲",
+          "active": "恒照度中",
+          "calibrating": "校准中",
+          "passthrough": "手动直通"
+        }
+      }
+    }
+  },
+  "selector": {
+    "anchor_mode": {
+      "options": {
+        "fixed": "固定时间",
+        "sunset": "日落",
+        "sunrise": "日出"
+      }
+    },
+    "entry_kind": {
+      "options": {
+        "lux": "恒照度区域",
+        "anl": "夜灯组"
+      }
+    }
+  },
+  "title": "文羽照明"
+}

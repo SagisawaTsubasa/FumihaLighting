@@ -297,6 +297,8 @@ def test_hub_mode_registers_both_descriptors():
     hass.data[web.REGISTRY_KEY] = {}
     run(web.async_setup_web(hass))
     reg = hass.data[web.REGISTRY_KEY]
+    assert web.PAGE_LUX_ID == "luxshadow.main"  # 影子预览版
+    assert web.PAGE_ANL_ID == "anlshadow.main"
     assert reg[web.PAGE_LUX_ID]["module_url"].startswith(
         "/fumiha_lighting/page-lux.js?ver="
     )
@@ -453,4 +455,4 @@ def test_manifest_declares_web_dependencies():
     assert m["domain"] == "fumiha_lighting"
     assert m["dependencies"] == ["http", "frontend"]
     assert m["after_dependencies"] == ["fumiha_hub"]
-    assert m["version"] == "1.0.0"
+    assert m["version"] == "1.0.1"

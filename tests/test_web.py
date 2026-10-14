@@ -528,6 +528,7 @@ def test_calibrate_cancel_endpoint_paths():
             "cal_last_error": None,
             "notify": lambda: None,
             "_cal_task": None,
+            "_cal_captured": False,
             "_apply_lock": asyncio.Lock(),
         }
     )
@@ -570,6 +571,7 @@ def test_calibrate_cancel_restores_and_sets_no_error():
             "cal_progress": "",
             "_cal_task": None,
             "_cal_was_on": False,
+            "_cal_captured": False,
             "_cal_pending_off": False,
             "_stopped": False,
             "_apply_lock": asyncio.Lock(),
@@ -598,6 +600,110 @@ def test_calibrate_cancel_restores_and_sets_no_error():
     asyncio.run(scenario())
 
 
+def test_calibrate_cancel_same_tick_honors_pending_off():
+    """FL-IMP-33：窗口①并发 turn_off 置位 pending_off——取消收尾兑现关灯。"""
+    import asyncio
+
+    from custom_components.fumiha_lighting.lux.runtime import ZoneRuntime
+
+    calls = []
+
+    class _Task:
+        def done(self):
+            return False
+
+        def cancel(self):
+            cancelled.append(True)
+            return True
+
+        def __await__(self):
+            async def _noop():
+                return None
+
+            return _noop().__await__()
+
+    async def _async_call_light(action, data):
+        calls.append(action)
+        return True
+
+    async def _schedule_evaluate(reason):
+        return None
+
+    hass = FakeHass()
+    hass.states = SimpleNamespace(get=lambda entity_id: None)  # 未采集→IDLE
+    cancelled = []
+    rt = ZoneRuntime.__new__(ZoneRuntime)
+    rt.__dict__.update(
+        {
+            "hass": hass,
+            "entry_id": "lux1",
+            "mode": "calibrating",
+            "zone_name": "卫生间",
+            "light_entity": "light.test",
+            "lux_entity": "sensor.test",
+            "commanded_pct": 40.0,
+            "curve": SimpleNamespace(source="calibrated", max_lux=180.0),
+            "cal_last_error": None,
+            "notify": lambda: None,
+            "_cal_task": _Task(),
+            "_cal_captured": False,
+            "_cal_was_on": False,
+            "_cal_pending_off": True,  # 窗口①内并发 turn_off 已置位
+            "_cal_committed": False,
+            "_stopped": False,
+            "_apply_lock": asyncio.Lock(),
+            "_async_call_light": _async_call_light,
+            "_schedule_evaluate": _schedule_evaluate,
+        }
+    )
+    _lux_bucket(hass, rt)
+
+    async def scenario():
+        assert await rt.async_cancel_calibration() is True
+        assert calls == ["turn_off"], "用户关灯意图必须被兑现"
+        assert rt._cal_pending_off is False
+        assert rt.mode == "idle"
+
+    asyncio.run(scenario())
+
+
+def test_calibrate_cancel_committed_returns_false():
+    """FL-IMP-30：曲线已采纳（_cal_committed）后取消 → False 且任务不动。"""
+    import asyncio
+
+    from custom_components.fumiha_lighting.lux.runtime import ZoneRuntime
+
+    cancelled = []
+
+    class _Task:
+        def done(self):
+            return False
+
+        def cancel(self):
+            cancelled.append(True)
+            return True
+
+    hass = FakeHass()
+    rt = ZoneRuntime.__new__(ZoneRuntime)
+    rt.__dict__.update(
+        {
+            "hass": hass,
+            "entry_id": "lux1",
+            "mode": "calibrating",
+            "zone_name": "卫生间",
+            "cal_last_error": None,
+            "notify": lambda: None,
+            "_cal_task": _Task(),
+            "_cal_committed": True,
+            "_apply_lock": asyncio.Lock(),
+        }
+    )
+    _lux_bucket(hass, rt)
+    assert run(rt.async_cancel_calibration()) is False
+    assert cancelled == []  # 存盘 await 起后任务不得被打断
+    assert rt.mode == "calibrating"
+
+
 def test_calibrate_cancel_mid_run_restores_active():
     """FL-IMP-23：采样后中途取消——mode 回 ACTIVE、恢复被调用、无错误。
 
@@ -613,13 +719,18 @@ def test_calibrate_cancel_mid_run_restores_active():
     hass = FakeHass()
     hass.async_create_task = asyncio.ensure_future
     # 任务采集步会读真灯态：on + brightness 128（≈50%）→ _cal_was_on=True
-    hass.states = SimpleNamespace(
-        get=lambda entity_id: (
-            SimpleNamespace(state="on", attributes={"brightness": 128})
-            if entity_id == "light.test"
-            else None
-        )
-    )
+    # FL-IMP-29: 可切换灯态——采集时 on（驱动捕获值），取消前切 off 使
+    # 捕获值路径（ACTIVE）与现场判定路径（off→IDLE）分歧
+    state = {"mode": "on"}
+
+    def _get(entity_id):
+        if entity_id != "light.test":
+            return None
+        if state["mode"] == "on":
+            return SimpleNamespace(state="on", attributes={"brightness": 128})
+        return SimpleNamespace(state="off", attributes={})
+
+    hass.states = SimpleNamespace(get=_get)
     real = ZoneRuntime.__new__(ZoneRuntime)
     restored = []
 
@@ -645,7 +756,7 @@ def test_calibrate_cancel_mid_run_restores_active():
             "cal_progress": "",
             "_cal_task": None,
             "_cal_was_on": False,
-            "_cal_orig_pct": None,
+            "_cal_captured": False,
             "_cal_pending_off": False,
             "_stopped": False,
             "_apply_lock": asyncio.Lock(),
@@ -669,6 +780,9 @@ def test_calibrate_cancel_mid_run_restores_active():
         await asyncio.sleep(0)
         assert real._cal_task is not None and not real._cal_task.done()
         assert real._cal_was_on is True
+        # FL-IMP-29: 取消前切现场灯态为 off——ACTIVE 断言只有捕获值路径能给
+        # （现场判定会判 IDLE），删 _finish_calibration 的捕获值分支即红
+        state["mode"] = "off"
 
         assert await real.async_cancel_calibration() is True
 

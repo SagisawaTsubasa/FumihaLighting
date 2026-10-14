@@ -192,7 +192,7 @@ def run_checks(browser, base: str) -> None:
         hallway[:100],
     )
 
-    # trigger REST write
+    # trigger REST write（FL-IMP-02: 新增确认框——先等对话框再点「执行」）
     page.evaluate(
         """() => {
           const p = document.getElementById('hub');
@@ -204,10 +204,29 @@ def run_checks(browser, base: str) -> None:
         }"""
     )
     page.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            if (el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog')) return true;
+          }
+          return false;
+        }""",
+        timeout=4000,
+    )
+    page.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d) { [...d.querySelectorAll('button')].find(b => b.textContent === '执行').click(); return; }
+          }
+        }"""
+    )
+    page.wait_for_function(
         """() => (window.__servicePosts || []).some(p => p.path === '/api/fumiha_lighting/anl/trigger')""",
         timeout=4000,
     )
-    check("anl trigger POSTs to own REST", True)
+    check("anl trigger POSTs to own REST (with confirm dialog)", True)
 
     # ---- module failure isolation: one bad page must not kill the other ----
     page2 = browser.new_page(viewport={"width": 1280, "height": 900})

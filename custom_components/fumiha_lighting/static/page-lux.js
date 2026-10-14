@@ -260,7 +260,11 @@ class LuxBalancePage extends HTMLElement {
       if (again) {
         again.focus();
         const n = again.value.length;
-        again.setSelectionRange?.(n, n);
+        try {
+          again.setSelectionRange(n, n);
+        } catch {
+          // number 输入无选区语义（HTML 规范抛 InvalidStateError）——焦点已恢复即可
+        }
       }
     }
   }
@@ -283,7 +287,10 @@ class LuxBalancePage extends HTMLElement {
       chips.push(
         kit.el("span", {
           class: "cx-chip tone-err",
-          text: "照度数据不可信（不可用或超 30 分钟未上报）",
+          text:
+            "照度数据不可信（不可用或超 " +
+            (z.stale_limit_min ?? 30) +
+            " 分钟未上报）",
         })
       );
     }

@@ -53,7 +53,7 @@ from .const import (
     STANDALONE_LUX_URL_PATH,
     URL_BASE,
 )
-from .lux.const import TARGET_MAX_LUX, TARGET_MIN_LUX
+from .lux.const import LUX_STALE_AFTER_S, TARGET_MAX_LUX, TARGET_MIN_LUX
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -162,7 +162,8 @@ def _serialize_lux_zone(runtime) -> dict:
         "target_min": TARGET_MIN_LUX,
         "target_max": TARGET_MAX_LUX,
         "lux_stale": runtime.lux_stale,
-        "cal_last_error": getattr(runtime, "cal_last_error", None),
+        "cal_last_error": runtime.cal_last_error,
+        "stale_limit_min": LUX_STALE_AFTER_S // 60,
         "curve": _serialize_curve(runtime.curve),
         "decisions": list(runtime.decisions),
         "ambient_lux_est": (

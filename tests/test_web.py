@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from datetime import time as _time
 from types import SimpleNamespace
 
@@ -94,6 +94,7 @@ def fake_lux_runtime(entry_id="lux1", zone="卫生间", **overrides):
         target_lux=150.0,
         commanded_pct=45.0,
         lux_stale=False,
+        cal_last_error=None,
         curve=curve,
         decisions=["22:41:03 [lux] → set 45%"],
         last_decision=SimpleNamespace(ambient_lux=42.5, needed_lux=107.5),
@@ -178,6 +179,9 @@ def test_lux_overview_success():
     assert z["entry_id"] == "lux1" and z["mode"] == "active"
     assert z["curve"]["points"][-1] == [100.0, 239.8]
     assert "kind" not in z
+    # FL-IMP-05: 校准错误通道与陈旧窗口随载荷下发（页面 chip/中止提示的数据源）
+    assert z["cal_last_error"] is None
+    assert z["stale_limit_min"] == 30
 
 
 def test_lux_overview_empty():
@@ -484,3 +488,16 @@ def test_lux_stale_reason_time_dimension():
         state="126.0", last_changed=datetime.utcnow() - timedelta(minutes=45)
     )
     assert _lux_stale_reason(naive) is not None
+    # 混合侧（FL-IMP-04）：aware last_changed + 桩 naive now——归一支路必须
+    # 执行且不得抛 TypeError（真 HA 的 state.last_changed 恒为 aware）
+    aware_old = SimpleNamespace(
+        state="126.0",
+        last_changed=datetime.now(timezone.utc) - timedelta(minutes=45),  # noqa: UP017 — 3.10 兼容
+    )
+    reason = _lux_stale_reason(aware_old)
+    assert reason is not None and "45" in reason
+    aware_fresh = SimpleNamespace(
+        state="126.0",
+        last_changed=datetime.now(timezone.utc) - timedelta(minutes=5),  # noqa: UP017 — 3.10 兼容
+    )
+    assert _lux_stale_reason(aware_fresh) is None

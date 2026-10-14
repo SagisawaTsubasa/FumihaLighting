@@ -178,6 +178,54 @@ def run_checks(browser, base: str) -> None:
     )
     check("lux calibrate POSTs to own REST", True)
 
+    # calibrate cancel (FL-IMP-26): ?cal=1 renders the calibrating card;
+    # the danger button must post to the cancel endpoint via the dialog.
+    page.evaluate("() => { location.search = '?cal=1'; }")
+    page.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            if (el.shadowRoot && el.shadowRoot.querySelector('[data-action="cancel-calibrate"]')) return true;
+          }
+          return false;
+        }""",
+        timeout=4000,
+    )
+    page.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const btn = el.shadowRoot && el.shadowRoot.querySelector('[data-action="cancel-calibrate"]');
+            if (btn) { btn.click(); return true; }
+          }
+          return false;
+        }"""
+    )
+    page.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            if (el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog')) return true;
+          }
+          return false;
+        }""",
+        timeout=4000,
+    )
+    page.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d) { [...d.querySelectorAll('button')].find(b => b.textContent === '中止').click(); return; }
+          }
+        }"""
+    )
+    page.wait_for_function(
+        """() => (window.__servicePosts || []).some(p => p.path === '/api/fumiha_lighting/lux/calibrate/cancel')""",
+        timeout=4000,
+    )
+    check("lux calibrate cancel POSTs to own REST", True)
+
     # ---- anl page (deep link) -----------------------------------------------
     page.evaluate("() => { location.hash = 'pn=anl.main'; }")
     wait_page_dom(page, '[data-manager="anl1"]')

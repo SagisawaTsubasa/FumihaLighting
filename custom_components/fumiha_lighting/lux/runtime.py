@@ -132,6 +132,9 @@ class ZoneRuntime:
         # 上一次校准的失败原因（成功/再次启动时清除）；页面据此显示中止反馈。
         self.cal_last_error: str | None = None
         self.cal_progress: str = ""
+        # 新曲线一旦落进 self.curve（存盘 await 之前）即不可回退——此后取消
+        # 返回 cancelled=False（视同自然完成，FL-IMP-24）。
+        self._cal_committed: bool = False
         self.last_decision: Decision | None = None
         self.last_adjustment: datetime | None = None
         self.decisions: deque[str] = deque(maxlen=DECISION_RING_SIZE)
@@ -565,7 +568,8 @@ class ZoneRuntime:
         ``cal_last_error`` stays untouched — a user-initiated cancel is not
         an error.
         """
-        if self.mode != MODE_CALIBRATING:
+        if self.mode != MODE_CALIBRATING or self._cal_committed:
+            # 已落盘新曲线后取消：视同自然完成（FL-IMP-24）。
             return False
         task = self._cal_task
         if task is None or task.done():
@@ -574,10 +578,36 @@ class ZoneRuntime:
         with contextlib.suppress(asyncio.CancelledError):
             await task
         if self.mode == MODE_CALIBRATING:
-            # Cancelled before the task ever ran (same-tick cancel): its
-            # finally never executed, so the mode reset is on us. The light
-            # was never touched by the sweep, so no restore is needed.
-            self._finish_calibration()
+            # Cancelled before the task ever ran (same-tick cancel) or before
+            # it captured state: its finally never executed, so the wrap-up
+            # is on us. The light was never touched by the sweep, so the
+            # CURRENT light state IS the pre-calibration state (FL-IMP-22) —
+            # judge on the spot instead of _finish_calibration's captured
+            # _cal_was_on (which is still unset here).
+            light = self.hass.states.get(self.light_entity)
+            was_on = (
+                light is not None
+                and light.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+                and light.state == STATE_ON
+            )
+            self.mode = MODE_ACTIVE if was_on and self.curve is not None else MODE_IDLE
+            self.cal_progress = ""
+            self._cal_was_on = False
+            self._cal_pending_off = False
+            # 唤醒被 start_calibration 挂起的其他区（对称于其挂起动作）：
+            # 恢复判据与其自愈同源——灯亮 + 有曲线。
+            for other in self.hass.data.get(DOMAIN, {}).get("lux", {}).values():
+                if other is self or other.mode != MODE_IDLE:
+                    continue
+                o_light = self.hass.states.get(other.light_entity)
+                if (
+                    o_light is not None
+                    and o_light.state == STATE_ON
+                    and other.curve is not None
+                ):
+                    other.mode = MODE_ACTIVE
+                    other.notify()
+            self.notify()
         return True
 
     def start_calibration(self) -> bool:
@@ -614,6 +644,7 @@ class ZoneRuntime:
         self._cal_was_on = False
         self._cal_pending_off = False
         self.cal_last_error = None
+        self._cal_committed = False
         self.cal_progress = "准备中"
         self.notify()
         self._cal_task = self.hass.async_create_task(self._async_run_calibration())
@@ -669,6 +700,7 @@ class ZoneRuntime:
                     "保留原曲线"
                 )
             self.curve = new_curve
+            self._cal_committed = True  # 曲线已采纳，此后取消视同完成
             await self.storage.async_save_curve(self.curve)
             _LOGGER.info(
                 "%s: 校准完成，最大增量 %.0f lx，20-80%% 平均斜率 %.2f lx/%%",

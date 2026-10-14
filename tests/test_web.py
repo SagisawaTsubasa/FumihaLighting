@@ -1236,6 +1236,8 @@ def test_start_calibration_suspends_active_sibling_and_guards():
         await asyncio.sleep(3600)
         return {"up": {}, "down": {}, "baseline": 0.0, "missed_streak": 0}
 
+    resumes = []
+
     def _rt(hass, entry_id, mode, light):
         rt = ZoneRuntime.__new__(ZoneRuntime)
         rt.__dict__.update(
@@ -1264,6 +1266,9 @@ def test_start_calibration_suspends_active_sibling_and_guards():
                 "signal": f"fumiha_lighting_{entry_id}_update",
                 "notify": lambda: None,
                 "_async_sweep": hanging_sweep,
+                # FL-IMP-41: 唤醒路径会被收尾顺带触发——桩必须完整，
+                # 否则回落真方法读缺失属性、任务以 AttributeError 收场
+                "_schedule_evaluate": lambda reason: resumes.append((entry_id, reason)),
             }
         )
         return rt
@@ -1288,12 +1293,19 @@ def test_start_calibration_suspends_active_sibling_and_guards():
         # b（同区）再次启动 → 校准互斥守卫拒绝
         assert b.start_calibration() is False
         assert b.mode == "idle"
+        # FL-IMP-41: 走被测取消路径收尾（含兜底：同刻取消任务未起步，
+        # 唤醒块在这里触发——绕过它兜底被删也不红，R5 教训）
+        assert await a.async_cancel_calibration() is True
+        # 兜底孪生唤醒：b（IDLE+curve+灯亮）→ ACTIVE + resume
+        assert b.mode == "active"
+        assert ("lux2", "resume") in resumes
 
     asyncio.run(scenario())
 
 
-def test_calibrate_cancel_sibling_pending_off_light_stubbed():
-    """FL-IMP-39：钉3 补 _async_call_light 桩——兜底唤醒不依赖异常抑制。"""
+def test_calibrate_cancel_sibling_no_light_write_on_fallback():
+    """FL-IMP-39：兜底唤醒路径（pending_off=False 分支）主区自身灯零写入，
+    且不依赖异常抑制——_async_call_light 用 async 桩（真方法形态）。"""
     import asyncio
 
     from custom_components.fumiha_lighting.lux.const import CONF_CAL_STEP_PCT
@@ -1304,6 +1316,10 @@ def test_calibrate_cancel_sibling_pending_off_light_stubbed():
 
     def _schedule_evaluate(reason):
         resumes.append(reason)
+
+    async def _async_call_light(action, data):
+        calls.append(action)
+        return True
 
     async def hanging_sweep(step):
         await asyncio.sleep(3600)
@@ -1345,7 +1361,7 @@ def test_calibrate_cancel_sibling_pending_off_light_stubbed():
             "signal": "fumiha_lighting_lux1_update",
             "notify": lambda: None,
             "_async_sweep": hanging_sweep,
-            "_async_call_light": lambda action, data: calls.append(action),
+            "_async_call_light": _async_call_light,
         }
     )
     sibling = ZoneRuntime.__new__(ZoneRuntime)
@@ -1420,9 +1436,6 @@ def test_calibrate_natural_completion_exits_calibrating():
 
         async def async_load_curve(self):
             return None
-
-    async def hanging_eval():
-        await asyncio.sleep(3600)
 
     hass = FakeHass()
     hass.async_create_task = asyncio.ensure_future

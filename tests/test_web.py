@@ -75,8 +75,12 @@ class FakeHass:
 
 
 class FakeRequest:
-    def __init__(self, hass):
+    def __init__(self, hass, body=None):
         self.app = {"hass": hass}
+        self._body = body or {}
+
+    async def json(self):
+        return self._body
 
 
 def fake_lux_runtime(entry_id="lux1", zone="卫生间", **overrides):
@@ -95,6 +99,7 @@ def fake_lux_runtime(entry_id="lux1", zone="卫生间", **overrides):
         commanded_pct=45.0,
         lux_stale=False,
         cal_last_error=None,
+        async_cancel_calibration=None,  # 序列化不读方法；cancel 端点测试用真 runtime
         curve=curve,
         decisions=["22:41:03 [lux] → set 45%"],
         last_decision=SimpleNamespace(ambient_lux=42.5, needed_lux=107.5),
@@ -442,7 +447,7 @@ def test_setup_web_idempotent():
     hass = FakeHass()
     run(web.async_setup_web(hass))
     run(web.async_setup_web(hass))
-    assert len(hass.http.views) == 5
+    assert len(hass.http.views) == 6
     assert len(hass.http.static) == 1
     assert hass.http.static[0].url_path == web.URL_BASE
 
@@ -501,3 +506,95 @@ def test_lux_stale_reason_time_dimension():
         last_changed=datetime.now(timezone.utc) - timedelta(minutes=5),  # noqa: UP017 — 3.10 兼容
     )
     assert _lux_stale_reason(aware_fresh) is None
+
+
+# ---------------------------------------------------------------------------
+# calibration cancel (V1.2.1)
+# ---------------------------------------------------------------------------
+
+
+def test_calibrate_cancel_endpoint_paths():
+    from custom_components.fumiha_lighting.lux.runtime import ZoneRuntime
+
+    hass = FakeHass()
+    # 真 runtime（SimpleNamespace 桩没有 cancel 方法）——idle 态取消是幂等 False
+    rt = ZoneRuntime.__new__(ZoneRuntime)
+    rt.__dict__.update(
+        {
+            "hass": hass,
+            "entry_id": "lux1",
+            "mode": "idle",
+            "zone_name": "卫生间",
+            "cal_last_error": None,
+            "notify": lambda: None,
+            "_cal_task": None,
+            "_apply_lock": asyncio.Lock(),
+        }
+    )
+    _lux_bucket(hass, rt)
+
+    # 未知区域 → 404
+    resp = run(
+        web.LuxCalibrateCancelView().post(
+            FakeRequest(hass, body={"entry_id": "ghost"})
+        )
+    )
+    assert resp.payload == {"ok": False, "error": "未知区域"}
+
+    # 无进行中校准 → ok/cancelled False（幂等）
+    resp = run(
+        web.LuxCalibrateCancelView().post(
+            FakeRequest(hass, body={"entry_id": "lux1"})
+        )
+    )
+    payload = json.loads(json.dumps(resp.payload))
+    assert payload == {"ok": True, "cancelled": False}
+
+
+def test_calibrate_cancel_restores_and_sets_no_error():
+    """取消路径：mode 复位、cal_last_error 保持 None（主动取消≠错误）。"""
+    from custom_components.fumiha_lighting.lux.const import CONF_CAL_STEP_PCT
+    from custom_components.fumiha_lighting.lux.runtime import ZoneRuntime
+
+    hass = FakeHass()
+    hass.async_create_task = asyncio.ensure_future  # loop 内调用
+    real = ZoneRuntime.__new__(ZoneRuntime)  # 跳过 __init__（依赖真 Store/registry）
+    real.__dict__.update(
+        {
+            "hass": hass,
+            "opts": {CONF_CAL_STEP_PCT: 5},
+            "mode": "idle",
+            "zone_name": "卫生间",
+            "light_entity": "light.test",
+            "lux_entity": "sensor.test",
+            "target_lux": 150.0,
+            "commanded_pct": None,
+            "curve": None,
+            "cal_last_error": None,
+            "cal_progress": "",
+            "_cal_task": None,
+            "_cal_was_on": False,
+            "_cal_pending_off": False,
+            "_stopped": False,
+            "_apply_lock": asyncio.Lock(),
+            "_eval_task": None,
+            "_stale_warned": False,
+            "lux_stale": False,
+            "signal": "fumiha_lighting_lux1_update",
+            "notify": lambda: None,
+        }
+    )
+    # start_calibration 需要遍历 hass.data[DOMAIN]["lux"] 的其他区域——空桶即可
+    hass.data.setdefault(web.DOMAIN, {})["lux"] = {}
+
+    async def scenario():
+        assert real.start_calibration() is True
+        assert real.mode == "calibrating"
+        # 立刻取消（task 可能尚未真正起步——cancel 于调度前也必须干净收场）
+        assert await real.async_cancel_calibration() is True
+        assert real.mode != "calibrating"
+        assert real.cal_last_error is None
+        # 再取消一次 → False（幂等）
+        assert await real.async_cancel_calibration() is False
+
+    asyncio.run(scenario())

@@ -339,7 +339,40 @@ class LuxBalancePage extends HTMLElement {
           class: "cx-note warn",
           style: { marginTop: "8px" },
           text: "校准进行中（约 15~40 分钟，上报不畅时可能接近 1 小时），期间本区闭环暂停，其他区域闭环自动让路。",
-        })
+        }),
+        kit.el("div", { style: { marginTop: "8px" } },
+          kit.el("button", {
+            class: "cx-btn danger",
+            "data-action": "cancel-calibrate",
+            text: "中止校准",
+            onclick: async () => {
+              if (this._confirmingCalibrate) return;
+              this._confirmingCalibrate = true;
+              try {
+                const yes = await kit.confirmDialog(this.shadowRoot, {
+                  title: "中止校准",
+                  text: "将中止本次校准并恢复灯的原状态，已采集的数据弃用。",
+                  confirmLabel: "中止",
+                  danger: true,
+                });
+                if (!yes) return;
+                await kit.api(this._hass).post(
+                  "/api/fumiha_lighting/lux/calibrate/cancel",
+                  { entry_id: z.entry_id }
+                );
+                kit.ack(this.shadowRoot, { ok: true, label: "校准已中止" });
+              } catch (err) {
+                kit.ack(this.shadowRoot, {
+                  ok: false,
+                  label: "中止校准",
+                  reason: String(err && err.message ? err.message : err),
+                });
+              } finally {
+                this._confirmingCalibrate = false;
+              }
+            },
+          })
+        )
       );
     }
     const min = z.target_min ?? 10;

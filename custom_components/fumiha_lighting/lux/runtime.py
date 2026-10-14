@@ -558,6 +558,28 @@ class ZoneRuntime:
 
     # --------------------------------------------------------------- calibration
 
+    async def async_cancel_calibration(self) -> bool:
+        """Cancel a running sweep; False when none is running (idempotent).
+
+        The task's own ``finally`` restores the light and resets the mode;
+        ``cal_last_error`` stays untouched — a user-initiated cancel is not
+        an error.
+        """
+        if self.mode != MODE_CALIBRATING:
+            return False
+        task = self._cal_task
+        if task is None or task.done():
+            return False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        if self.mode == MODE_CALIBRATING:
+            # Cancelled before the task ever ran (same-tick cancel): its
+            # finally never executed, so the mode reset is on us. The light
+            # was never touched by the sweep, so no restore is needed.
+            self._finish_calibration()
+        return True
+
     def start_calibration(self) -> bool:
         """Kick off a sweep; False when one is already running anywhere.
 

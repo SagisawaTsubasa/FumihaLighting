@@ -262,6 +262,28 @@ class LuxCalibrateView(HomeAssistantView):
         )
 
 
+class LuxCalibrateCancelView(HomeAssistantView):
+    """POST /api/fumiha_lighting/lux/calibrate/cancel — abort a running
+    sweep and restore the light; idempotent when nothing is running."""
+
+    url = f"{API_BASE}/lux/calibrate/cancel"
+    name = "api:fumiha_lighting:lux_calibrate_cancel"
+    requires_auth = True
+
+    @require_admin
+    async def post(self, request: web.Request) -> web.Response:
+        hass = request.app["hass"]
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return _error(400, "请求体不是合法 JSON")
+        runtime = _lux_runtimes(hass).get(body.get("entry_id"))
+        if runtime is None:
+            return _error(404, "未知区域")
+        cancelled = await runtime.async_cancel_calibration()
+        return web.json_response({"ok": True, "cancelled": cancelled})
+
+
 # --------------------------------------------------------------------------
 # anl views
 # --------------------------------------------------------------------------
@@ -426,6 +448,7 @@ async def async_setup_web(hass: HomeAssistant) -> None:
         hass.http.register_view(LuxOverviewView())
         hass.http.register_view(LuxTargetView())
         hass.http.register_view(LuxCalibrateView())
+        hass.http.register_view(LuxCalibrateCancelView())
         hass.http.register_view(AnlSnapshotView())
         hass.http.register_view(AnlTriggerView())
         flags["views"] = True

@@ -297,8 +297,8 @@ def test_hub_mode_registers_both_descriptors():
     hass.data[web.REGISTRY_KEY] = {}
     run(web.async_setup_web(hass))
     reg = hass.data[web.REGISTRY_KEY]
-    assert web.PAGE_LUX_ID == "luxshadow.main"  # 影子预览版
-    assert web.PAGE_ANL_ID == "anlshadow.main"
+    assert web.PAGE_LUX_ID == "luxbalance.main"
+    assert web.PAGE_ANL_ID == "anl.main"
     assert reg[web.PAGE_LUX_ID]["module_url"].startswith(
         "/fumiha_lighting/page-lux.js?ver="
     )

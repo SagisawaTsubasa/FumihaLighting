@@ -374,6 +374,6 @@ class AnlPage extends HTMLElement {
  * module); the ready promise is assigned BEFORE the define call — upgrading
  * an in-DOM element fires its connectedCallback synchronously. */
 window.__anlPageReady = ensureKit();
-if (!customElements.get("anl-shadow-page")) {
-  customElements.define("anl-shadow-page", AnlPage);
+if (!customElements.get("anl-page")) {
+  customElements.define("anl-page", AnlPage);
 }

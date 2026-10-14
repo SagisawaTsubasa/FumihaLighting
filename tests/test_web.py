@@ -535,17 +535,13 @@ def test_calibrate_cancel_endpoint_paths():
 
     # 未知区域 → 404
     resp = run(
-        web.LuxCalibrateCancelView().post(
-            FakeRequest(hass, body={"entry_id": "ghost"})
-        )
+        web.LuxCalibrateCancelView().post(FakeRequest(hass, body={"entry_id": "ghost"}))
     )
     assert resp.payload == {"ok": False, "error": "未知区域"}
 
     # 无进行中校准 → ok/cancelled False（幂等）
     resp = run(
-        web.LuxCalibrateCancelView().post(
-            FakeRequest(hass, body={"entry_id": "lux1"})
-        )
+        web.LuxCalibrateCancelView().post(FakeRequest(hass, body={"entry_id": "lux1"}))
     )
     payload = json.loads(json.dumps(resp.payload))
     assert payload == {"ok": True, "cancelled": False}
@@ -610,7 +606,6 @@ def test_calibrate_cancel_mid_run_restores_active():
     _finish_calibration（捕获值路径）+ 桩记录恢复调用。
     """
     import asyncio
-    from datetime import datetime, timedelta, timezone
 
     from custom_components.fumiha_lighting.lux.const import CONF_CAL_STEP_PCT
     from custom_components.fumiha_lighting.lux.runtime import ZoneRuntime

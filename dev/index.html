@@ -40,8 +40,11 @@
   window.__servicePosts = [];
 
   function luxZones() {
+    // ?cal=1 → 校准进行中态（取消按钮依赖此渲染，FL-IMP-26）
+    const calibrating = new URLSearchParams(location.search).get("cal") === "1";
     return [{
-      entry_id: "lux1", zone_name: "卫生间", mode: "active", cal_progress: "",
+      entry_id: "lux1", zone_name: "卫生间", mode: calibrating ? "calibrating" : "active",
+      cal_progress: calibrating ? "上行 35%" : "",
       target_lux: 150.0, commanded_pct: 45.0, target_min: 10, target_max: 500,
       lux_stale: false,
       curve: { source: "calibrated", max_lux: 186.3, slope_20_80: 2.41,

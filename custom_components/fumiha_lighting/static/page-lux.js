@@ -356,11 +356,20 @@ class LuxBalancePage extends HTMLElement {
                   danger: true,
                 });
                 if (!yes) return;
-                await kit.api(this._hass).post(
+                const res = await kit.api(this._hass).post(
                   "/api/fumiha_lighting/lux/calibrate/cancel",
                   { entry_id: z.entry_id }
                 );
-                kit.ack(this.shadowRoot, { ok: true, label: "校准已中止" });
+                // FL-IMP-24: cancelled:false = 校准刚好自行结束（甚至已完成），
+                // 文案不得宣称"已中止/数据弃用"
+                if (res.cancelled === false) {
+                  kit.ack(this.shadowRoot, {
+                    ok: true,
+                    label: "校准已自行结束（未需要中止）",
+                  });
+                } else {
+                  kit.ack(this.shadowRoot, { ok: true, label: "校准已中止" });
+                }
               } catch (err) {
                 kit.ack(this.shadowRoot, {
                   ok: false,

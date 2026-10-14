@@ -41,3 +41,26 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Run tests
         run: pytest tests/ -q
+
+  import-check:
+    name: Import under real HA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install Home Assistant
+        run: pip install homeassistant==2026.1.3
+      - name: Import every module incl. forwarded platforms
+        run: |
+          python - <<'EOF'
+          import custom_components.fumiha_lighting
+          import custom_components.fumiha_lighting.config_flow
+          import custom_components.fumiha_lighting.light
+          import custom_components.fumiha_lighting.number
+          import custom_components.fumiha_lighting.button
+          import custom_components.fumiha_lighting.sensor
+          import custom_components.fumiha_lighting.web
+          print("all fumiha_lighting modules import cleanly under real HA")
+          EOF

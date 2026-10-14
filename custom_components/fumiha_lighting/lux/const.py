@@ -46,6 +46,9 @@ CAL_CMD_SETTLE_S = 2
 CAL_POLL_INTERVAL_S = 1
 CAL_TIMEOUT_UPGRADE_STREAK = 2
 CAL_MIN_STEP_PCT = 2
+# 照度数据可信窗口：state.last_changed 超过该时距视为陈旧（心跳型 BLE 传感器
+# 数十分钟才上报一次，闭环与开灯首帧不得再当新鲜数据使用，FL-UX-01）。
+LUX_STALE_AFTER_S = 30 * 60
 CAL_MIN_USEFUL_LUX = 5.0  # calibrated curve below this is treated as no response
 
 DECISION_RING_SIZE = 50

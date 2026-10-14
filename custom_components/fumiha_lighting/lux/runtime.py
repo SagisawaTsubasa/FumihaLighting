@@ -56,6 +56,7 @@ from .const import (
     CONF_ZONE_NAME,
     DECISION_RING_SIZE,
     DOMAIN,
+    LUX_STALE_AFTER_S,
     MODE_ACTIVE,
     MODE_CALIBRATING,
     MODE_IDLE,
@@ -89,6 +90,29 @@ class CalibrationError(Exception):
     """Calibration could not produce a usable curve."""
 
 
+def _lux_stale_reason(state) -> str | None:
+    """None = 数据可信；否则给出一句话原因（不可用 / 陈旧 > LUX_STALE_AFTER_S）。
+
+    判定基于 ``state.last_changed``（值变化才算新数据；属性刷新推 last_updated
+    但照度未变，不能当新鲜数据，FL-UX-01）。
+    """
+    if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+        return "传感器不可用"
+    lc = getattr(state, "last_changed", None)
+    if lc is not None:
+        now = dt_util.utcnow()
+        # 真 HA 两侧均 aware；测试桩可能任一侧 naive——归一到同侧再相减
+        if (lc.tzinfo is None) != (now.tzinfo is None):
+            lc = lc.replace(tzinfo=now.tzinfo)
+        age = (now - lc).total_seconds()
+        if age > LUX_STALE_AFTER_S:
+            limit_min = LUX_STALE_AFTER_S // 60
+            return (
+                f"数据已 {int(age // 60)} 分钟未更新（超过 {limit_min} 分钟可信窗口）"
+            )
+    return None
+
+
 class ZoneRuntime:
     """State machine + control loop for one bathroom zone."""
 
@@ -105,6 +129,8 @@ class ZoneRuntime:
         self.commanded_pct: float | None = None
         self.target_lux: float = float(self.opts[CONF_TARGET_LUX])
         self.lux_stale: bool = False
+        # 上一次校准的失败原因（成功/再次启动时清除）；页面据此显示中止反馈。
+        self.cal_last_error: str | None = None
         self.cal_progress: str = ""
         self.last_decision: Decision | None = None
         self.last_adjustment: datetime | None = None
@@ -295,11 +321,16 @@ class ZoneRuntime:
         self,
     ) -> tuple[Decision | None, float]:
         lux_state = self.hass.states.get(self.lux_entity)
-        if lux_state is None or lux_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+        stale_reason = _lux_stale_reason(lux_state)
+        if stale_reason is not None:
             if not self._stale_warned:
                 self._stale_warned = True
                 self.lux_stale = True
-                _LOGGER.warning("%s: 照度传感器不可用，保持当前亮度", self.zone_name)
+                _LOGGER.warning(
+                    "%s: 照度数据不可信（%s），保持当前亮度",
+                    self.zone_name,
+                    stale_reason,
+                )
                 self.notify()
             return None, 0.0
         try:
@@ -462,11 +493,7 @@ class ZoneRuntime:
             self._off_streak = 0
             curve = self.curve
             lux_state = self.hass.states.get(self.lux_entity)
-            lux_ok = (
-                curve is not None
-                and lux_state is not None
-                and lux_state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
-            )
+            lux_ok = curve is not None and _lux_stale_reason(lux_state) is None
             if not lux_ok:
                 await self._async_call_light("turn_on", {})
                 self.commanded_pct = None
@@ -562,6 +589,7 @@ class ZoneRuntime:
         self.mode = MODE_CALIBRATING
         self._cal_was_on = False
         self._cal_pending_off = False
+        self.cal_last_error = None
         self.cal_progress = "准备中"
         self.notify()
         self._cal_task = self.hass.async_create_task(self._async_run_calibration())
@@ -627,8 +655,10 @@ class ZoneRuntime:
         except asyncio.CancelledError:
             raise
         except CalibrationError as err:
+            self.cal_last_error = str(err)
             _LOGGER.warning("%s: 校准中止：%s", self.zone_name, err)
-        except Exception:
+        except Exception as err:
+            self.cal_last_error = f"内部错误：{err}"
             _LOGGER.exception("%s: 校准异常中止", self.zone_name)
         finally:
             # Sync first (cannot be interrupted), then best-effort restore.

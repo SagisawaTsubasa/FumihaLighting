@@ -260,6 +260,13 @@ class AnlPage extends HTMLElement {
           if (this._confirmingTrigger) return;
           this._confirmingTrigger = true;
           try {
+            // FL-UX-03: 真控灯的全局动作，与 lux 校准同判据——先确认。
+            const yes = await kit.confirmDialog(this.shadowRoot, {
+              title: "立即触发",
+              text: "将立即对所有夜灯条目执行锚点归位，灯会切到当前应处的状态。执行？",
+              confirmLabel: "执行",
+            });
+            if (!yes) return;
             await kit.api(this._hass).post("/api/fumiha_lighting/anl/trigger", {});
             kit.ack(this.shadowRoot, { ok: true, label: "立即触发已执行" });
           } catch (err) {
@@ -362,8 +369,11 @@ class AnlPage extends HTMLElement {
         kit.el("span", { class: "cx-chip", text: "本轮尚未下发参数" })
       );
     }
+    // FL-UX-04: 人类读友好名；slug 保留在 title 供排查
+    const friendly =
+      this._hass?.states?.[lt.entity_id]?.attributes?.friendly_name || lt.entity_id;
     return kit.el("div", { class: "fx-card", "data-light": lt.entity_id },
-      kit.el("h2", { text: lt.entity_id }),
+      kit.el("h2", { text: friendly, title: lt.entity_id }),
       kit.el("div", { class: "cx-status" }, chips),
       params
     );

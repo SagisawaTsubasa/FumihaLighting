@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta
 from datetime import time as _time
 from types import SimpleNamespace
 
@@ -457,3 +458,29 @@ def test_manifest_declares_web_dependencies():
     assert m["after_dependencies"] == ["fumiha_hub"]
     # 版本随影子/正式版流动，只断字段在位
     assert isinstance(m["version"], str) and m["version"]
+
+
+# ---------------------------------------------------------------------------
+# lux stale judgment (FL-UX-01)
+# ---------------------------------------------------------------------------
+
+
+def test_lux_stale_reason_time_dimension():
+    from custom_components.fumiha_lighting.lux.runtime import _lux_stale_reason
+
+    # 双侧 naive：runtime 的时区归一化会把两侧拉齐（真 HA 两侧均 aware）
+    now = datetime.utcnow()
+
+    fresh = SimpleNamespace(state="126.0", last_changed=now - timedelta(minutes=5))
+    assert _lux_stale_reason(fresh) is None
+    old = SimpleNamespace(state="126.0", last_changed=now - timedelta(minutes=45))
+    reason = _lux_stale_reason(old)
+    assert reason is not None and "45" in reason
+    unavail = SimpleNamespace(state="unavailable", last_changed=now)
+    assert _lux_stale_reason(unavail) == "传感器不可用"
+    assert _lux_stale_reason(None) == "传感器不可用"
+    # naive last_changed 按 UTC 处理，不得抛 TypeError
+    naive = SimpleNamespace(
+        state="126.0", last_changed=datetime.utcnow() - timedelta(minutes=45)
+    )
+    assert _lux_stale_reason(naive) is not None

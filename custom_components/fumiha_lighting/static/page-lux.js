@@ -62,6 +62,7 @@ class LuxBalancePage extends HTMLElement {
     this._stopPoll = null;
     this._pollMs = 0;
     this._confirmingCalibrate = false;
+    this._targetDrafts = {}; // entry_id -> 未应用的输入草稿（重渲染保留，UX-M-01）
     this._conn = "idle"; // idle | ok | err
     this._lastOk = null; // Date of last successful overview
     this._failStreak = 0;
@@ -134,6 +135,7 @@ class LuxBalancePage extends HTMLElement {
     this._payloadJson = "";
     this._zones = [];
     this._confirmingCalibrate = false;
+    this._targetDrafts = {};
 
     const root = this.shadowRoot;
     root.innerHTML = "";
@@ -243,9 +245,24 @@ class LuxBalancePage extends HTMLElement {
       return;
     }
     const anyCalibrating = this._zones.some((z) => z.mode === "calibrating");
+    // UX-M-01: 重建会新建目标照度输入框——先记焦点位置，重建后恢复，
+    // 避免轮询落地瞬间清掉用户正在输入的值（草稿值由 _targetDrafts 承载）。
+    const active = this.shadowRoot.activeElement;
+    const focusZone = active?.closest?.("[data-zone]")?.dataset.zone ?? null;
+    const focusWasTarget = active?.getAttribute?.("aria-label") === "目标照度（lux）";
     this._body.replaceChildren(
       ...this._zones.map((z) => this._zoneCard(z, anyCalibrating))
     );
+    if (focusZone && focusWasTarget) {
+      const again = this._body.querySelector(
+        `[data-zone="${focusZone}"] input[aria-label="目标照度（lux）"]`
+      );
+      if (again) {
+        again.focus();
+        const n = again.value.length;
+        again.setSelectionRange?.(n, n);
+      }
+    }
   }
 
   _zoneCard(z, anyCalibrating) {
@@ -264,7 +281,10 @@ class LuxBalancePage extends HTMLElement {
     ];
     if (z.lux_stale) {
       chips.push(
-        kit.el("span", { class: "cx-chip tone-err", text: "照度传感器不可用" })
+        kit.el("span", {
+          class: "cx-chip tone-err",
+          text: "照度数据不可信（不可用或超 30 分钟未上报）",
+        })
       );
     }
     if (z.curve && z.curve.source === "manual") {
@@ -279,13 +299,26 @@ class LuxBalancePage extends HTMLElement {
       );
     }
 
-    return kit.el("div", { class: "fx-card", "data-zone": z.entry_id },
+    const children = [
       kit.el("h2", { text: z.zone_name }),
       kit.el("div", { class: "cx-status" }, chips),
+    ];
+    if (z.cal_last_error && z.mode !== "calibrating") {
+      // UX-M-02: 校准中止此前只进 HA 日志，页面观感与"完成"一致。
+      children.push(
+        kit.el("div", {
+          class: "cx-note warn",
+          style: { marginTop: "8px" },
+          text: "上次校准未能完成：" + z.cal_last_error + "（可排查传感器后重试）",
+        })
+      );
+    }
+    children.push(
       this._targetRow(z, anyCalibrating),
       this._curveSection(z),
       this._decisionsSection(z)
     );
+    return kit.el("div", { class: "fx-card", "data-zone": z.entry_id }, ...children);
   }
 
   _targetRow(z, anyCalibrating) {
@@ -298,7 +331,7 @@ class LuxBalancePage extends HTMLElement {
         kit.el("div", {
           class: "cx-note warn",
           style: { marginTop: "8px" },
-          text: "校准进行中（15~25 分钟），期间本区闭环暂停，其他区域闭环自动让路。",
+          text: "校准进行中（约 15~40 分钟，上报不畅时可能接近 1 小时），期间本区闭环暂停，其他区域闭环自动让路。",
         })
       );
     }
@@ -311,36 +344,49 @@ class LuxBalancePage extends HTMLElement {
       min: String(min),
       max: String(max),
       step: String(step),
-      value: String(z.target_lux),
+      value: String(this._targetDrafts[z.entry_id] ?? z.target_lux),
       "aria-label": "目标照度（lux）",
+    });
+    const submit = async () => {
+      const v = parseFloat(input.value);
+      if (!Number.isFinite(v) || v < min || v > max) {
+        kit.toast(this.shadowRoot, "目标照度需在 " + min + "–" + max + " lx 之间", {
+          isError: true,
+        });
+        return;
+      }
+      try {
+        // Own-REST write: straight to runtime.set_target (the number
+        // entity follows via the dispatcher — adapter, not backend).
+        await kit.api(this._hass).post("/api/fumiha_lighting/lux/target", {
+          entry_id: z.entry_id,
+          value: v,
+        });
+        delete this._targetDrafts[z.entry_id];
+        kit.ack(this.shadowRoot, { ok: true, label: "应用目标 " + v + " lx" });
+      } catch (err) {
+        kit.ack(this.shadowRoot, {
+          ok: false,
+          label: "应用目标",
+          reason: String(err && err.message ? err.message : err),
+        });
+      }
+    };
+    input.addEventListener("input", () => {
+      // UX-M-01: 草稿随输入更新，轮询重渲染后由 value 恢复
+      this._targetDrafts[z.entry_id] = input.value;
+    });
+    input.addEventListener("keydown", (ev) => {
+      // FL-UX-06: 回车即应用
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        submit();
+      }
     });
     const apply = kit.el("button", {
       class: "cx-btn primary",
       text: "应用目标",
-      onclick: async () => {
-        const v = parseFloat(input.value);
-        if (!Number.isFinite(v) || v < min || v > max) {
-          kit.toast(this.shadowRoot, "目标照度需在 " + min + "–" + max + " lx 之间", {
-            isError: true,
-          });
-          return;
-        }
-        try {
-          // Own-REST write: straight to runtime.set_target (the number
-          // entity follows via the dispatcher — adapter, not backend).
-          await kit.api(this._hass).post("/api/fumiha_lighting/lux/target", {
-            entry_id: z.entry_id,
-            value: v,
-          });
-          kit.ack(this.shadowRoot, { ok: true, label: "应用目标 " + v + " lx" });
-        } catch (err) {
-          kit.ack(this.shadowRoot, {
-            ok: false,
-            label: "应用目标",
-            reason: String(err && err.message ? err.message : err),
-          });
-        }
-      },
+      onclick: submit,
     });
     return kit.el("div", { class: "cx-status", style: { marginTop: "10px" } },
       kit.el("span", { class: "cx-metric" },
@@ -367,9 +413,20 @@ class LuxBalancePage extends HTMLElement {
         if (this._confirmingCalibrate) return;
         this._confirmingCalibrate = true;
         try {
+          // FL-UX-02: 心跳型传感器（数十分钟一报）跑不完 60s/档 的采样窗，
+          // 启动前把实测新鲜度亮给用户，避免白等几十分钟后只得到一条日志。
+          let staleNote = "";
+          const luxState = this._hass?.states?.[z.lux_entity];
+          const lc = luxState?.last_changed ? new Date(luxState.last_changed) : null;
+          const ageMin = lc ? Math.round((Date.now() - lc.getTime()) / 60000) : null;
+          if (ageMin != null && ageMin >= 10) {
+            staleNote =
+              " ⚠ 该传感器已 " + ageMin +
+              " 分钟未上报（上报周期可能长达数十分钟），校准大概率无法完成，建议先换用上报更频繁的照度传感器。";
+          }
           const yes = await kit.confirmDialog(this.shadowRoot, {
             title: "校准 " + z.zone_name,
-            text: "灯将自动 0→100→0 扫描 15~25 分钟，期间该区不可用。现在开始？",
+            text: "灯将自动 0→100→0 扫描，约 15~40 分钟（传感器上报不畅时可能接近 1 小时），期间该区不可用。现在开始？" + staleNote,
             confirmLabel: "开始校准",
           });
           if (!yes) return;

@@ -30,3 +30,8 @@ pytest tests/ -q
 python dev/serve.py   # 离线 harness（http://127.0.0.1:8772）
 python dev/test_panel.py  # Playwright 冒烟
 ```
+
+## 版本历史
+
+- **V1.1.0（2026-10-14）**：影子预览期结束——页面标识修订回正式（页签 id `luxbalance.main`/`anl.main`，标题去「·影子」后缀，元素名还原）；与旧 lux_balance / auto_night_light 的退役切换同步完成
+- **V1.0.0**：lux_balance + auto_night_light 合并发版（双类型条目、自有 REST、双页面）

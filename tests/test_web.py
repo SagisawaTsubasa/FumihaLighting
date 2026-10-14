@@ -942,6 +942,10 @@ def test_calibrate_cancel_wakes_suspended_sibling():
     from custom_components.fumiha_lighting.lux.runtime import ZoneRuntime
 
     resumes = []
+    restored = []
+
+    async def fake_restore(was_on, orig_pct):
+        restored.append((was_on, orig_pct))
 
     async def hanging_sweep(step):
         await asyncio.sleep(3600)
@@ -955,7 +959,8 @@ def test_calibrate_cancel_wakes_suspended_sibling():
     hass.states = SimpleNamespace(
         get=lambda entity_id: (
             SimpleNamespace(state="on", attributes={"brightness": 200})
-            if entity_id == "light.sib"
+            if entity_id
+            in ("light.main", "light.sib")  # 主区采集/恢复链 + 副区唤醒判据
             else SimpleNamespace(state="off", attributes={})
         )
     )
@@ -986,6 +991,8 @@ def test_calibrate_cancel_wakes_suspended_sibling():
             "signal": "fumiha_lighting_lux1_update",
             "notify": lambda: None,
             "_async_sweep": hanging_sweep,
+            # FL-IMP-44: 恢复链可见——异常不得被 suppress 静默吞掉
+            "_async_restore_light": fake_restore,
         }
     )
     sibling = ZoneRuntime.__new__(ZoneRuntime)
@@ -1031,6 +1038,10 @@ def test_calibrate_cancel_wakes_suspended_sibling():
         # 取消收尾对称唤醒副区：IDLE+curve+灯亮 → ACTIVE + resume 调度
         assert sibling.mode == "active"
         assert resumes == ["resume"]
+        # FL-IMP-44: 主区恢复链真实执行（采集步已捕获：was_on=True +
+        # orig_pct=200/255*100≈78.4）——不得被 suppress 静默吞掉
+        assert len(restored) == 1 and restored[0][0] is True
+        assert abs(restored[0][1] - 78.4) < 0.5
 
     asyncio.run(scenario())
 

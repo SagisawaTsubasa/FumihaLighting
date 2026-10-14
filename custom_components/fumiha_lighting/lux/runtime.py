@@ -132,6 +132,9 @@ class ZoneRuntime:
         # 上一次校准的失败原因（成功/再次启动时清除）；页面据此显示中止反馈。
         self.cal_last_error: str | None = None
         self.cal_progress: str = ""
+        # 本轮校准是否完成过灯态采集：采集前取消时 _cal_was_on 未置位不可信，
+        # mode 恢复走现场灯态判定（FL-IMP-27/32）。
+        self._cal_captured: bool = False
         # 新曲线一旦落进 self.curve（存盘 await 之前）即不可回退——此后取消
         # 返回 cancelled=False（视同自然完成，FL-IMP-24）。
         self._cal_committed: bool = False
@@ -580,10 +583,19 @@ class ZoneRuntime:
         if self.mode == MODE_CALIBRATING:
             # 同刻取消（task 未起步）：finally 不会执行，收尾由这里完成
             # （_finish_calibration 对未采集走现场灯态判定，FL-IMP-27）；
-            # 灯未被 sweep 触碰无需 restore；pending_off 在此窗口不可能为
-            # True（sweep 未运行），直接清除。
+            # 灯未被 sweep 触碰无需 restore。
             self._finish_calibration()
-            self._cal_pending_off = False
+            if self._cal_pending_off:
+                # FL-IMP-33: 窗口①内并发 turn_off 可置位（mode 全程
+                # CALIBRATING）——按 finally 同语义兑现，不丢用户关灯意图。
+                self._cal_pending_off = False
+                self.mode = MODE_IDLE
+                self.commanded_pct = None
+                with contextlib.suppress(Exception):
+                    await self._async_call_light("turn_off", {})
+                self.notify()
+            else:
+                self._cal_pending_off = False
             # 对称唤醒挂起区（动作与 finally 主线一致：resume 评估 + 日志，
             # FL-IMP-28）
             for other in self.hass.data.get(DOMAIN, {}).get("lux", {}).values():
@@ -645,6 +657,7 @@ class ZoneRuntime:
         was_on = False
         orig_pct: float | None = None
         captured = False
+        self._cal_captured = False
         try:
             # Let an in-flight evaluate finish (its write lands) before the
             # baseline window opens; cancellation must still propagate.
@@ -663,6 +676,7 @@ class ZoneRuntime:
                 orig_pct = self._attr_pct(light_state) if was_on else None
                 self._cal_was_on = was_on
                 captured = True
+                self._cal_captured = True
             step = int(self.opts[CONF_CAL_STEP_PCT])
             while True:
                 sweep = await self._async_sweep(step)
@@ -743,10 +757,26 @@ class ZoneRuntime:
                     other._schedule_evaluate("resume")
 
     def _finish_calibration(self) -> None:
-        self.mode = (
-            MODE_ACTIVE if self._cal_was_on and self.curve is not None else MODE_IDLE
-        )
+        if self._cal_captured:
+            # 采集后收尾：_cal_was_on 是校准开始时的真灯态（sweep 期间灯被
+            # 校准改写，收尾时的当前态不可用作判定）。
+            self.mode = (
+                MODE_ACTIVE
+                if self._cal_was_on and self.curve is not None
+                else MODE_IDLE
+            )
+        else:
+            # 未采集即收尾（同刻取消 / 采集前取消，FL-IMP-27/32）：灯从未被
+            # 校准触碰——现场灯态就是校准前状态；_cal_was_on 尚未置位，不可信。
+            light = self.hass.states.get(self.light_entity)
+            was_on = (
+                light is not None
+                and light.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+                and light.state == STATE_ON
+            )
+            self.mode = MODE_ACTIVE if was_on and self.curve is not None else MODE_IDLE
         self._cal_was_on = False
+        self._cal_captured = False
         self.cal_progress = ""
         self.notify()
 

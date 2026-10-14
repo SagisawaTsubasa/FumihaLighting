@@ -1000,7 +1000,7 @@ def test_calibrate_cancel_wakes_suspended_sibling():
         {
             "hass": hass,
             "entry_id": "lux2",
-            "mode": "idle",  # 被 start_calibration 挂起
+            "mode": "active",  # ACTIVE 起步——start_calibration 将它挂起为 IDLE
             "zone_name": "副区",
             "light_entity": "light.sib",
             "lux_entity": "sensor.sib",
@@ -1502,6 +1502,9 @@ def test_calibrate_natural_completion_exits_calibrating():
         assert real.cal_progress == ""
         assert real.cal_last_error is None
         assert saved, "曲线必须落盘"
+        # FL-IMP-46: 恢复链可见（captured 分支：was_on=True + orig_pct≈50.2）
+        assert len(restored) == 1 and restored[0][0] is True
+        assert abs(restored[0][1] - 50.2) < 0.5
 
     asyncio.run(scenario())
 

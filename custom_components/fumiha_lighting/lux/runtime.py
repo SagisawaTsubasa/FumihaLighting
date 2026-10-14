@@ -480,7 +480,7 @@ class ZoneRuntime:
                 return
             if brightness_pct is not None:
                 # 手动直通是用户显式指令（含亮度写入，无照度计算），
-                # 有意不做 stale 门禁——与自动分支（:496）判据不同是设计。
+                # 有意不做 stale 门禁——与自动分支的 _lux_stale_reason 判据不同是设计。
                 self.mode = MODE_PASSTHROUGH
                 self._off_streak = 0
                 ok = await self._async_call_light(

@@ -578,24 +578,14 @@ class ZoneRuntime:
         with contextlib.suppress(asyncio.CancelledError):
             await task
         if self.mode == MODE_CALIBRATING:
-            # Cancelled before the task ever ran (same-tick cancel) or before
-            # it captured state: its finally never executed, so the wrap-up
-            # is on us. The light was never touched by the sweep, so the
-            # CURRENT light state IS the pre-calibration state (FL-IMP-22) —
-            # judge on the spot instead of _finish_calibration's captured
-            # _cal_was_on (which is still unset here).
-            light = self.hass.states.get(self.light_entity)
-            was_on = (
-                light is not None
-                and light.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
-                and light.state == STATE_ON
-            )
-            self.mode = MODE_ACTIVE if was_on and self.curve is not None else MODE_IDLE
-            self.cal_progress = ""
-            self._cal_was_on = False
+            # 同刻取消（task 未起步）：finally 不会执行，收尾由这里完成
+            # （_finish_calibration 对未采集走现场灯态判定，FL-IMP-27）；
+            # 灯未被 sweep 触碰无需 restore；pending_off 在此窗口不可能为
+            # True（sweep 未运行），直接清除。
+            self._finish_calibration()
             self._cal_pending_off = False
-            # 唤醒被 start_calibration 挂起的其他区（对称于其挂起动作）：
-            # 恢复判据与其自愈同源——灯亮 + 有曲线。
+            # 对称唤醒挂起区（动作与 finally 主线一致：resume 评估 + 日志，
+            # FL-IMP-28）
             for other in self.hass.data.get(DOMAIN, {}).get("lux", {}).values():
                 if other is self or other.mode != MODE_IDLE:
                     continue
@@ -605,9 +595,10 @@ class ZoneRuntime:
                     and o_light.state == STATE_ON
                     and other.curve is not None
                 ):
+                    _LOGGER.info("%s: 恢复 %s 的闭环", self.zone_name, other.zone_name)
                     other.mode = MODE_ACTIVE
                     other.notify()
-            self.notify()
+                    other._schedule_evaluate("resume")
         return True
 
     def start_calibration(self) -> bool:

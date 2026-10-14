@@ -796,3 +796,322 @@ def test_calibrate_cancel_mid_run_restores_active():
         assert await real.async_cancel_calibration() is False
 
     asyncio.run(scenario())
+
+
+def test_calibrate_cancel_same_tick_uncaptured_light_on_judges_active():
+    """FL-IMP-35①：未采集分支的现场判定钉——灯亮有曲线时同刻取消回 ACTIVE。
+
+    现场判定（else 分支）与旧判定（_cal_was_on=False→IDLE）在此分歧：
+    删 else 分支（回退旧判定）即红。
+    """
+    import asyncio
+
+    from custom_components.fumiha_lighting.lux.runtime import ZoneRuntime
+
+    hass = FakeHass()
+    hass.async_create_task = asyncio.ensure_future
+    hass.states = SimpleNamespace(
+        get=lambda entity_id: (
+            SimpleNamespace(state="on", attributes={"brightness": 200})
+            if entity_id == "light.test"
+            else None
+        )
+    )
+    rt = ZoneRuntime.__new__(ZoneRuntime)
+    rt.__dict__.update(
+        {
+            "hass": hass,
+            "entry_id": "lux1",
+            "mode": "idle",
+            "zone_name": "卫生间",
+            "light_entity": "light.test",
+            "lux_entity": "sensor.test",
+            "target_lux": 150.0,
+            "commanded_pct": None,
+            "curve": SimpleNamespace(source="calibrated", max_lux=180.0),
+            "cal_last_error": None,
+            "cal_progress": "",
+            "_cal_task": None,
+            "_cal_captured": False,
+            "_cal_was_on": False,
+            "_cal_pending_off": False,
+            "_stopped": False,
+            "_apply_lock": asyncio.Lock(),
+            "_eval_task": None,
+            "_stale_warned": False,
+            "lux_stale": False,
+            "signal": "fumiha_lighting_lux1_update",
+        }
+    )
+    _lux_bucket(hass, rt)
+
+    async def scenario():
+        assert rt.start_calibration() is True
+        # 同刻取消（task 未起步）→ 兜底 _finish_calibration 未采集分支
+        assert await rt.async_cancel_calibration() is True
+        # 现场灯态 on + curve → ACTIVE（旧判定会判 IDLE）
+        assert rt.mode == "active"
+        assert rt.cal_last_error is None
+
+    asyncio.run(scenario())
+
+
+def test_calibrate_cancel_window2_started_not_captured():
+    """FL-IMP-35②：窗口②（已起步未采集，取消落在 await eval_task）——
+    finally 走未采集分支按现场灯态判定，恢复调用必须为空。"""
+    import asyncio
+
+    from custom_components.fumiha_lighting.lux.const import CONF_CAL_STEP_PCT
+    from custom_components.fumiha_lighting.lux.runtime import ZoneRuntime
+
+    restored = []
+
+    async def fake_restore(was_on, orig_pct):
+        restored.append((was_on, orig_pct))
+
+    async def hanging_eval():
+        await asyncio.sleep(3600)
+
+    async def hanging_sweep(step):
+        await asyncio.sleep(3600)
+        return {"up": {}, "down": {}, "baseline": 0.0, "missed_streak": 0}
+
+    hass = FakeHass()
+    hass.async_create_task = asyncio.ensure_future
+    hass.states = SimpleNamespace(
+        get=lambda entity_id: (
+            SimpleNamespace(state="on", attributes={"brightness": 200})
+            if entity_id == "light.test"
+            else None
+        )
+    )
+    real = ZoneRuntime.__new__(ZoneRuntime)
+    real.__dict__.update(
+        {
+            "hass": hass,
+            "opts": {CONF_CAL_STEP_PCT: 5},
+            "mode": "active",  # 校准前 ACTIVE（灯亮有曲线）
+            "zone_name": "卫生间",
+            "light_entity": "light.test",
+            "lux_entity": "sensor.test",
+            "target_lux": 150.0,
+            "commanded_pct": None,
+            "curve": SimpleNamespace(source="calibrated", max_lux=180.0),
+            "cal_last_error": None,
+            "cal_progress": "",
+            "_cal_task": None,
+            "_cal_captured": False,
+            "_cal_was_on": False,
+            "_cal_pending_off": False,
+            "_stopped": False,
+            "_apply_lock": asyncio.Lock(),
+            "_eval_task": None,  # 窗口②挂起点（scenario 内装配真 Task）
+            "_stale_warned": False,
+            "lux_stale": False,
+            "signal": "fumiha_lighting_lux1_update",
+            "notify": lambda: None,
+            "_async_sweep": hanging_sweep,
+            "_async_restore_light": fake_restore,
+        }
+    )
+    hass.data.setdefault(web.DOMAIN, {})["lux"] = {}
+
+    async def scenario():
+        real._eval_task = asyncio.ensure_future(hanging_eval())  # loop 内装配
+        assert real.start_calibration() is True
+        await asyncio.sleep(0)  # 任务起步，挂在 await eval_task（未到采集）
+        assert real._cal_task is not None and not real._cal_task.done()
+        assert real._cal_captured is False  # 窗口②特征：未采集
+
+        assert await real.async_cancel_calibration() is True
+
+        # finally 走未采集分支：现场灯态 on + curve → 回 ACTIVE（旧判定 IDLE）
+        assert real.mode == "active"
+        assert restored == []  # 灯未被 sweep 触碰，无恢复调用
+        assert real.cal_last_error is None
+        real._eval_task.cancel()  # 清理挂起协程防警告
+
+    asyncio.run(scenario())
+
+
+def test_calibrate_cancel_wakes_suspended_sibling():
+    """FL-IMP-36①：取消收尾对称唤醒挂起区（IDLE+curve+灯亮→ACTIVE+resume）。"""
+    import asyncio
+
+    from custom_components.fumiha_lighting.lux.const import CONF_CAL_STEP_PCT
+    from custom_components.fumiha_lighting.lux.runtime import ZoneRuntime
+
+    resumes = []
+
+    async def hanging_sweep(step):
+        await asyncio.sleep(3600)
+        return {"up": {}, "down": {}, "baseline": 0.0, "missed_streak": 0}
+
+    def _schedule_evaluate(reason):
+        resumes.append(reason)
+
+    hass = FakeHass()
+    hass.async_create_task = asyncio.ensure_future
+    hass.states = SimpleNamespace(
+        get=lambda entity_id: (
+            SimpleNamespace(state="on", attributes={"brightness": 200})
+            if entity_id == "light.sib"
+            else SimpleNamespace(state="off", attributes={})
+        )
+    )
+    sweeping = ZoneRuntime.__new__(ZoneRuntime)
+    sweeping.__dict__.update(
+        {
+            "hass": hass,
+            "opts": {CONF_CAL_STEP_PCT: 5},
+            "mode": "idle",
+            "entry_id": "lux1",
+            "zone_name": "主区",
+            "light_entity": "light.main",
+            "lux_entity": "sensor.main",
+            "target_lux": 150.0,
+            "commanded_pct": None,
+            "curve": SimpleNamespace(source="calibrated", max_lux=180.0),
+            "cal_last_error": None,
+            "cal_progress": "",
+            "_cal_task": None,
+            "_cal_captured": False,
+            "_cal_was_on": False,
+            "_cal_pending_off": False,
+            "_stopped": False,
+            "_apply_lock": asyncio.Lock(),
+            "_eval_task": None,
+            "_stale_warned": False,
+            "lux_stale": False,
+            "signal": "fumiha_lighting_lux1_update",
+            "notify": lambda: None,
+            "_async_sweep": hanging_sweep,
+        }
+    )
+    sibling = ZoneRuntime.__new__(ZoneRuntime)
+    sibling.__dict__.update(
+        {
+            "hass": hass,
+            "entry_id": "lux2",
+            "mode": "idle",  # 被 start_calibration 挂起
+            "zone_name": "副区",
+            "light_entity": "light.sib",
+            "lux_entity": "sensor.sib",
+            "target_lux": 150.0,
+            "commanded_pct": None,
+            "curve": SimpleNamespace(source="calibrated", max_lux=180.0),
+            "cal_last_error": None,
+            "cal_progress": "",
+            "_cal_task": None,
+            "_cal_captured": False,
+            "_cal_was_on": False,
+            "_cal_pending_off": False,
+            "_stopped": False,
+            "_apply_lock": asyncio.Lock(),
+            "_eval_task": None,
+            "_stale_warned": False,
+            "lux_stale": False,
+            "signal": "fumiha_lighting_lux2_update",
+            "notify": lambda: None,
+            "_schedule_evaluate": _schedule_evaluate,
+        }
+    )
+    hass.data.setdefault(web.DOMAIN, {})["lux"] = {
+        "lux1": sweeping,
+        "lux2": sibling,
+    }
+
+    async def scenario():
+        assert sweeping.start_calibration() is True
+        # start_calibration 把 ACTIVE 副区挂起为 IDLE
+        assert sibling.mode == "idle"
+        await asyncio.sleep(0)
+        assert await sweeping.async_cancel_calibration() is True
+
+        # 取消收尾对称唤醒副区：IDLE+curve+灯亮 → ACTIVE + resume 调度
+        assert sibling.mode == "active"
+        assert resumes == ["resume"]
+
+    asyncio.run(scenario())
+
+
+def test_calibrate_cancel_honors_pending_off_in_finally():
+    """FL-IMP-36②：采集中关灯请求置 pending_off——取消后 finally 兑现关灯
+    （跳过亮度恢复、turn_off 恰一次、mode IDLE）。"""
+    import asyncio
+
+    from custom_components.fumiha_lighting.lux.const import CONF_CAL_STEP_PCT
+    from custom_components.fumiha_lighting.lux.runtime import ZoneRuntime
+
+    restored = []
+    calls = []
+
+    async def fake_restore(was_on, orig_pct):
+        restored.append((was_on, orig_pct))
+
+    async def hanging_sweep(step):
+        await asyncio.sleep(3600)
+        return {"up": {}, "down": {}, "baseline": 0.0, "missed_streak": 0}
+
+    async def fake_call_light(action, data):
+        calls.append(action)
+        return True
+
+    hass = FakeHass()
+    hass.async_create_task = asyncio.ensure_future
+    hass.states = SimpleNamespace(
+        get=lambda entity_id: (
+            SimpleNamespace(state="on", attributes={"brightness": 200})
+            if entity_id == "light.test"
+            else None
+        )
+    )
+    real = ZoneRuntime.__new__(ZoneRuntime)
+    real.__dict__.update(
+        {
+            "hass": hass,
+            "opts": {CONF_CAL_STEP_PCT: 5},
+            "mode": "idle",
+            "zone_name": "卫生间",
+            "light_entity": "light.test",
+            "lux_entity": "sensor.test",
+            "target_lux": 150.0,
+            "commanded_pct": None,
+            "curve": SimpleNamespace(source="calibrated", max_lux=180.0),
+            "cal_last_error": None,
+            "cal_progress": "",
+            "_cal_task": None,
+            "_cal_captured": False,
+            "_cal_was_on": False,
+            "_cal_pending_off": False,
+            "_stopped": False,
+            "_apply_lock": asyncio.Lock(),
+            "_eval_task": None,
+            "_stale_warned": False,
+            "lux_stale": False,
+            "signal": "fumiha_lighting_lux1_update",
+            "notify": lambda: None,
+            "_async_sweep": hanging_sweep,
+            "_async_restore_light": fake_restore,
+            "_async_call_light": fake_call_light,
+        }
+    )
+    hass.data.setdefault(web.DOMAIN, {})["lux"] = {}
+
+    async def scenario():
+        assert real.start_calibration() is True
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        # 采集中用户关灯（虚拟灯关请求）→ 置 pending_off
+        await real.async_turn_off_requested()
+        assert real._cal_pending_off is True
+
+        assert await real.async_cancel_calibration() is True
+
+        # finally 侧 pending_off 分支：跳过亮度恢复、兑现 turn_off、IDLE
+        assert restored == []
+        assert calls.count("turn_off") == 1
+        assert real.mode == "idle"
+        assert real._cal_pending_off is False
+
+    asyncio.run(scenario())

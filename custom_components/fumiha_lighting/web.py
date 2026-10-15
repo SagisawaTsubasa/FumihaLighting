@@ -165,7 +165,7 @@ def _serialize_lux_zone(runtime) -> dict:
         "cal_last_error": runtime.cal_last_error,
         "stale_limit_min": LUX_STALE_AFTER_S // 60,
         "curve": _serialize_curve(runtime.curve),
-        "decisions": list(runtime.decisions),
+        "decisions": list(reversed(runtime.decisions)),  # 最新在上（V1.2.2）
         "ambient_lux_est": (
             _finite_or_none(last.ambient_lux, 1) if last is not None else None
         ),

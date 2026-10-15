@@ -169,6 +169,7 @@ def test_options_chain_without_target_lux():
     assert _schema_keys(first) == {
         "scan_interval_s",
         "deadband_pct",
+        "deadband_lux",
         "min_brightness_pct",
         "auto_turn_off",
     }
@@ -178,6 +179,7 @@ def test_options_chain_without_target_lux():
             {
                 "scan_interval_s": 45,
                 "deadband_pct": 5.0,
+                "deadband_lux": 10.0,
                 "min_brightness_pct": 5.0,
                 "auto_turn_off": False,
             }
@@ -187,15 +189,28 @@ def test_options_chain_without_target_lux():
     assert _schema_keys(second) == {"calibrate_step_pct", "manual_slope"}
 
     final = run(
-        flow.async_step_lux_advanced({"calibrate_step_pct": 5, "manual_slope": 0.0})
+        flow.async_step_lux_advanced(
+            {
+                "calibrate_step_pct": 5,
+                "manual_slope": 0.0,
+                "deadband_lux": 10.0,
+                "link_group": "卫生间",
+                "cross_fade": 0.5,
+                "max_step_pct": 20.0,
+            }
+        )
     )
     assert final["type"] == "create_entry"
     assert set(final["data"]) == {
         "scan_interval_s",
         "deadband_pct",
+        "deadband_lux",
         "min_brightness_pct",
         "auto_turn_off",
         "calibrate_step_pct",
         "manual_slope",
+        "link_group",
+        "cross_fade",
+        "max_step_pct",
     }
     assert "target_lux" not in final["data"]

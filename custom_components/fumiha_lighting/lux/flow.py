@@ -21,6 +21,7 @@ from ..const import CONF_KIND, KIND_LUX
 from .const import (
     CONF_AUTO_TURN_OFF,
     CONF_CAL_STEP_PCT,
+    CONF_DEADBAND_LUX,
     CONF_DEADBAND_PCT,
     CONF_LIGHT_ENTITY,
     CONF_LUX_ENTITY,
@@ -167,6 +168,15 @@ class LuxZoneOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(CONF_DEADBAND_PCT): selector.NumberSelector(
                     selector.NumberSelectorConfig(
                         min=1, max=20, step=1, unit_of_measurement="%"
+                    )
+                ),
+                vol.Required(CONF_DEADBAND_LUX): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0,
+                        max=100,
+                        step=1,
+                        unit_of_measurement="lx",
+                        mode=selector.NumberSelectorMode.BOX,
                     )
                 ),
                 vol.Required(CONF_MIN_BRIGHTNESS_PCT): selector.NumberSelector(

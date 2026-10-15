@@ -91,18 +91,26 @@ def decide(
     target: float,
     deadband_pct: float,
     min_pct: float,
+    deadband_lux: float = 0.0,
 ) -> Decision:
     """Constant-illuminance control law.
 
     Ambient estimate = measured lux minus the contribution we believe the
     light is currently making; the requested contribution is inverted through
     the curve. Deadband only applies while the light is already on so a fresh
-    turn-on always produces at least ``min_pct``.
+    turn-on always produces at least ``min_pct``. ``deadband_lux`` additionally
+    suppresses corrections whose needed-lux gap sits inside the sensor's
+    quantisation-noise window (V1.2.2) — acting on a sub-noise gap just makes
+    the fixture hunt.
     """
     ambient = max(0.0, lux_now - curve.lux_at(pct_now))
     needed = target - ambient
     if needed <= 0:
         return Decision("off", None, ambient, needed, "ambient at or above target")
+    if pct_now > 0 and needed < deadband_lux:
+        return Decision(
+            "noop", curve.pct_for(needed), ambient, needed, "within lux deadband"
+        )
     pct = min(100.0, max(min_pct, curve.pct_for(needed)))
     if pct_now > 0 and abs(pct - pct_now) < deadband_pct:
         return Decision("noop", pct, ambient, needed, "within deadband")

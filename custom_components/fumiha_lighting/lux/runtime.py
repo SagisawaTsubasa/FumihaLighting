@@ -46,10 +46,14 @@ from .const import (
     CAL_TIMEOUT_UPGRADE_STREAK,
     CONF_AUTO_TURN_OFF,
     CONF_CAL_STEP_PCT,
+    CONF_CROSS_FADE,
+    CONF_DEADBAND_LUX,
     CONF_DEADBAND_PCT,
     CONF_LIGHT_ENTITY,
+    CONF_LINK_GROUP,
     CONF_LUX_ENTITY,
     CONF_MANUAL_SLOPE,
+    CONF_MAX_STEP_PCT,
     CONF_MIN_BRIGHTNESS_PCT,
     CONF_SCAN_INTERVAL_S,
     CONF_TARGET_LUX,
@@ -154,6 +158,17 @@ class ZoneRuntime:
         self._cal_was_on = False
         self._cal_pending_off = False
         self._stopped = False
+        # V1.3.0 联动组：同 link_group 标签的条目互认为同一照明空间；
+        # ambient 计算扣除组内其他灯对本传感器的贡献（交叉曲线优先，
+        # 近似 = 对方主曲线 × cross_fade 兜底）。
+        self.link_group: str = str(self.opts.get(CONF_LINK_GROUP) or "")
+        self._cross_fade: float = float(self.opts[CONF_CROSS_FADE])
+        self._max_step_pct: float = float(self.opts[CONF_MAX_STEP_PCT])
+        # 组内其他灯 → 本传感器的贡献曲线（校准协同采样产出），键=对方灯实体
+        self._cross_curves: dict[str, Any] = {}
+        # 传感器读数滑动窗口（V1.2.2）：评估用中值而非瞬时值——变化触发
+        # 上报的量化噪声（±10 lx 级抖动）直通闭环会造成亮度狩猎。
+        self._lux_window: deque[float] = deque(maxlen=5)
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -255,6 +270,10 @@ class ZoneRuntime:
             return
         self.lux_stale = False
         self._stale_warned = False
+        try:
+            self._lux_window.append(float(new_state.state))
+        except (TypeError, ValueError):
+            pass
         self._schedule_evaluate("lux")
 
     @callback
@@ -334,6 +353,9 @@ class ZoneRuntime:
             return None, 0.0
         self.lux_stale = False
         self._stale_warned = False
+        # V1.2.2 读数滤波：瞬时值含量化噪声，中值窗口压平抖动
+        self._lux_window.append(lux_now)
+        lux_now = statistics.median(self._lux_window)
 
         curve = self.curve
         if curve is None:
@@ -349,6 +371,7 @@ class ZoneRuntime:
             self.target_lux,
             float(self.opts[CONF_DEADBAND_PCT]),
             float(self.opts[CONF_MIN_BRIGHTNESS_PCT]),
+            deadband_lux=float(self.opts[CONF_DEADBAND_LUX]),
         )
         if decision.action != "off":
             self._off_streak = 0

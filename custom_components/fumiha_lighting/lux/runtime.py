@@ -194,11 +194,10 @@ class ZoneRuntime:
                 timedelta(seconds=float(self.opts[CONF_SCAN_INTERVAL_S])),
             )
         )
-        # Self-heal after restart: a light that is already on gets a running
-        # closed loop again instead of staying a passive mirror.
-        state = self.hass.states.get(self.light_entity)
-        if state is not None and state.state == STATE_ON and self.curve is not None:
-            self.mode = MODE_ACTIVE
+        # V1.3.0 开关语义: no restart self-heal — a light left on by another
+        # module must not silently become a compensation target. The loop
+        # resumes when the virtual light is switched on again (automation or
+        # manual).
 
     async def async_stop(self) -> None:
         """Detach listeners and cancel/await in-flight tasks.
@@ -243,20 +242,10 @@ class ZoneRuntime:
             _LOGGER.info("%s: 真灯被外部关闭，停止调节", self.zone_name)
             self.mode = MODE_IDLE
             self.commanded_pct = None
-        elif (
-            new_state.state == STATE_ON
-            and self.mode == MODE_IDLE
-            and self.curve is not None
-            and not self._any_zone_calibrating()
-        ):
-            # External switch-on: take over compensation instead of staying a
-            # passive mirror (mirrors the start() restart self-heal). Gated
-            # while any zone calibrates — a revived loop would pollute the
-            # running sweep's samples.
-            _LOGGER.info("%s: 真灯被外部打开，闭环接管", self.zone_name)
-            self.mode = MODE_ACTIVE
-            self._off_streak = 0
-            self._schedule_evaluate("external-on")
+        # V1.3.0 开关语义: IDLE = hands off. The loop is entered ONLY via the
+        # virtual light (async_turn_on_requested) — an external switch-on
+        # (night-light module, manual) never revives compensation here, or
+        # the two modules would fight over the same fixture.
         self.notify()
 
     @callback
@@ -559,7 +548,8 @@ class ZoneRuntime:
                 return
             self.mode = MODE_IDLE
             self.commanded_pct = None
-            await self._async_call_light("turn_off", {})
+            # V1.3.0 开关语义: off = hands off. The real light is left as-is
+            # (user/night-light module owns it while compensation is off).
             self.notify()
 
     # --------------------------------------------------------------- calibration
@@ -585,17 +575,13 @@ class ZoneRuntime:
             # （_finish_calibration 对未采集走现场灯态判定，FL-IMP-27）；
             # 灯未被 sweep 触碰无需 restore。
             self._finish_calibration()
+            # V1.3.0 开关语义: pending = 收尾后放手到 IDLE（用户明确要求停，
+            # 强制放手态）；无 pending 时保留 _finish_calibration 的判定
+            # （未采集→现场灯态 / 已采集→捕获值）。
             if self._cal_pending_off:
-                # FL-IMP-33: 窗口①内并发 turn_off 可置位（mode 全程
-                # CALIBRATING）——按 finally 同语义兑现，不丢用户关灯意图。
-                self._cal_pending_off = False
                 self.mode = MODE_IDLE
                 self.commanded_pct = None
-                with contextlib.suppress(Exception):
-                    await self._async_call_light("turn_off", {})
-                self.notify()
-            else:
-                self._cal_pending_off = False
+            self._cal_pending_off = False
             # 对称唤醒挂起区（动作与 finally 主线一致：resume 评估 + 日志，
             # FL-IMP-28）
             for other in self.hass.data.get(DOMAIN, {}).get("lux", {}).values():
@@ -731,12 +717,11 @@ class ZoneRuntime:
                 with contextlib.suppress(Exception):
                     await self._async_restore_light(was_on, orig_pct)
             if self._cal_pending_off:
-                # The user asked to turn the light off during the sweep.
+                # V1.3.0 开关语义: pending = 收尾后放手到 IDLE（不再兑现关灯
+                # ——关映射实体不牵连原灯）。
                 self._cal_pending_off = False
                 self.mode = MODE_IDLE
                 self.commanded_pct = None
-                with contextlib.suppress(Exception):
-                    await self._async_call_light("turn_off", {})
                 self.notify()
             # Wake up any zone that can compensate: IDLE + curve + light on.
             # Covers zones suspended for the sweep as well as ones switched on

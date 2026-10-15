@@ -659,8 +659,9 @@ def test_calibrate_cancel_same_tick_honors_pending_off():
     _lux_bucket(hass, rt)
 
     async def scenario():
+        # V1.3.0 开关语义: pending = 收尾后放手到 IDLE——不再兑现关灯
         assert await rt.async_cancel_calibration() is True
-        assert calls == ["turn_off"], "用户关灯意图必须被兑现"
+        assert calls == []  # 不再下发关灯（原灯归用户/夜灯模组）
         assert rt._cal_pending_off is False
         assert rt.mode == "idle"
 
@@ -1119,9 +1120,10 @@ def test_calibrate_cancel_honors_pending_off_in_finally():
 
         assert await real.async_cancel_calibration() is True
 
-        # finally 侧 pending_off 分支：跳过亮度恢复、兑现 turn_off、IDLE
+        # finally 侧 pending_off 分支（V1.3.0）：跳过亮度恢复、放手到 IDLE、
+        # 不再下发关灯
         assert restored == []
-        assert calls.count("turn_off") == 1
+        assert calls == []
         assert real.mode == "idle"
         assert real._cal_pending_off is False
 
@@ -1511,3 +1513,111 @@ def test_calibrate_natural_completion_exits_calibrating():
 
 async def _async_return(value):
     return value
+
+
+def test_idle_never_revives_on_external_light_on():
+    """V1.3.0 开关语义钉：IDLE 态真灯被外部打开（夜灯模组/手动）——
+    不接管闭环（与夜灯模组共存，互不打架）。"""
+    import asyncio
+
+    from custom_components.fumiha_lighting.lux.runtime import ZoneRuntime
+
+    evaluated = []
+
+    hass = FakeHass()
+    hass.async_create_task = asyncio.ensure_future
+    hass.states = SimpleNamespace(
+        get=lambda entity_id: (
+            SimpleNamespace(state="on", attributes={"brightness": 200})
+            if entity_id == "light.test"
+            else None
+        )
+    )
+    rt = ZoneRuntime.__new__(ZoneRuntime)
+    rt.__dict__.update(
+        {
+            "hass": hass,
+            "entry_id": "lux1",
+            "mode": "idle",
+            "zone_name": "卫生间",
+            "light_entity": "light.test",
+            "lux_entity": "sensor.test",
+            "target_lux": 150.0,
+            "commanded_pct": None,
+            "curve": SimpleNamespace(source="calibrated", max_lux=180.0),
+            "cal_last_error": None,
+            "cal_progress": "",
+            "_cal_task": None,
+            "_cal_captured": False,
+            "_cal_was_on": False,
+            "_cal_pending_off": False,
+            "_stopped": False,
+            "_apply_lock": asyncio.Lock(),
+            "_eval_task": None,
+            "_stale_warned": False,
+            "lux_stale": False,
+            "signal": "fumiha_lighting_lux1_update",
+            "notify": lambda: None,
+        }
+    )
+    # 拦截 _schedule_evaluate：IDLE 态下外部开灯不得触发任何评估
+    rt._schedule_evaluate = lambda trigger: evaluated.append(trigger)
+
+    event = SimpleNamespace(
+        data={"new_state": SimpleNamespace(state="on", attributes={})}
+    )
+    rt._on_light_event(event)
+    assert rt.mode == "idle", "IDLE 态外部开灯必须保持放手（V1.3.0）"
+    assert evaluated == []  # 无任何评估被调度
+
+
+def test_turn_off_requested_leaves_real_light_alone():
+    """V1.3.0 开关语义钉：关映射实体 = 纯放手——不下发关灯命令。"""
+    import asyncio
+
+    from custom_components.fumiha_lighting.lux.runtime import ZoneRuntime
+
+    calls = []
+
+    async def fake_call_light(action, data):
+        calls.append(action)
+        return True
+
+    hass = FakeHass()
+    rt = ZoneRuntime.__new__(ZoneRuntime)
+    rt.__dict__.update(
+        {
+            "hass": hass,
+            "entry_id": "lux1",
+            "mode": "active",
+            "zone_name": "卫生间",
+            "light_entity": "light.test",
+            "lux_entity": "sensor.test",
+            "target_lux": 150.0,
+            "commanded_pct": 45.0,
+            "curve": SimpleNamespace(source="calibrated", max_lux=180.0),
+            "cal_last_error": None,
+            "cal_progress": "",
+            "_cal_task": None,
+            "_cal_captured": False,
+            "_cal_was_on": False,
+            "_cal_pending_off": False,
+            "_stopped": False,
+            "_apply_lock": asyncio.Lock(),
+            "_eval_task": None,
+            "_stale_warned": False,
+            "lux_stale": False,
+            "signal": "fumiha_lighting_lux1_update",
+            "notify": lambda: None,
+            "_async_call_light": fake_call_light,
+        }
+    )
+
+    async def scenario():
+        await rt.async_turn_off_requested()
+        # 放手：mode 回 IDLE，但原灯保持当前状态（不下发关灯）
+        assert rt.mode == "idle"
+        assert calls == []
+        assert rt.commanded_pct is None
+
+    asyncio.run(scenario())

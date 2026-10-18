@@ -9,7 +9,13 @@ from datetime import datetime, timedelta, timezone
 from datetime import time as _time
 from types import SimpleNamespace
 
+import pytest
+from conftest import flush_deferred_callbacks as _flush_deferred
+
 from custom_components.fumiha_lighting import web
+from custom_components.fumiha_lighting.config_flow import (
+    FumihaLightingConfigFlow,
+)
 from custom_components.fumiha_lighting.const import (
     CONF_KIND,
     KIND_ANL,
@@ -132,8 +138,9 @@ def fake_anl_manager(entry_id="anl1", title="自动夜灯", **overrides):
         },
         start_mode="sunset",
         end_mode="sunrise",
-        transition_enabled=False,
-        day_enabled=True,
+        transition_enabled=True,  # 存储派生值（end_transition>0）
+        transitions_active=False,  # 生效总闸：day 关 → manager 归零（真实分叉）
+        day_enabled=False,
         respect_manual=True,
     )
     mgr._anchor_modes = lambda: [
@@ -168,6 +175,7 @@ def _anl_bucket(hass, *managers):
 
 def run(coro):
     return asyncio.run(coro)
+
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +281,9 @@ def test_anl_snapshot_success():
     resp = run(web.AnlSnapshotView().get(FakeRequest(hass)))
     m = resp.payload["managers"][0]
     assert m["current_mode"] == "night"
+    # ANL-F-041：两字段必须分叉下发（chip 判据的唯一守钉）
+    assert m["transitions_active"] is False
+    assert m["transition_enabled"] is True
     assert [(a["time"], a["mode"]) for a in m["anchors"]] == [
         ("23:30", "night"),
         ("06:56", "day"),
@@ -293,6 +304,595 @@ def test_anl_trigger_snapshots_managers():
     resp = run(web.AnlTriggerView().post(FakeRequest(hass)))
     assert resp.payload == {"ok": True, "triggered": 1}
     assert triggered == ["page"]
+
+
+# ---------------------------------------------------------------------------
+# anl config editor (GET/POST /api/fumiha_lighting/anl/config)
+# ---------------------------------------------------------------------------
+
+
+def _config_entry(entry_id="anl1", data=None, options=None):
+    return SimpleNamespace(
+        entry_id=entry_id,
+        title="自动夜灯",
+        data=data if data is not None else {},
+        options=options if options is not None else {},
+    )
+
+
+def _config_manager(entry):
+    mgr = fake_anl_manager(entry.entry_id)
+    mgr.entry = entry
+    return mgr
+
+
+recorded = []
+
+
+def _recording_hass():
+    recorded.clear()
+    hass = FakeHass()
+
+    def _update(entry, **kw):
+        # 真实写回（options），连续 POST 才能看到前次结果（FL-F-011 同款教训：
+        # 只记录不写回的桩会让顺序依赖用例失真）
+        if "options" in kw:
+            entry.options = kw["options"]
+        recorded.append((entry, kw))
+        return True
+
+    hass.config_entries = SimpleNamespace(async_update_entry=_update)
+    return hass
+
+
+def test_anl_config_get_success():
+    hass = FakeHass()
+    entry = _config_entry(
+        data={"kind": "anl", "lights": ["light.a"], "brightness": 30},
+        options={"tolerance_kelvin": 200},
+    )
+    _anl_bucket(hass, _config_manager(entry))
+    req = FakeRequest(hass)
+    req.query = {"entry_id": "anl1"}
+    resp = run(web.AnlConfigView().get(req))
+    assert resp.payload["ok"] is True
+    cfg = resp.payload["config"]
+    assert cfg["brightness"] == 30
+    assert cfg["tolerance_kelvin"] == 200  # options 覆盖 data
+    assert "limits" in resp.payload and "params" in resp.payload["limits"]
+    assert "kind" not in cfg  # 白名单外键不外泄
+
+
+def test_anl_config_get_unknown_entry():
+    hass = FakeHass()
+    req = FakeRequest(hass)
+    req.query = {"entry_id": "nope"}
+    resp = run(web.AnlConfigView().get(req))
+    assert resp.status == 404
+
+
+def test_anl_config_post_times_derives_transition_enabled():
+    hass = _recording_hass()
+    entry = _config_entry(
+        data={"kind": "anl", "lights": ["light.a"], "transition_enabled": False}
+    )
+    _anl_bucket(hass, _config_manager(entry))
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"times": {"start_transition": 30}}})
+        )
+    )
+    assert resp.payload["ok"] is True
+    options = recorded[0][1]["options"]
+    assert options["start_transition"] == 30
+    assert options["transition_enabled"] is True
+
+
+def test_anl_config_post_params_and_overrides_merge():
+    hass = _recording_hass()
+    entry = _config_entry(
+        data={
+            "kind": "anl",
+            "lights": ["light.a", "light.b"],
+            "extras": [{"name": "", "start": "18:00:00", "brightness": 60,
+                        "color_temp_kelvin": 3000, "transition": 0}],
+            "extra_count": 1,
+            # 死键见证（ANL-F-044）：三个键都在 data 里出现，断言才有变异力
+            "extra_enabled": True,
+            "custom_per_light": ["light.b"],
+        }
+    )
+    _anl_bucket(hass, _config_manager(entry))
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {
+                "entry_id": "anl1",
+                "patch": {
+                    "params": {"brightness": 15},
+                    "overrides": {"light.b": {
+                        "brightness": 10,
+                        "color_temp_kelvin": 2700,
+                        "extras": {"0": {"brightness": 40,
+                                         "color_temp_kelvin": 2800}},
+                    }},
+                },
+            })
+        )
+    )
+    assert resp.payload["ok"] is True
+    options = recorded[0][1]["options"]
+    assert options["brightness"] == 15
+    assert options["overrides"]["light.b"]["extras"]["0"]["brightness"] == 40
+    assert "light.a" not in options.get("overrides", {})
+    # 死键不向 options 固化（ANL-F-029 钉）：entry.data 带 extra_count:1，
+    # 过滤被回滚时本行即红
+    for dead in ("extra_count", "extra_enabled", "custom_per_light"):
+        assert dead not in options
+
+
+def test_anl_config_post_overrides_remove_restores_global():
+    hass = _recording_hass()
+    entry = _config_entry(
+        data={"kind": "anl", "lights": ["light.a", "light.b"],
+              "overrides": {"light.a": {"brightness": 5, "color_temp_kelvin": 2200}}},
+    )
+    _anl_bucket(hass, _config_manager(entry))
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"overrides_remove": ["light.a"]}})
+        )
+    )
+    assert resp.payload["ok"] is True
+    assert recorded[0][1]["options"]["overrides"] == {}
+
+
+def test_anl_config_post_rejects_out_of_range():
+    hass = _recording_hass()
+    entry = _config_entry(data={"kind": "anl", "lights": ["light.a"]})
+    _anl_bucket(hass, _config_manager(entry))
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"params": {"brightness": 0}}})
+        )
+    )
+    assert resp.status == 400 and "1" in resp.payload["error"]
+    assert recorded == []  # 校验失败绝不写条目
+
+
+def test_anl_config_post_rejects_unknown_light_override():
+    hass = _recording_hass()
+    entry = _config_entry(data={"kind": "anl", "lights": ["light.a"]})
+    _anl_bucket(hass, _config_manager(entry))
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"overrides": {"light.zzz": {
+                                   "brightness": 10, "color_temp_kelvin": 2700}}}})
+        )
+    )
+    assert resp.status == 400 and "light.zzz" in resp.payload["error"]
+
+
+def test_anl_config_post_rejects_too_many_extras():
+    hass = _recording_hass()
+    entry = _config_entry(data={"kind": "anl", "lights": ["light.a"]})
+    _anl_bucket(hass, _config_manager(entry))
+    items = [{"name": "", "start": "18:00", "brightness": 60,
+              "color_temp_kelvin": 3000, "transition": 0}] * 6
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1", "patch": {"extras": items}})
+        )
+    )
+    assert resp.status == 400
+
+
+def test_anl_config_post_rejects_unknown_section():
+    hass = FakeHass()
+    entry = _config_entry(data={"kind": "anl", "lights": ["light.a"]})
+    _anl_bucket(hass, _config_manager(entry))
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"hax": {"brightness": 1}}})
+        )
+    )
+    assert resp.status == 400 and "hax" in resp.payload["error"]
+
+
+def test_anl_config_post_unknown_entry():
+    hass = FakeHass()
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {
+                "entry_id": "nope",
+                "patch": {"params": {"brightness": 10}},
+            })
+        )
+    )
+    assert resp.status == 404
+
+
+def test_anl_config_post_rejects_nan():
+    """ANL-F-019：NaN/Inf 不得 500 或落库。"""
+    hass = _recording_hass()
+    entry = _config_entry(data={"kind": "anl", "lights": ["light.a"]})
+    _anl_bucket(hass, _config_manager(entry))
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        resp = run(
+            web.AnlConfigView().post(
+                FakeRequest(hass, {"entry_id": "anl1",
+                                   "patch": {"params": {"brightness": bad}}})
+            )
+        )
+        assert resp.status == 400 and "有限" in resp.payload["error"]
+    assert recorded == []
+
+
+def test_anl_config_post_rejects_non_object_body():
+    """ANL-F-020：null/list/标量 body → 400 而非 500。"""
+    hass = FakeHass()
+    entry = _config_entry(data={"kind": "anl", "lights": ["light.a"]})
+    _anl_bucket(hass, _config_manager(entry))
+    for bad_body in ([], None, "x"):
+        resp = run(
+            web.AnlConfigView().post(FakeRequest(hass, bad_body))
+        )
+        assert resp.status == 400, bad_body
+    # entry_id 非字符串 → 400（unhashable 防线）
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": ["anl1"],
+                               "patch": {"params": {"brightness": 10}}})
+        )
+    )
+    assert resp.status == 400
+
+
+def test_anl_config_get_serializes_time_objects():
+    """ANL-F-015：TimeSelector 提交后进程内是 time 对象，GET 必须字符串化
+    （json_response 桩走真 dumps，漏转换即 TypeError）。"""
+    hass = FakeHass()
+    entry = _config_entry(
+        data={"kind": "anl", "lights": ["light.a"],
+              "trigger_time": _time(22, 0), "end_time": _time(6, 30),
+              "extras": [{"name": "", "start": _time(18, 0), "brightness": 60,
+                          "color_temp_kelvin": 3000, "transition": 0}]},
+    )
+    _anl_bucket(hass, _config_manager(entry))
+    req = FakeRequest(hass)
+    req.query = {"entry_id": "anl1"}
+    resp = run(web.AnlConfigView().get(req))
+    cfg = resp.payload["config"]
+    assert cfg["trigger_time"] == "22:00:00"
+    assert cfg["end_time"] == "06:30:00"
+    assert cfg["extras"][0]["start"] == "18:00:00"
+
+
+def test_anl_config_post_extras_shrink_prunes_override_extras():
+    """ANL-F-017/028：extras 覆盖键是位置序号，按 start 身份判漂移——
+    被删时段原序号被后继者顶替时精确清除该序号覆盖（等数量的删+加同样
+    命中）；身份未变（尾部删除/原位编辑）保留覆盖。"""
+    hass = _recording_hass()
+    entry = _config_entry(
+        data={"kind": "anl", "lights": ["light.a"],
+              "extras": [
+                  {"name": "a", "start": "18:00:00", "brightness": 60,
+                   "color_temp_kelvin": 3000, "transition": 0},
+                  {"name": "b", "start": "20:00:00", "brightness": 60,
+                   "color_temp_kelvin": 3000, "transition": 0},
+              ],
+              "overrides": {"light.a": {
+                  "brightness": 10, "color_temp_kelvin": 2700,
+                  "extras": {"0": {"brightness": 40, "color_temp_kelvin": 2800}}}}},
+    )
+    _anl_bucket(hass, _config_manager(entry))
+    # 删头部（18:00 消失，20:00 顶到序号 0）→ 序号 0 身份漂移 → 清除覆盖
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {
+                "entry_id": "anl1",
+                "patch": {"extras": [{"name": "b", "start": "20:00", "brightness": 60,
+                                      "color_temp_kelvin": 3000, "transition": 0}]},
+            })
+        )
+    )
+    assert resp.payload["pruned_override_extras"] == 1
+    options = recorded[0][1]["options"]
+    assert "extras" not in options["overrides"]["light.a"]
+    assert options["overrides"]["light.a"]["brightness"] == 10  # 夜间覆盖保留
+    # 尾部删除（18:00 身份仍在序号 0）→ 覆盖保留（ANL-F-028 精准语义）
+    resp2 = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {
+                "entry_id": "anl1",
+                "patch": {"extras": [{"name": "b", "start": "20:00", "brightness": 60,
+                                      "color_temp_kelvin": 3000, "transition": 0},
+                                     {"name": "c", "start": "21:00", "brightness": 60,
+                                      "color_temp_kelvin": 3000, "transition": 0}]},
+            })
+        )
+    )
+    assert resp2.payload["pruned_override_extras"] == 0
+    # 等数量换 start（删一条+加一条的合成路径）→ 身份漂移 → 清除
+    resp3 = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {
+                "entry_id": "anl1",
+                "patch": {"overrides": {"light.a": {
+                    "brightness": 10, "color_temp_kelvin": 2700,
+                    "extras": {"0": {"brightness": 40, "color_temp_kelvin": 2800}}}}},
+            })
+        )
+    )
+    assert resp3.payload["ok"] is True
+    resp4 = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {
+                "entry_id": "anl1",
+                "patch": {"extras": [{"name": "x", "start": "22:00", "brightness": 60,
+                                      "color_temp_kelvin": 3000, "transition": 0},
+                                     {"name": "y", "start": "21:00", "brightness": 60,
+                                      "color_temp_kelvin": 3000, "transition": 0}]},
+            })
+        )
+    )
+    assert resp4.payload["pruned_override_extras"] == 1
+    assert "extras" not in recorded[-1][1]["options"]["overrides"]["light.a"]
+    # 原位参数编辑（start 不变）→ 覆盖保留
+    run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {
+                "entry_id": "anl1",
+                "patch": {"overrides": {"light.a": {
+                    "brightness": 10, "color_temp_kelvin": 2700,
+                    "extras": {"0": {"brightness": 40, "color_temp_kelvin": 2800}}}}},
+            })
+        )
+    )
+    resp6 = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {
+                "entry_id": "anl1",
+                "patch": {"extras": [{"name": "x", "start": "22:00", "brightness": 70,
+                                      "color_temp_kelvin": 3000, "transition": 0},
+                                     {"name": "y", "start": "21:00", "brightness": 60,
+                                      "color_temp_kelvin": 3000, "transition": 0}]},
+            })
+        )
+    )
+    assert resp6.payload["pruned_override_extras"] == 0
+    assert recorded[-1][1]["options"]["overrides"]["light.a"]["extras"]["0"][
+        "brightness"] == 40
+
+
+def test_anl_config_post_extras_drift_drops_empty_override_shell():
+    """ANL-F-049：只带时段覆盖的灯 + 漂移 → 逐灯空壳必须消失
+    （overrides 表本身保留 {}，用于压掉 entry.data 的旧值——页面据此
+    判「跟随全局」，留 {"light.a": {}} 会误判「未跟随全局」）。"""
+    hass = _recording_hass()
+    entry = _config_entry(
+        data={"kind": "anl", "lights": ["light.a"],
+              "extras": [{"name": "a", "start": "18:00:00", "brightness": 60,
+                          "color_temp_kelvin": 3000, "transition": 0}],
+              "overrides": {"light.a": {
+                  "extras": {"0": {"brightness": 40, "color_temp_kelvin": 2800}}}}},
+    )
+    _anl_bucket(hass, _config_manager(entry))
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {
+                "entry_id": "anl1",
+                "patch": {"extras": [{"name": "x", "start": "20:00", "brightness": 60,
+                                      "color_temp_kelvin": 3000, "transition": 0}]},
+            })
+        )
+    )
+    assert resp.payload["pruned_override_extras"] == 1
+    # 逐灯空壳必须消失（ANL-F-049）；overrides 表本身刻意保留 {}——
+    # 压掉 entry.data 的旧值（删键会让 data 旧覆盖复活）
+    assert "light.a" not in recorded[0][1]["options"]["overrides"]
+
+
+def test_anl_config_post_failed_section_leaves_options_untouched():
+    """ANL-F-026：组合 patch 后段校验 400 时，已执行的前段 prune 不得污染
+    entry.options 的嵌套对象（深拷贝防线；recorded==[] 只能看见顶层写入）。"""
+    hass = _recording_hass()
+    entry = _config_entry(
+        data={"kind": "anl", "lights": ["light.a"],
+              "extras": [
+                  {"name": "a", "start": "18:00:00", "brightness": 60,
+                   "color_temp_kelvin": 3000, "transition": 0},
+                  {"name": "b", "start": "20:00:00", "brightness": 60,
+                   "color_temp_kelvin": 3000, "transition": 0},
+              ],
+              "overrides": {"light.a": {
+                  "brightness": 10, "color_temp_kelvin": 2700,
+                  "extras": {"0": {"brightness": 40, "color_temp_kelvin": 2800}}}}},
+    )
+    _anl_bucket(hass, _config_manager(entry))
+    # extras 换 start（会触发 prune）+ overrides 引用未知灯（400）
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {
+                "entry_id": "anl1",
+                "patch": {
+                    "extras": [{"name": "x", "start": "22:00", "brightness": 60,
+                                "color_temp_kelvin": 3000, "transition": 0},
+                               {"name": "y", "start": "20:00", "brightness": 60,
+                                "color_temp_kelvin": 3000, "transition": 0}],
+                    "overrides": {"light.zzz": {
+                        "brightness": 1, "color_temp_kelvin": 2700}},
+                },
+            })
+        )
+    )
+    assert resp.status == 400
+    assert recorded == []  # 顶层无写入
+    # 嵌套对象未被就地改（旧条目 data 的 overrides extras 子表原样）
+    assert entry.data["overrides"]["light.a"]["extras"] == {
+        "0": {"brightness": 40, "color_temp_kelvin": 2800}
+    }
+    # 请求体里的旧列表对象也未被改（extras 是顶层替换，主要防的是 overrides）
+    assert entry.data["extras"][0]["start"] == "18:00:00"
+
+
+def test_flow_step_ids_all_have_handlers():
+    """ANL-F-030 元门禁：每个 async_show_form 的 step_id 必须有同名
+    async_step_<id> 承接（cur_step 跟随表单 step_id 派发——F-014 类 P0
+    靠逐链手写驱动测不出来，此钉锁死整类）。"""
+    from custom_components.fumiha_lighting.anl.flow import AnlGroupOptionsFlow
+    from custom_components.fumiha_lighting.lux.flow import LuxZoneOptionsFlow
+
+    checks = []
+
+    def scan(flow, steps):
+        for step_id, user_input in steps:
+            result = run(getattr(flow, f"async_step_{step_id}")(user_input))
+            if result["type"] == "form":
+                sid = result["step_id"]
+                assert hasattr(type(flow), f"async_step_{sid}"), (
+                    f"{type(flow).__name__} 表单 step_id={sid} 无承接方法"
+                )
+                checks.append((type(flow).__name__, sid))
+
+    times_input = {
+        "start_mode": "fixed", "end_mode": "fixed",
+        "trigger_time": "22:00", "end_time": "06:00",
+        "start_offset": 0, "end_offset": 0, "sun_entity": "sun.sun",
+        "start_transition": 0, "end_transition": 0, "transition_interval": 5,
+    }
+    anl_cfg = FumihaLightingConfigFlow()
+    anl_cfg.hass = SimpleNamespace(states=SimpleNamespace(get=lambda eid: None))
+    anl_cfg._init_state()
+    scan(anl_cfg, [("anl_user", None), ("anl_user", {"lights": ["light.a"]}),
+                   ("time_details", times_input), ("settings", None)])
+
+    anl_opts = AnlGroupOptionsFlow()
+    anl_opts.config_entry = SimpleNamespace(
+        data={"kind": "anl", "lights": ["light.a"]}, options={})
+    scan(anl_opts, [("init", None), ("anl_init", times_input),
+                    ("settings", None)])
+
+    lux_cfg = FumihaLightingConfigFlow()
+    lux_cfg.hass = SimpleNamespace(states=SimpleNamespace(get=lambda eid: None))
+    lux_cfg._init_state()
+    scan(lux_cfg, [("user", None), ("user", {CONF_KIND: KIND_LUX})])
+
+    lux_opts = LuxZoneOptionsFlow()
+    lux_opts.config_entry = SimpleNamespace(options={})
+    scan(lux_opts, [("init", None), ("lux_init", {
+        "scan_interval_s": 45, "deadband_pct": 5, "deadband_lux": 10,
+        "min_brightness_pct": 5, "auto_turn_off": False})])
+
+    assert len(checks) >= 6  # anl 4 + lux 2 的 form 面都被驱动过
+
+
+def test_anl_reconfigure_uid_conflict_aborts():
+    """ANL-F-030：灯集变化且与他人冲突 → abort reason=anl_unique_id_mismatch
+    （桩改为记录 + 可注入冲突，error= 关键字写错即红）。"""
+    flow = _make_flow()
+    flow.hass = SimpleNamespace(states=SimpleNamespace(get=lambda eid: None))
+    flow.source = "reconfigure"
+    entry = SimpleNamespace(
+        data={CONF_KIND: "anl", "lights": ["light.old"], "brightness": 25},
+        options={}, unique_id="anl:light.old",
+    )
+    flow._reconfigure_entry = entry
+    flow._conflict_uid = True  # 注入冲突（桩语义：unique_id 已被占用）
+    run(flow.async_step_reconfigure(None))
+    run(flow.async_step_anl_reconfigure({"lights": ["light.new"]}))
+    from conftest import AbortFlowStub
+
+    with pytest.raises(AbortFlowStub) as exc_info:
+        run(flow.async_step_time_details({
+            "start_mode": "fixed", "end_mode": "fixed",
+            "trigger_time": "22:00", "end_time": "06:00",
+            "start_offset": 0, "end_offset": 0, "sun_entity": "sun.sun",
+            "start_transition": 0, "end_transition": 0, "transition_interval": 5,
+        }))
+        run(flow.async_step_settings({
+            "day_enabled": False, "brightness": 25, "color_temp_kelvin": 2200,
+            "day_brightness": 100, "day_color_temp_kelvin": 4000,
+            "tolerance_brightness": 4, "tolerance_kelvin": 150,
+            "verify_delay": 5, "settle_delay": 1,
+            "turn_on_listen": True, "only_when_on": False, "respect_manual": True,
+        }))
+    assert exc_info.value.reason == "anl_unique_id_mismatch"
+    assert flow._abort_calls == ["anl_unique_id_mismatch"]
+
+
+def test_anl_options_flow_two_step_chain():
+    """options 流两步：init（时间锚点）→ settings → create_entry；
+    灯具不可改（unique_id 绑定灯集），GUI 管理键全镜像携带（ANL-F-014/016）。"""
+    from custom_components.fumiha_lighting.anl.flow import AnlGroupOptionsFlow
+
+    opts = AnlGroupOptionsFlow()
+    opts.config_entry = SimpleNamespace(
+        data={"kind": "anl", "lights": ["light.a"], "brightness": 25},
+        options={"extras": [{"name": "晚", "start": "18:00:00", "brightness": 60,
+                             "color_temp_kelvin": 3000, "transition": 0}],
+                 "extra_count": 1, "overrides": {}},
+    )
+    first = run(opts.async_step_init(None))
+    assert first["type"] == "form" and first["step_id"] == "anl_init"
+    second = run(opts.async_step_anl_init({
+        "start_mode": "fixed", "end_mode": "fixed",
+        "trigger_time": "21:30", "end_time": "06:00",
+        "start_offset": 0, "end_offset": 0, "sun_entity": "sun.sun",
+        "start_transition": 0, "end_transition": 0, "transition_interval": 5,
+    }))
+    assert second["step_id"] == "settings"
+    final = run(opts.async_step_settings({
+        "day_enabled": False, "brightness": 20, "color_temp_kelvin": 2200,
+        "day_brightness": 100, "day_color_temp_kelvin": 4000,
+        "tolerance_brightness": 4, "tolerance_kelvin": 150,
+        "verify_delay": 5, "settle_delay": 1,
+        "turn_on_listen": True, "only_when_on": False, "respect_manual": True,
+    }))
+    assert final["type"] == "create_entry"
+    data = final["data"]
+    assert data["trigger_time"] == "21:30:00"  # 边界归一化，存储形状稳定
+    assert data["brightness"] == 20
+    assert data["extras"][0]["name"] == "晚"  # GUI 管理键镜像
+    # options 流没有灯具步：不写 lights 键（防空列表镜像覆盖 data 的灯表）
+    assert "lights" not in data
+    # 灯具步已从 options 流移除：no_lights 错误分支结构上不可达
+    assert not hasattr(type(opts), "async_step_lights")
+
+
+def test_anl_reconfigure_light_change_updates_unique_id():
+    """ANL-F-016：reconfigure 改灯集必须同步 unique_id（lux 同款三步）。"""
+    flow = _make_flow()
+    flow.hass = SimpleNamespace(states=SimpleNamespace(get=lambda eid: None))
+    flow.source = "reconfigure"
+    entry = SimpleNamespace(
+        data={CONF_KIND: "anl", "lights": ["light.old"], "brightness": 25},
+        options={},
+        unique_id="anl:light.old",
+    )
+    flow._reconfigure_entry = entry
+    run(flow.async_step_reconfigure(None))
+    run(flow.async_step_anl_reconfigure({"lights": ["light.new"]}))
+    run(flow.async_step_time_details({
+        "start_mode": "fixed", "end_mode": "fixed",
+        "trigger_time": "22:00", "end_time": "06:00",
+        "start_offset": 0, "end_offset": 0, "sun_entity": "sun.sun",
+        "start_transition": 0, "end_transition": 0, "transition_interval": 5,
+    }))
+    result = run(flow.async_step_settings({
+        "day_enabled": False, "brightness": 25, "color_temp_kelvin": 2200,
+        "day_brightness": 100, "day_color_temp_kelvin": 4000,
+        "tolerance_brightness": 4, "tolerance_kelvin": 150,
+        "verify_delay": 5, "settle_delay": 1,
+        "turn_on_listen": True, "only_when_on": False, "respect_manual": True,
+    }))
+    assert result["type"] == "abort"
+    assert entry.unique_id == "anl:light.new"
+    assert entry.data["lights"] == ["light.new"]
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +941,7 @@ def test_lux_descriptor_torn_down_while_anl_stays():
     # lux 清空（模拟最后一个 lux 条目卸载后的 async_unload_web 调用）
     hass.data[web.DOMAIN]["lux"].clear()
     web.async_unload_web(hass)
+    _flush_deferred()  # 延迟拆除到点（ANL-F-039）
     reg = hass.data[web.REGISTRY_KEY]
     assert web.PAGE_LUX_ID not in reg
     assert web.PAGE_ANL_ID in reg
@@ -349,7 +950,8 @@ def test_lux_descriptor_torn_down_while_anl_stays():
 
 
 def test_mixed_kind_reload_does_not_tear_down_the_other():
-    """混合条目下单个条目卸载（hass.data 仍有另一类型）不拆任何注册。"""
+    """混合条目下直接调 async_unload_web 的幂等面：lux 桶空时 lux 注册该拆、
+anl 注册保留（ANL-F-036；生产路径回归钉在 test_setup）。"""
     hass = FakeHass()
     _lux_bucket(hass, fake_lux_runtime())
     _anl_bucket(hass, fake_anl_manager())
@@ -358,7 +960,23 @@ def test_mixed_kind_reload_does_not_tear_down_the_other():
     # 单条目卸载：lux 桶还剩 0，anl 桶仍 1——lux 注册该拆（lux 条目清零）
     hass.data[web.DOMAIN]["lux"].clear()
     web.async_unload_web(hass)
+    _flush_deferred()  # 延迟拆除到点（ANL-F-039）
     assert web.PAGE_ANL_ID in hass.data[web.REGISTRY_KEY]
+
+
+def test_deferred_teardown_detaches_started_recheck():
+    """ANL-F-050：_check 内的 recheck 收尾零覆盖面——lux 有页面、anl 从未
+    注册时，尾部同步收尾被 page_registered_lux 挡住，只有延迟复查能卸。"""
+    hass = FakeHass()
+    _lux_bucket(hass, fake_lux_runtime())
+    _anl_bucket(hass)
+    run(web.async_setup_web(hass))
+    flags = hass.data[web.WEB_DATA_KEY]
+    hass.data[web.DOMAIN]["lux"].clear()
+    web.async_unload_web(hass)
+    assert flags.get("started_recheck") is not None  # 尾部同步路径被挡
+    _flush_deferred()
+    assert flags.get("started_recheck") is None  # 只有 _check→recheck 能卸
 
 
 def test_unload_when_both_kinds_empty_detaches_recheck():
@@ -369,6 +987,7 @@ def test_unload_when_both_kinds_empty_detaches_recheck():
     flags = hass.data[web.WEB_DATA_KEY]
     assert flags.get("started_recheck") is not None
     web.async_unload_web(hass)
+    _flush_deferred()  # 双 kind 全空 → 延迟复查里拆页并卸 recheck
     assert flags.get("started_recheck") is None
 
 
@@ -378,10 +997,6 @@ def test_unload_when_both_kinds_empty_detaches_recheck():
 
 
 def _make_flow():
-    from custom_components.fumiha_lighting.config_flow import (
-        FumihaLightingConfigFlow,
-    )
-
     return FumihaLightingConfigFlow()
 
 
@@ -429,6 +1044,112 @@ def test_options_flow_dispatches_on_kind():
     assert type(opts).__name__ == "AnlGroupOptionsFlow"
 
 
+def test_options_flow_has_init_step_both_kinds():
+    """回归钉：options 流入口固定为 async_step_init（缺它真机打开即
+    UnknownStep——合并改名的回归，V1.4.0 修复后钉住）。"""
+    from custom_components.fumiha_lighting.anl.flow import AnlGroupOptionsFlow
+    from custom_components.fumiha_lighting.lux.flow import LuxZoneOptionsFlow
+
+    assert hasattr(LuxZoneOptionsFlow, "async_step_init")
+    assert hasattr(AnlGroupOptionsFlow, "async_step_init")
+
+    lux = LuxZoneOptionsFlow()
+    lux.config_entry = SimpleNamespace(options={})
+    result = run(lux.async_step_init(None))
+    assert result["type"] == "form" and result["step_id"] == "lux_init"
+
+    anl = AnlGroupOptionsFlow()
+    anl.config_entry = SimpleNamespace(data={"kind": "anl", "lights": ["light.a"]},
+                                       options={})
+    result = run(anl.async_step_init(None))
+    assert result["type"] == "form" and result["step_id"] == "anl_init"
+
+
+def test_anl_wizard_three_step_chain():
+    """新建向导 3 步：灯具 → 时间 → 参数；产物不含 extras/overrides。"""
+    flow = _make_flow()
+    flow.hass = SimpleNamespace(states=SimpleNamespace(get=lambda eid: None))
+    first = run(flow.async_step_user({CONF_KIND: KIND_ANL}))
+    assert first["step_id"] == "anl_user"  # 灯具选择
+    second = run(flow.async_step_anl_user({"lights": ["light.a", "light.b"]}))
+    assert second["step_id"] == "time_details"
+    third = run(flow.async_step_time_details({
+        "start_mode": "fixed", "end_mode": "fixed",
+        "trigger_time": "22:00", "end_time": "06:00",
+        "start_offset": 0, "end_offset": 0,
+        "sun_entity": "sun.sun",
+        "start_transition": 0, "end_transition": 0, "transition_interval": 5,
+    }))
+    assert third["step_id"] == "settings"
+    # 空灯列表报 no_lights
+    flow2 = _make_flow()
+    flow2.hass = SimpleNamespace(states=SimpleNamespace(get=lambda eid: None))
+    empty = run(flow2.async_step_anl_user({"lights": []}))
+    assert empty["errors"] == {"base": "no_lights"}
+
+
+def test_anl_wizard_create_entry_has_no_gui_managed_keys():
+    flow = _make_flow()
+    flow.hass = SimpleNamespace(states=SimpleNamespace(get=lambda eid: None))
+    run(flow.async_step_anl_user({"lights": ["light.x"]}))
+    run(flow.async_step_time_details({
+        "start_mode": "fixed", "end_mode": "fixed",
+        "trigger_time": "22:00", "end_time": "06:00",
+        "start_offset": 0, "end_offset": 0, "sun_entity": "sun.sun",
+        "start_transition": 0, "end_transition": 0, "transition_interval": 5,
+    }))
+    result = run(flow.async_step_settings({
+        "day_enabled": False, "brightness": 25, "color_temp_kelvin": 2200,
+        "day_brightness": 100, "day_color_temp_kelvin": 4000,
+        "tolerance_brightness": 4, "tolerance_kelvin": 150,
+        "verify_delay": 5, "settle_delay": 1,
+        "turn_on_listen": True, "only_when_on": False, "respect_manual": True,
+    }))
+    assert result["type"] == "create_entry"
+    data = result["data"]
+    assert data["kind"] == "anl"
+    assert data["lights"] == ["light.x"]
+    assert data["transition_enabled"] is False
+    for key in ("extras", "extra_count", "custom_per_light", "overrides",
+                "extra_enabled"):
+        assert key not in data
+
+
+def test_anl_reconfigure_carries_gui_managed_keys():
+    """reconfigure 收敛 data 清 options 时，GUI 管理键必须并入 data。"""
+    flow = _make_flow()
+    flow.hass = SimpleNamespace(states=SimpleNamespace(get=lambda eid: None))
+    flow.source = "reconfigure"
+    entry = SimpleNamespace(
+        data={CONF_KIND: "anl", "lights": ["light.a"], "brightness": 25},
+        options={"extras": [{"name": "晚", "start": "18:00:00", "brightness": 60,
+                             "color_temp_kelvin": 3000, "transition": 0}],
+                 "extra_count": 1, "custom_per_light": [], "overrides": {}},
+        unique_id="anl:light.a",
+    )
+    flow._reconfigure_entry = entry
+    run(flow.async_step_reconfigure(None))
+    run(flow.async_step_anl_reconfigure({"lights": ["light.a"]}))
+    run(flow.async_step_time_details({
+        "start_mode": "fixed", "end_mode": "fixed",
+        "trigger_time": "23:00", "end_time": "06:00",
+        "start_offset": 0, "end_offset": 0, "sun_entity": "sun.sun",
+        "start_transition": 0, "end_transition": 0, "transition_interval": 5,
+    }))
+    result = run(flow.async_step_settings({
+        "day_enabled": False, "brightness": 25, "color_temp_kelvin": 2200,
+        "day_brightness": 100, "day_color_temp_kelvin": 4000,
+        "tolerance_brightness": 4, "tolerance_kelvin": 150,
+        "verify_delay": 5, "settle_delay": 1,
+        "turn_on_listen": True, "only_when_on": False, "respect_manual": True,
+    }))
+    assert result["type"] == "abort"
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data["extras"][0]["name"] == "晚"  # GUI 改动未被冲掉
+    assert entry.data["trigger_time"] == "23:00:00"  # 向导字段已更新（归一化）
+    assert entry.options == {}  # 全量收敛进 data
+
+
 # ---------------------------------------------------------------------------
 # gates + manifest
 # ---------------------------------------------------------------------------
@@ -439,15 +1160,21 @@ def test_view_gates():
     run(web.async_setup_web(hass))
     for view in hass.http.views:
         assert view.requires_auth is True
-        handler = getattr(view, "get", None) or view.post
-        assert getattr(handler, "_require_admin_applied", False) is True
+        # 双方法视图（AnlConfigView get+post）每个 handler 都要过门禁
+        # （ANL-F-021：原实现只查 get or post，post 的 require_admin 漏断言）
+        for method in ("get", "post", "put", "delete"):
+            handler = getattr(view, method, None)
+            if handler is not None:
+                assert getattr(handler, "_require_admin_applied", False) is True, (
+                    type(view).__name__ + "." + method
+                )
 
 
 def test_setup_web_idempotent():
     hass = FakeHass()
     run(web.async_setup_web(hass))
     run(web.async_setup_web(hass))
-    assert len(hass.http.views) == 6
+    assert len(hass.http.views) == 7
     assert len(hass.http.static) == 1
     assert hass.http.static[0].url_path == web.URL_BASE
 

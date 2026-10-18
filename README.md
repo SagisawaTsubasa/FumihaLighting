@@ -17,9 +17,21 @@
 ## 架构
 
 - 页面（文羽面板壳内 `luxbalance.main` / `anl.main` 两个页签；壳缺席时各自回落独立侧边栏面板）
-- REST：`GET /api/fumiha_lighting/lux/overview`、`GET /api/fumiha_lighting/anl/snapshot`；写：`POST /api/fumiha_lighting/lux/target|calibrate|calibrate/cancel`、`POST /api/fumiha_lighting/anl/trigger`
+- REST：`GET /api/fumiha_lighting/lux/overview`、`GET /api/fumiha_lighting/anl/snapshot`；写：`POST /api/fumiha_lighting/lux/target|calibrate|calibrate/cancel`、`POST /api/fumiha_lighting/anl/trigger`、`GET|POST /api/fumiha_lighting/anl/config`（夜灯设置读写，V1.4.0）
 - 服务（自动化面）：`fumiha_lighting.calibrate`（目标未命中/互斥跳过时抛错）、`fumiha_lighting.trigger_now`
 - `static/kit.js`、`static/tokens.css` 为 FumihaHub vendored 副本（锁步更新）
+
+## 夜灯组配置（V1.4.0 起）
+
+**原生向导只保留 3 步**：选择灯具 → 时间锚点（开始/结束方式 + 固定时间/偏移 + 太阳实体 + 过渡时长，一页）→ 全局参数（夜间/日间亮度色温、容差、延迟、行为开关）。
+
+**逐灯覆盖与额外时段在「夜灯助手」页面编辑**（点条目卡「⚙ 设置」或灯卡「逐灯设置」）：
+
+- 全局设置弹窗：时间锚点、全部参数、额外时段增删改（0–5 个），保存经 `POST /api/fumiha_lighting/anl/config` 写入条目 options，自动重载生效；
+- 逐灯设置弹窗：「跟随全局」开关 + 夜间/日间/各额外时段参数覆盖，取消覆盖即恢复全局；
+- 校验与向导共用同一份字段规格（`anl/config_schema.py`），越界/未知灯/超时段数都会被 400 拒绝。
+
+HA 原生「配置」（options 流）与向导同字段同存储，同样不含逐灯覆盖/额外时段。语义注记：**重新配置**（reconfigure）保存时会把条目数据整体收敛进 `data` 并清空 `options`，GUI 写入的额外时段/逐灯覆盖会原样携带，不会丢失。
 
 ## 开发
 
@@ -33,6 +45,8 @@ python dev/test_panel.py  # Playwright 冒烟
 
 ## 版本历史
 
+- **V1.4.0（2026-10-19）**：夜灯配置体验重构——①原生向导 8+ 步瘦身为 3 步（灯具→时间锚点→全局参数），额外时段与逐灯覆盖移出向导；②夜灯助手页面新增设置弹窗（全局设置 + 逐灯覆盖，额外时段增删改），走新 REST `GET|POST /api/fumiha_lighting/anl/config` 写入条目 options 自动重载生效，与向导共用字段校验规格（`anl/config_schema.py`）；③修复原生 options 流两处真机 bug（缺 `async_step_init` 入口打开即 UnknownStep；`LuxZoneOptionsFlow` 向无 `__init__` 的基类传参 TypeError——均被测试桩掩盖，V1.0.0 合并时引入）；④reconfigure 保存收敛 data 时原样携带 GUI 管理键（extras/overrides 防丢）；⑤conftest 桩修正 + 新增测试（配置端点/向导链/options 入口回归钉）+ Playwright 弹窗用例
+- **V1.3.0（开关语义，2026-10-15 落码，随 V1.4.0 出版）**：映射实体=恒照度开关（WP1）——删外部开灯自愈接管（不再与夜灯模组抢灯）、删重启自愈、`async_turn_off_requested` 纯放手不下发关灯、校准 pending 收尾放手到 IDLE
 - **V1.2.3（2026-10-15）**：版本线勘误——V1.2.2 发布时 manifest 未 bump（盒上面板缓存戳仍显示 1.2.1），本版仅版本号修正；功能与 V1.2.2 一致
 - **V1.2.1（2026-10-14）**：校准可中止——页面校准进度下新增「中止校准」按钮（danger 确认），REST `POST /api/fumiha_lighting/lux/calibrate/cancel`；取消恢复灯原状态、不记错误；覆盖全部取消窗口（同刻未起步/已起步未采集/采集中/曲线已采纳）的闭环状态恢复——未触碰窗口取消后区语义回到校准前（ACTIVE 灯亮有曲线 / IDLE），采集中取消按捕获值恢复，挂起的其他区对称唤醒（含 resume 评估）；窗口①并发关灯意图被兑现
 - **V1.2.0（2026-10-14）**：四页可操作性迭代——①照度数据可信窗（30 分钟）：心跳型 BLE 传感器长时间不上报时闭环暂停、页面明示「数据不可信」，开灯首帧同判据；②校准启动前预检传感器新鲜度并在确认框警告；③校准中止原因上页面（此前只进日志，观感与完成一致）；④夜灯「立即触发」加确认；⑤夜灯灯卡显示友好名；⑥目标照度输入保留草稿、支持回车；⑦时长文案校准至最坏情况

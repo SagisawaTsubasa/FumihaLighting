@@ -68,7 +68,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload one entry of either kind."""
     kind = entry.data.get(CONF_KIND, KIND_LUX)
-    buckets = hass.data.setdefault(DOMAIN, {"lux": {}, "anl": {}})
+    hass.data.setdefault(DOMAIN, {"lux": {}, "anl": {}})
 
     if kind == KIND_LUX:
         from .lux import lux_async_unload_entry
@@ -84,9 +84,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.warning("未知条目类型 %r，按未加载处理", kind)
         ok = True
 
-    # Web teardown only when BOTH kinds are empty (views/static stay).
-    if not buckets.get("lux") and not buckets.get("anl"):
-        async_unload_web(hass)
+    # Web teardown 无条件调用（ANL-F-032）：函数内部已按 kind 各自判断
+    # 清空与否；原"两 kind 双空才调用"的外层门控使"删最后一个 lux 条目
+    # 而 anl 仍在"的页面拆除在生产路径不可达。views/static 由内部保留。
+    async_unload_web(hass)
     return ok
 
 

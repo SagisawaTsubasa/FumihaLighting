@@ -27,8 +27,11 @@ async def lux_async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool
 async def lux_async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload one zone: stop listeners, timers and the calibration task."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    data = hass.data.get(DOMAIN, {}).get("lux", {})
-    runtime: ZoneRuntime | None = data.pop(entry.entry_id, None)
-    if runtime is not None:
-        await runtime.async_stop()
+    # 平台卸载失败时条目仍处于 loaded 态：runtime 留桶（页面继续可用），
+    # 不提前拆 —— 否则 web 层按空桶拆页而条目还活着（ANL-F-037a）
+    if unload_ok:
+        data = hass.data.get(DOMAIN, {}).get("lux", {})
+        runtime: ZoneRuntime | None = data.pop(entry.entry_id, None)
+        if runtime is not None:
+            await runtime.async_stop()
     return unload_ok

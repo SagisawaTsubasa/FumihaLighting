@@ -67,8 +67,39 @@
           mismatch_steps: 2, target: [12, 2700], applied: null, last_error: null },
       ],
       start_mode: "sunset", end_mode: "sunrise",
-      transition_enabled: false, day_enabled: true, respect_manual: true,
+      // ANL-F-046：两字段真实分叉——transition_enabled=true（end_transition>0）
+      // 而 transitions_active=false（日间关闭 → manager 归零），chip 只能读后者
+      transition_enabled: true, transitions_active: false,
+      day_enabled: true, respect_manual: true,
     }];
+  }
+  function anlConfig() {
+    // 编辑器数据契约（web.AnlConfigView.get）：config 白名单键 + limits
+    return {
+      ok: true,
+      config: {
+        lights: ["light.bedroom", "light.hallway"],
+        // start_mode 故意用枚举外值：钉 ANL-F-031（枚举不匹配时追加展示
+        // 而非静默回落首项「固定时间」）
+        start_mode: "noon", end_mode: "sunrise",
+        trigger_time: "22:00:00", end_time: "06:00:00",
+        start_offset: 0, end_offset: 15, sun_entity: "sun.sun",
+        transition_enabled: false, start_transition: 0, end_transition: 0,
+        transition_interval: 5,
+        day_enabled: true, brightness: 25, color_temp_kelvin: 2200,
+        day_brightness: 100, day_color_temp_kelvin: 4000,
+        tolerance_brightness: 4, tolerance_kelvin: 150,
+        verify_delay: 5, settle_delay: 1,
+        turn_on_listen: true, only_when_on: false, respect_manual: true,
+        // extra_count 为死键（ANL-F-029），夹具不再携带
+        extras: [{ name: "晚餐", start: "18:00:00", brightness: 60,
+                   color_temp_kelvin: 3000, transition: 0 }],
+        overrides: {},
+      },
+      // limits 由后端 limits_payload() 生成后原样贴入（勿手改；ANL-F-043：
+      // 服务端 limits 主路径必须在 L2 被执行，恒 null 会让主路径零覆盖）
+      limits: {"times":{"start_offset":{"min":-120,"max":120,"step":5,"default":0,"unit":"min"},"end_offset":{"min":-120,"max":120,"step":5,"default":0,"unit":"min"},"start_transition":{"min":0,"max":120,"step":5,"default":0,"unit":"min"},"end_transition":{"min":0,"max":120,"step":5,"default":0,"unit":"min"},"transition_interval":{"min":1,"max":15,"step":1,"default":5,"unit":"min"}},"params":{"brightness":{"min":1,"max":100,"step":1,"default":25,"unit":"%"},"color_temp_kelvin":{"min":1500,"max":6500,"step":100,"default":2200,"unit":"K"},"day_brightness":{"min":1,"max":100,"step":1,"default":100,"unit":"%"},"day_color_temp_kelvin":{"min":1500,"max":6500,"step":100,"default":4000,"unit":"K"},"tolerance_brightness":{"min":0,"max":25,"step":1,"default":4,"unit":"%"},"tolerance_kelvin":{"min":0,"max":1000,"step":50,"default":150,"unit":"K"},"verify_delay":{"min":0,"max":60,"step":1,"default":5,"unit":"s"},"settle_delay":{"min":0,"max":10,"step":0.5,"default":1,"unit":"s"}},"extras":{"brightness":{"min":1,"max":100,"step":1,"default":60,"unit":"%"},"color_temp_kelvin":{"min":1500,"max":6500,"step":100,"default":3000,"unit":"K"},"transition":{"min":0,"max":120,"step":5,"default":0,"unit":"min"}},"enums":{"start_mode":["fixed","sunset","sunrise"],"end_mode":["fixed","sunset","sunrise"]},"max_extras":5},
+    };
   }
 
   var mockHass = {
@@ -100,6 +131,16 @@
       }
       if (path.indexOf("/api/fumiha_lighting/anl/snapshot") === 0) {
         return new Response(JSON.stringify({ managers: anlManagers() }), { status: 200 });
+      }
+      if (path.indexOf("/api/fumiha_lighting/anl/config") === 0) {
+        if (params.has("badconfig")) {
+          // ANL-F-035 钉：extras 形状坏 → 弹窗构建期抛错 → 必须经 onclick
+          // 的 .catch 落成 ack toast（不得无声）
+          var bad = anlConfig();
+          bad.config.extras = "oops";
+          return new Response(JSON.stringify(bad), { status: 200 });
+        }
+        return new Response(JSON.stringify(anlConfig()), { status: 200 });
       }
       return new Response(JSON.stringify({ error: "no route: " + path }), { status: 404 });
     },

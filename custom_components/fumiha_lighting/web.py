@@ -8,8 +8,10 @@ own entries (lux descriptor gone when no lux entries remain, anl likewise).
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
+from datetime import time as _dt_time
 from pathlib import Path
 
 from aiohttp import web
@@ -26,9 +28,33 @@ from homeassistant.core import (
     HomeAssistant,
     callback,
 )
+from homeassistant.helpers.event import async_call_later
 from homeassistant.loader import async_get_loaded_integration
 from homeassistant.util import dt as dt_util
 
+from .anl.config_schema import (
+    CONFIG_KEYS,
+    limits_payload,
+    validate_extras,
+    validate_overrides,
+    validate_params,
+    validate_times,
+)
+from .anl.const import (
+    CONF_CUSTOM_PER_LIGHT,
+    CONF_END_TIME,
+    CONF_END_TRANSITION,
+    CONF_EXTRA_COUNT,
+    CONF_EXTRA_ENABLED,
+    CONF_EXTRAS,
+    CONF_LIGHTS,
+    CONF_OVERRIDES,
+    CONF_START_TRANSITION,
+    CONF_TRANSITION_ENABLED,
+    CONF_TRIGGER_TIME,
+    EXTRA_START,
+    OVR_EXTRAS,
+)
 from .anl.const import DOMAIN as _  # noqa: F401 — 子包自证
 from .const import (
     API_BASE,
@@ -197,6 +223,29 @@ def _error(status: int, message: str) -> web.Response:
     return web.json_response({"ok": False, "error": message}, status=status)
 
 
+async def _json_object(request: web.Request) -> dict | None:
+    """POST body → dict；非对象/非法 JSON 返回 None（ANL-F-020：四个 POST
+    视图共用，防 null/list/标量 body 触发 AttributeError → 500）。"""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — malformed JSON must answer loudly
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _entry_id_of(body: dict) -> str | None:
+    """entry_id 必须是字符串（非 str 会让 dict.get 抛 unhashable → 500）。"""
+    entry_id = body.get("entry_id")
+    return entry_id if isinstance(entry_id, str) else None
+
+
+def _hms(value):
+    """time 对象 → "HH:MM:SS" 字符串（其余原样）；GET 序列化防线（ANL-F-015）。"""
+    if isinstance(value, _dt_time):
+        return value.strftime("%H:%M:%S")
+    return value
+
+
 class LuxTargetView(HomeAssistantView):
     """POST /api/fumiha_lighting/lux/target — write the target straight to the
     runtime (GUI never goes through the number entity)."""
@@ -208,11 +257,10 @@ class LuxTargetView(HomeAssistantView):
     @require_admin
     async def post(self, request: web.Request) -> web.Response:
         hass = request.app["hass"]
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001 — malformed JSON must answer loudly
-            return _error(400, "请求体不是合法 JSON")
-        entry_id = body.get("entry_id")
+        body = await _json_object(request)
+        if body is None:
+            return _error(400, "请求体不是合法 JSON 对象")
+        entry_id = _entry_id_of(body)
         value = body.get("value")
         runtime = _lux_runtimes(hass).get(entry_id)
         if runtime is None:
@@ -243,11 +291,10 @@ class LuxCalibrateView(HomeAssistantView):
     @require_admin
     async def post(self, request: web.Request) -> web.Response:
         hass = request.app["hass"]
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001
-            return _error(400, "请求体不是合法 JSON")
-        runtime = _lux_runtimes(hass).get(body.get("entry_id"))
+        body = await _json_object(request)
+        if body is None:
+            return _error(400, "请求体不是合法 JSON 对象")
+        runtime = _lux_runtimes(hass).get(_entry_id_of(body))
         if runtime is None:
             return _error(404, "未知区域")
         started = runtime.start_calibration()
@@ -273,11 +320,10 @@ class LuxCalibrateCancelView(HomeAssistantView):
     @require_admin
     async def post(self, request: web.Request) -> web.Response:
         hass = request.app["hass"]
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001
-            return _error(400, "请求体不是合法 JSON")
-        runtime = _lux_runtimes(hass).get(body.get("entry_id"))
+        body = await _json_object(request)
+        if body is None:
+            return _error(400, "请求体不是合法 JSON 对象")
+        runtime = _lux_runtimes(hass).get(_entry_id_of(body))
         if runtime is None:
             return _error(404, "未知区域")
         cancelled = await runtime.async_cancel_calibration()
@@ -326,6 +372,10 @@ def _serialize_anl_manager(mgr) -> dict:
         "next_anchor": next_anchor.isoformat() if next_anchor else None,
         "start_mode": mgr.start_mode,
         "end_mode": mgr.end_mode,
+        # 生效判据（ANL-F-041）：transition_enabled 是存储派生值，日间关闭
+        # 时 end_transition 会被 manager 归零——页面 chip 必须读总闸
+        "transitions_active": mgr.transitions_active,
+        # 仅供诊断（ANL-F-052 附带）：页面禁读，零消费方
         "transition_enabled": mgr.transition_enabled,
         "day_enabled": mgr.day_enabled,
         "respect_manual": mgr.respect_manual,
@@ -366,6 +416,164 @@ class AnlTriggerView(HomeAssistantView):
         return web.json_response({"ok": True, "triggered": len(managers)})
 
 
+class AnlConfigView(HomeAssistantView):
+    """GET/POST /api/fumiha_lighting/anl/config — one group's editable config.
+
+    GET ?entry_id= 返回合并视图的白名单键 + limits（GUI 输入控件范围单一
+    来源）。POST body ``{entry_id, patch}``，patch 分节：times / params /
+    extras（整表替换）/ overrides（逐灯整灯 upsert）/ overrides_remove
+    （恢复全局）。校验经 anl.config_schema（与向导同一份字段规格），通过后
+    整份合并配置写入 entry.options（与 options 流相同的全镜像约定），
+    update listener 自动 reload 重建 manager。
+    """
+
+    url = f"{API_BASE}/anl/config"
+    name = "api:fumiha_lighting:anl_config"
+    requires_auth = True
+
+    @require_admin
+    async def get(self, request: web.Request) -> web.Response:
+        hass = request.app["hass"]
+        mgr = _anl_managers(hass).get(request.query.get("entry_id"))
+        if mgr is None:
+            return _error(404, "未知条目")
+        merged = {**mgr.entry.data, **mgr.entry.options}
+        config = {key: merged[key] for key in CONFIG_KEYS if key in merged}
+        # time 对象防御性字符串化：TimeSelector 提交后进程内是 datetime.time
+        # （HA 重启回读存储才变字符串），直接 json_response 会 500（ANL-F-015）
+        for key in (CONF_TRIGGER_TIME, CONF_END_TIME):
+            if key in config:
+                config[key] = _hms(config[key])
+        if isinstance(config.get(CONF_EXTRAS), list):
+            config[CONF_EXTRAS] = [
+                {k: _hms(v) for k, v in item.items()}
+                if isinstance(item, dict)
+                else item
+                for item in config[CONF_EXTRAS]
+            ]
+        return web.json_response(
+            {"ok": True, "config": config, "limits": limits_payload()}
+        )
+
+    @require_admin
+    async def post(self, request: web.Request) -> web.Response:
+        hass = request.app["hass"]
+        body = await _json_object(request)
+        if body is None:
+            return _error(400, "请求体不是合法 JSON 对象")
+        patch = body.get("patch")
+        if not isinstance(patch, dict) or not patch:
+            return _error(400, "patch 缺失或为空")
+        unknown_sections = sorted(
+            set(patch) - {"times", "params", "extras", "overrides", "overrides_remove"}
+        )
+        if unknown_sections:
+            return _error(400, f"未知分节: {', '.join(unknown_sections)}")
+        entry_id = _entry_id_of(body)
+        if entry_id is None:
+            return _error(400, "entry_id 需为字符串")
+        # await（request.json）之后不再重读 hass.data 桶——entry 引用在快照点
+        # 固定，防并发 reload/卸载把 dict 抽走（trigger_now 同款并发模式）。
+        mgr = _anl_managers(hass).get(entry_id)
+        if mgr is None:
+            return _error(404, "未知条目")
+        entry = mgr.entry
+        merged = {**entry.data, **entry.options}
+        lights = set(merged.get(CONF_LIGHTS, []))
+
+        if "times" in patch:
+            clean, err = validate_times(patch["times"])
+            if err is not None:
+                return _error(400, err)
+            merged.update(clean)
+            # transition_enabled 恒等派生（与向导 _entry_data 同一语义）
+            merged[CONF_TRANSITION_ENABLED] = bool(
+                merged.get(CONF_START_TRANSITION, 0)
+                or merged.get(CONF_END_TRANSITION, 0)
+            )
+        if "params" in patch:
+            clean, err = validate_params(patch["params"])
+            if err is not None:
+                return _error(400, err)
+            merged.update(clean)
+        # overrides 一律在深拷贝副本上改动（ANL-F-026）：merged 是浅拷贝，
+        # 嵌套 dict 与 entry.options 同对象——就地 prune/upsert 会在后段
+        # 校验 400 时构成"已改内存、未触发 reload"的静默部分写入。
+        overrides = copy.deepcopy(merged.get(CONF_OVERRIDES) or {})
+        pruned = 0
+        if "extras" in patch:
+            clean, err = validate_extras(patch["extras"])
+            if err is not None:
+                return _error(400, err)
+            # 逐灯 extras 覆盖键是位置序号（manager 消费端契约）。身份判据
+            # （ANL-F-028）：序号 i 的 start 与旧表不一致（含增删导致的后移
+            # 与等数量的删+加）即视为漂移，精确清除该序号的覆盖；身份未变
+            # 的原位参数编辑保留覆盖。
+            old_extras = merged.get(CONF_EXTRAS, []) or []
+            drifted = {
+                i
+                for i, item in enumerate(clean)
+                if i >= len(old_extras)
+                or _hms(old_extras[i].get(EXTRA_START))
+                != item[EXTRA_START]
+            }
+            drifted.update(
+                range(len(clean), len(old_extras))
+            )  # 缩短时尾部序号全部失位
+            if drifted:
+                for ovr in overrides.values():
+                    if not isinstance(ovr, dict):
+                        continue
+                    ovr_extras = ovr.get(OVR_EXTRAS)
+                    if isinstance(ovr_extras, dict):
+                        hit = [
+                            idx
+                            for idx in ovr_extras
+                            if idx.isdigit() and int(idx) in drifted
+                        ]
+                        for idx in hit:
+                            del ovr_extras[idx]
+                        pruned += len(hit)
+                        if not ovr_extras:
+                            ovr.pop(OVR_EXTRAS, None)
+            merged[CONF_EXTRAS] = clean
+        if "overrides" in patch:
+            clean, err = validate_overrides(
+                patch["overrides"], lights, len(merged.get(CONF_EXTRAS, []) or [])
+            )
+            if err is not None:
+                return _error(400, err)
+            overrides.update(clean)
+        if "overrides_remove" in patch:
+            remove = patch["overrides_remove"]
+            if not isinstance(remove, list) or not all(
+                isinstance(x, str) for x in remove
+            ):
+                return _error(400, "overrides_remove 需为实体 ID 字符串列表")
+            unknown = [x for x in remove if x not in lights]
+            if unknown:
+                return _error(400, "未知灯具: " + ", ".join(unknown))
+            for entity_id in remove:
+                overrides.pop(entity_id, None)
+        if "extras" in patch or "overrides" in patch or "overrides_remove" in patch:
+            # prune 清空子表后可能留下 {} 空壳（ANL-F-049）——与「空覆盖拒绝」
+            # 校验自相矛盾，且页面把 {} 误判成「未跟随全局」；落盘前清掉
+            empty = [k for k, v in overrides.items() if isinstance(v, dict) and not v]
+            for k in empty:
+                del overrides[k]
+            # 深拷副本统一单点落盘（空表也写——清除语义需要覆盖 data 旧值）
+            merged[CONF_OVERRIDES] = overrides
+        # 死键不再向 options 固化（ANL-F-022/029）：无任何消费方
+        for dead in (
+            CONF_EXTRA_ENABLED,
+            CONF_CUSTOM_PER_LIGHT,
+            CONF_EXTRA_COUNT,
+        ):
+            merged.pop(dead, None)
+        hass.config_entries.async_update_entry(entry, options=merged)
+        return web.json_response({"ok": True, "pruned_override_extras": pruned})
+
+
 # --------------------------------------------------------------------------
 # Registration (per-kind descriptors, independent lifecycles)
 # --------------------------------------------------------------------------
@@ -381,6 +589,12 @@ def _register_page(hass: HomeAssistant, flags: dict, kind: str) -> None:
     url_path = STANDALONE_LUX_URL_PATH if kind == KIND_LUX else STANDALONE_ANL_URL_PATH
     mode = "hub" if REGISTRY_KEY in hass.data else "standalone"
     flag = f"page_registered_{kind}"
+    # 同 kind setup 回填 → 撤销 pending 拆除（reload 窗口零 churn，ANL-F-039）
+    if flags.pop(f"pending_teardown_{kind}", None) is not None:
+        handle = flags.pop(f"deferred_teardown_{kind}", None)
+        if handle is not None:
+            handle()
+        _LOGGER.debug("%s setup 回填，撤销延迟拆除", page_id)
     current = flags.get(flag)
     if current == mode:
         return
@@ -439,6 +653,50 @@ def _teardown_page(hass: HomeAssistant, flags: dict, kind: str) -> None:
         frontend.async_remove_panel(hass, url_path, warn_if_unknown=False)
 
 
+def _schedule_deferred_teardown(hass: HomeAssistant, flags: dict, kind: str) -> None:
+    """桶空后延迟复查再拆页（ANL-F-039）：设置保存触发的 reload 是
+    unload→setup 连续动作，同步拆页会产生 unregister→register 事件对
+    （混合安装下保存一次闪一次）。标记 + 延迟复查：同 kind 的 setup 在
+    _register_page 开头撤销 pending（桶已回填，注册原样复用）；真删除
+    （无 setup 跟进）到点后才真正拆。"""
+    flags[f"pending_teardown_{kind}"] = True
+    old = flags.pop(f"deferred_teardown_{kind}", None)
+    if old is not None:
+        old()
+
+    @callback
+    def _check(_now) -> None:
+        # @callback 必须（ANL-F-045）：async_call_later 经 HassJob 分派，
+        # 裸同步函数会进 executor 线程——跨线程 async_fire/拆面板属不支持用法
+        flags.pop(f"deferred_teardown_{kind}", None)
+        if flags.pop(f"pending_teardown_{kind}", None) is None:
+            _LOGGER.debug("%s 延迟拆除被 setup 回填撤销", kind)
+            return
+        bucket = _lux_runtimes(hass) if kind == KIND_LUX else _anl_managers(hass)
+        if not bucket:
+            _LOGGER.info("%s 延迟复查：桶仍空，拆除页面", kind)
+            _teardown_page(hass, flags, kind)
+        else:
+            # setup 抢在计时器前回填的竞态窗口（本机制存在的另一半理由）
+            _LOGGER.debug("%s 延迟复查：桶已回填，保留页面", kind)
+        _teardown_recheck_if_done(hass, flags)
+
+    flags[f"deferred_teardown_{kind}"] = async_call_later(hass, 2, _check)
+
+
+@callback
+def _teardown_recheck_if_done(hass: HomeAssistant, flags: dict) -> None:
+    """双 kind 页面注册全空时拆除 started recheck 监听（真删除的收尾）。"""
+    if (
+        not flags.get("page_registered_lux")
+        and not flags.get("page_registered_anl")
+        and flags.get("started_recheck")
+    ):
+        _LOGGER.debug("双 kind 页面已全空，卸下 HA started 复查监听")
+        unsub = flags.pop("started_recheck")
+        unsub()
+
+
 async def async_setup_web(hass: HomeAssistant) -> None:
     """Register static assets and the API views (once per HA run), then
     register whichever kinds currently have entries."""
@@ -451,6 +709,7 @@ async def async_setup_web(hass: HomeAssistant) -> None:
         hass.http.register_view(LuxCalibrateCancelView())
         hass.http.register_view(AnlSnapshotView())
         hass.http.register_view(AnlTriggerView())
+        hass.http.register_view(AnlConfigView())
         flags["views"] = True
 
     if not flags.get("static"):
@@ -485,21 +744,16 @@ def _make_started_recheck(hass: HomeAssistant, flags: dict):
 
 @callback
 def async_unload_web(hass: HomeAssistant) -> None:
-    """Called after every entry unload; tears down each kind's page only
-    when that kind has no entries left."""
+    """Called after every entry unload; schedules a deferred teardown for
+    each kind whose bucket just went empty (immediate teardown would churn
+    unregister/register through every GUI-save reload — ANL-F-039)."""
     flags: dict = hass.data.get(WEB_DATA_KEY) or {}
     if not flags:
         return
 
     if not _lux_runtimes(hass) and flags.get("page_registered_lux"):
-        _teardown_page(hass, flags, KIND_LUX)
+        _schedule_deferred_teardown(hass, flags, KIND_LUX)
     if not _anl_managers(hass) and flags.get("page_registered_anl"):
-        _teardown_page(hass, flags, KIND_ANL)
-
-    if (
-        not flags.get("page_registered_lux")
-        and not flags.get("page_registered_anl")
-        and flags.get("started_recheck")
-    ):
-        unsub = flags.pop("started_recheck")
-        unsub()
+        _schedule_deferred_teardown(hass, flags, KIND_ANL)
+    # 页面从未注册（桶空且无 flag）时无 deferred 可跑，recheck 直接收尾
+    _teardown_recheck_if_done(hass, flags)

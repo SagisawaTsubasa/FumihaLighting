@@ -30,50 +30,25 @@
         }
       },
       "time_details": {
-        "title": "时间详情",
-        "description": "只显示与你的选择相关的字段。过渡时长为 0 表示立即切换。",
+        "title": "时间锚点",
+        "description": "固定时间字段在锚点方式为固定时生效；偏移用于日落/日出方式（无关字段自动忽略）。过渡时长 0 = 立即切换。",
         "data": {
+          "start_mode": "夜间开始方式",
+          "end_mode": "夜间结束/日间开始方式",
           "trigger_time": "夜间开始固定时间",
           "start_offset": "夜间开始偏移（分钟，负数=提前）",
           "end_time": "夜间结束固定时间",
           "end_offset": "夜间结束偏移（分钟，负数=提前）",
           "sun_entity": "日出日落实体（默认内置 sun.sun；自定义实体需含 next_rising / next_setting 属性）",
           "start_transition": "夜间开始过渡时长（分钟，0=关闭）",
-          "end_transition": "夜间结束过渡时长（分钟，0=关闭）",
+          "end_transition": "夜间结束过渡时长（分钟，0=关闭；仅在启用日间模式时生效）",
           "transition_interval": "渐变步进间隔（分钟）"
         }
-      },
-      "extra_count": {
-        "title": "额外时段",
-        "data": {
-          "extra_count": "额外时段数量（最多 5 个）"
-        }
-      },
-      "extra_period": {
-        "title": "额外时段（{position}）",
-        "description": "额外时段是一个单时间锚点：从开始时间起生效，持续到下一个锚点（如夜间开始）。",
-        "data": {
-          "name": "名称（可选，仅用于显示）",
-          "start": "开始时间",
-          "brightness": "亮度（%）",
-          "color_temp_kelvin": "色温",
-          "transition": "过渡时长（分钟，0=立即切换）"
-        }
-      },
-      "lights": {
-        "title": "选择灯具",
-        "data": {
-          "lights": "灯具实体"
-        }
-      },
-      "lights_extra": {
-        "title": "逐灯额外设置",
-        "description": "为每盏灯选择是否使用单独参数，只有打开的灯才会出现对应的设置页面。\n\n{lights}",
-        "data": {}
       },
       "settings": {
         "title": "各时段参数",
         "data": {
+          "day_enabled": "夜间结束后应用日间参数",
           "brightness": "夜间亮度（%）",
           "color_temp_kelvin": "夜间色温",
           "day_brightness": "日间亮度（%）",
@@ -90,46 +65,18 @@
           "respect_manual": "过渡进行期间，被手动调节过的灯在本过渡带内不再干预；下个锚点归位，关→开也会重新加入曲线。"
         }
       },
-      "per_light": {
-        "title": "逐灯参数覆盖（{position}）",
-        "description": "灯具：{name}（`{entity}`）。为此灯单独设置各时段参数，替代全局设定。字段顺序：夜间、日间（若启用），之后每个额外时段一对亮度/色温（extra_0 = 时段 1，依此类推）。",
-        "data": {
-          "brightness": "夜间亮度（%）",
-          "color_temp_kelvin": "夜间色温",
-          "day_brightness": "日间亮度（%）",
-          "day_color_temp_kelvin": "日间色温",
-          "extra_0_brightness": "额外时段 1 亮度 (%)",
-          "extra_0_kelvin": "额外时段 1 色温",
-          "extra_1_brightness": "额外时段 2 亮度 (%)",
-          "extra_1_kelvin": "额外时段 2 色温",
-          "extra_2_brightness": "额外时段 3 亮度 (%)",
-          "extra_2_kelvin": "额外时段 3 色温",
-          "extra_3_brightness": "额外时段 4 亮度 (%)",
-          "extra_3_kelvin": "额外时段 4 色温",
-          "extra_4_brightness": "额外时段 5 亮度 (%)",
-          "extra_4_kelvin": "额外时段 5 色温"
-        }
-      },
       "anl_user": {
-        "title": "时间设置",
-        "description": "选择夜间各锚点的确定方式以及启用哪些功能。下一页只会显示与选择相关的字段。",
+        "title": "夜灯组",
+        "description": "选择本组控制的灯具。逐灯覆盖与额外时段稍后在夜灯助手页面里设置。",
         "data": {
-          "start_mode": "夜间开始方式",
-          "end_mode": "夜间结束/日间开始方式",
-          "transition_enabled": "启用时段间渐变过渡",
-          "day_enabled": "夜间结束后应用日间参数",
-          "extra_enabled": "启用额外时段"
+          "lights": "灯具实体"
         }
       },
       "anl_reconfigure": {
-        "title": "时间设置",
-        "description": "选择夜间各锚点的确定方式以及启用哪些功能。下一页只会显示与选择相关的字段。",
+        "title": "夜灯组",
+        "description": "选择本组控制的灯具。逐灯覆盖与额外时段稍后在夜灯助手页面里设置。",
         "data": {
-          "start_mode": "夜间开始方式",
-          "end_mode": "夜间结束/日间开始方式",
-          "transition_enabled": "启用时段间渐变过渡",
-          "day_enabled": "夜间结束后应用日间参数",
-          "extra_enabled": "启用额外时段"
+          "lights": "灯具实体"
         }
       },
       "user": {
@@ -150,7 +97,8 @@
     "abort": {
       "already_configured": "该区域（灯 + 传感器组合）已配置过。",
       "reconfigure_successful": "配置更改已保存。",
-      "unique_id_mismatch": "新的灯 + 传感器组合已被其他条目使用。"
+      "unique_id_mismatch": "新的灯 + 传感器组合已被其他条目使用。",
+      "anl_unique_id_mismatch": "该灯具集合已被其他夜灯组条目使用。"
     }
   },
   "options": {
@@ -183,51 +131,10 @@
           "manual_slope": "未校准时的回退线性曲线（每 1% 亮度增加的 lux）；0 为禁用。"
         }
       },
-      "time_details": {
-        "title": "时间详情",
-        "description": "只显示与你的选择相关的字段。过渡时长为 0 表示立即切换。",
-        "data": {
-          "trigger_time": "夜间开始固定时间",
-          "start_offset": "夜间开始偏移（分钟，负数=提前）",
-          "end_time": "夜间结束固定时间",
-          "end_offset": "夜间结束偏移（分钟，负数=提前）",
-          "sun_entity": "日出日落实体（默认内置 sun.sun；自定义实体需含 next_rising / next_setting 属性）",
-          "start_transition": "夜间开始过渡时长（分钟，0=关闭）",
-          "end_transition": "夜间结束过渡时长（分钟，0=关闭）",
-          "transition_interval": "渐变步进间隔（分钟）"
-        }
-      },
-      "extra_count": {
-        "title": "额外时段",
-        "data": {
-          "extra_count": "额外时段数量（最多 5 个）"
-        }
-      },
-      "extra_period": {
-        "title": "额外时段（{position}）",
-        "description": "额外时段是一个单时间锚点：从开始时间起生效，持续到下一个锚点（如夜间开始）。",
-        "data": {
-          "name": "名称（可选，仅用于显示）",
-          "start": "开始时间",
-          "brightness": "亮度（%）",
-          "color_temp_kelvin": "色温",
-          "transition": "过渡时长（分钟，0=立即切换）"
-        }
-      },
-      "lights": {
-        "title": "选择灯具",
-        "data": {
-          "lights": "灯具实体"
-        }
-      },
-      "lights_extra": {
-        "title": "逐灯额外设置",
-        "description": "为每盏灯选择是否使用单独参数，只有打开的灯才会出现对应的设置页面。\n\n{lights}",
-        "data": {}
-      },
       "settings": {
         "title": "各时段参数",
         "data": {
+          "day_enabled": "夜间结束后应用日间参数",
           "brightness": "夜间亮度（%）",
           "color_temp_kelvin": "夜间色温",
           "day_brightness": "日间亮度（%）",
@@ -244,40 +151,22 @@
           "respect_manual": "过渡进行期间，被手动调节过的灯在本过渡带内不再干预；下个锚点归位，关→开也会重新加入曲线。"
         }
       },
-      "per_light": {
-        "title": "逐灯参数覆盖（{position}）",
-        "description": "灯具：{name}（`{entity}`）。为此灯单独设置各时段参数，替代全局设定。字段顺序：夜间、日间（若启用），之后每个额外时段一对亮度/色温（extra_0 = 时段 1，依此类推）。",
-        "data": {
-          "brightness": "夜间亮度（%）",
-          "color_temp_kelvin": "夜间色温",
-          "day_brightness": "日间亮度（%）",
-          "day_color_temp_kelvin": "日间色温",
-          "extra_0_brightness": "额外时段 1 亮度 (%)",
-          "extra_0_kelvin": "额外时段 1 色温",
-          "extra_1_brightness": "额外时段 2 亮度 (%)",
-          "extra_1_kelvin": "额外时段 2 色温",
-          "extra_2_brightness": "额外时段 3 亮度 (%)",
-          "extra_2_kelvin": "额外时段 3 色温",
-          "extra_3_brightness": "额外时段 4 亮度 (%)",
-          "extra_3_kelvin": "额外时段 4 色温",
-          "extra_4_brightness": "额外时段 5 亮度 (%)",
-          "extra_4_kelvin": "额外时段 5 色温"
-        }
-      },
       "anl_init": {
-        "title": "时间设置",
-        "description": "选择夜间各锚点的确定方式以及启用哪些功能。下一页只会显示与选择相关的字段。",
+        "title": "时间锚点",
+        "description": "固定时间字段在锚点方式为固定时生效；偏移用于日落/日出方式（无关字段自动忽略）。过渡时长 0 = 立即切换。灯具集合请走「重新配置」修改（唯一 ID 绑定灯集）。",
         "data": {
           "start_mode": "夜间开始方式",
           "end_mode": "夜间结束/日间开始方式",
-          "transition_enabled": "启用时段间渐变过渡",
-          "day_enabled": "夜间结束后应用日间参数",
-          "extra_enabled": "启用额外时段"
+          "trigger_time": "夜间开始固定时间",
+          "start_offset": "夜间开始偏移（分钟，负数=提前）",
+          "end_time": "夜间结束固定时间",
+          "end_offset": "夜间结束偏移（分钟，负数=提前）",
+          "sun_entity": "日出日落实体（默认内置 sun.sun；自定义实体需含 next_rising / next_setting 属性）",
+          "start_transition": "夜间开始过渡时长（分钟，0=关闭）",
+          "end_transition": "夜间结束过渡时长（分钟，0=关闭；仅在启用日间模式时生效）",
+          "transition_interval": "渐变步进间隔（分钟）"
         }
       }
-    },
-    "error": {
-      "no_lights": "请至少选择一盏灯"
     }
   },
   "services": {

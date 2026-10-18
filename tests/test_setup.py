@@ -10,6 +10,10 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+from conftest import (  # noqa: E402 — 依赖 conftest 桩先行（sys.path 由 conftest 建立）
+    flush_deferred_callbacks as _flush_deferred,
+)
+
 import custom_components.fumiha_lighting as pkg
 import custom_components.fumiha_lighting.web as web
 from custom_components.fumiha_lighting.const import (
@@ -130,6 +134,7 @@ def make_hass():
     return hass
 
 
+
 def test_setup_unload_lux_and_anl_symmetry():
     """两类型各 setup/unload 一次：双桶收支平衡、web flags 正确。"""
     hass = make_hass()
@@ -151,6 +156,8 @@ def test_setup_unload_lux_and_anl_symmetry():
     assert run(pkg.async_unload_entry(hass, lux_entry))
     assert run(pkg.async_unload_entry(hass, anl_entry))
     assert buckets["lux"] == {} and buckets["anl"] == {}
+    # 拆除延迟复查（ANL-F-039）：unload 后先挂 pending，到点才拆
+    _flush_deferred()
     # standalone 拆除真断言（FL-F-012）：panel 键按 frontend_url_path 查、
     # flags 弹出——hub registry 键在 standalone 下不存在，不能用 page_id 查。
     panels = hass.data.get("frontend_panels", {})
@@ -158,6 +165,71 @@ def test_setup_unload_lux_and_anl_symmetry():
     flags_after = hass.data[web.WEB_DATA_KEY]
     assert flags_after.get("page_registered_lux") is None
     assert flags_after.get("page_registered_anl") is None
+
+
+def test_unload_one_kind_tears_down_its_page_only():
+    """ANL-F-036/039 生产路径回归钉：混合安装下真删除 lux（卸载后无 setup
+    跟进）——延迟复查到点后 lux 页面必须拆、anl 页面保留。变异自检：恢复
+    外层双空门控 → deferred 不再挂起 → 到点后 lux panel 不拆 → 必红。"""
+    hass = make_hass()
+    lux_entry = make_entry(KIND_LUX, "lux1")
+    anl_entry = make_entry(KIND_ANL, "anl1")
+    run(pkg.async_setup_entry(hass, lux_entry))
+    run(pkg.async_setup_entry(hass, anl_entry))
+
+    assert run(pkg.async_unload_entry(hass, lux_entry))
+
+    # 延迟窗口内：pending 挂起，页面原样（不再同步拆——reload 不闪）
+    panels = hass.data.get("frontend_panels", {})
+    assert "lux-balance" in panels and "auto-night-light" in panels
+    flags = hass.data[web.WEB_DATA_KEY]
+    assert flags.get("pending_teardown_lux") is True
+
+    # 真删除：无 setup 跟进 → 延迟复查到点 → lux 拆、anl 留
+    _flush_deferred()
+    panels = hass.data.get("frontend_panels", {})
+    assert "lux-balance" not in panels
+    assert "auto-night-light" in panels
+    flags = hass.data[web.WEB_DATA_KEY]
+    assert flags.get("page_registered_lux") is None
+    assert flags.get("page_registered_anl") == "standalone"
+
+
+def test_reload_window_does_not_churn_registration():
+    """ANL-F-039 回归钉：保存触发的 reload（unload→setup 连续）不得产生
+    拆页+重注册——setup 回填撤销 pending，延迟复查到点后注册原样。"""
+    hass = make_hass()
+    lux_entry = make_entry(KIND_LUX, "lux1")
+    run(pkg.async_setup_entry(hass, lux_entry))
+    panels_before = dict(hass.data.get("frontend_panels", {}))
+    bus_before = list(hass.bus.fired)
+
+    assert run(pkg.async_unload_entry(hass, lux_entry))
+    assert run(pkg.async_setup_entry(hass, lux_entry))  # reload 的回填
+    _flush_deferred()
+
+    panels_after = hass.data.get("frontend_panels", {})
+    assert panels_after == panels_before  # 面板键原样（未拆重挂）
+    unregister = [
+        e for e in hass.bus.fired[len(bus_before):]
+        if e[1] and e[1].get("action") == "unregister"
+    ]
+    assert unregister == []  # 总线无 unregister 事件
+
+
+def test_unload_failure_keeps_bucket_and_page():
+    """ANL-F-037a：lux 平台卸载失败时条目仍 loaded，runtime 留桶 →
+    延迟复查到点后页面也不得拆。"""
+    hass = make_hass()
+    lux2 = make_entry(KIND_LUX, "lux2")
+    run(pkg.async_setup_entry(hass, lux2))
+    hass.config_entries.async_unload_platforms = lambda entry, platforms: _ok(
+        False
+    )
+    assert not run(pkg.async_unload_entry(hass, lux2))
+    assert set(hass.data[DOMAIN]["lux"]) == {"lux2"}  # runtime 未出桶
+    _flush_deferred()
+    assert "lux-balance" in hass.data.get("frontend_panels", {})  # 页面未拆
 
 
 def test_services_registered_once_and_survive_unload():

@@ -10,6 +10,7 @@ schedule).
 这套测试是「桩模式专用」：即使环境里装了真实 HA 也使用桩。
 """
 
+import json as _json
 import sys as _sys
 import types as _types
 from datetime import datetime as _datetime
@@ -45,8 +46,20 @@ class _ConfigEntry:
     pass
 
 
+class AbortFlowStub(Exception):
+    """HA AbortFlow 的桩：unique_id 冲突等中止场景（ANL-F-030）。"""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
 class _ConfigFlowBase:
     """Base providing the flow helpers config_flow.py calls."""
+
+    # 真 HA 由 flow manager 注入 flow.source；子类 __init__ 可能不调本基类
+    # （根 config_flow 只初始化 anl 半边），类属性兜底，测试按需覆盖实例属性
+    source = "user"
 
     def __init_subclass__(cls, **kwargs):
         # 吞掉 HA 的 domain= 等类关键字，不转发给 object
@@ -56,6 +69,11 @@ class _ConfigFlowBase:
         self.context: dict = {}
         self.unique_id = None
         self._reconfigure_entry = None
+        self.source = "user"
+        self._abort_calls: list = []
+        # 置 True 模拟 unique_id 已被其他条目占用（_abort_if_unique_id_
+        # configured 抛 AbortFlowStub）；缺省无冲突
+        self._conflict_uid = False
 
     def add_suggested_values_to_schema(self, schema, suggested_values):
         return schema
@@ -64,7 +82,15 @@ class _ConfigFlowBase:
         self.unique_id = unique_id
 
     def _abort_if_unique_id_configured(self, error=None):
-        # tests monkeypatch this to simulate conflicts
+        # 记录调用（error 关键字写错即红）；注入冲突时按真 HA 语义中止。
+        # getattr 兜底：根 config_flow 的 __init__ 只初始化 anl 半边，
+        # 不经本基类 __init__（source 同款问题）
+        calls = getattr(self, "_abort_calls", None)
+        if calls is None:
+            calls = self._abort_calls = []
+        calls.append(error)
+        if getattr(self, "_conflict_uid", False):
+            raise AbortFlowStub(error or "already_configured")
         return None
 
     # HA 真源码里这些是 @callback 同步方法（集成代码不带 await 直接 return）
@@ -82,12 +108,14 @@ class _ConfigFlowBase:
         return {"type": "create_entry", "title": title, "data": data}
 
     def async_update_reload_and_abort(
-        self, entry, data=None, unique_id=None, title=None
+        self, entry, data=None, unique_id=None, title=None, options=None
     ):
         if isinstance(entry, dict):
             entry["data"] = data
             entry["unique_id"] = unique_id
             entry["title"] = title
+            if options is not None:
+                entry["options"] = options
         else:
             if data is not None:
                 entry.data = data
@@ -95,6 +123,8 @@ class _ConfigFlowBase:
                 entry.unique_id = unique_id
             if title is not None:
                 entry.title = title
+            if options is not None:
+                entry.options = options
         return {"type": "abort", "reason": "reconfigure_successful"}
 
     def _get_reconfigure_entry(self):
@@ -173,6 +203,14 @@ _ha_module(
     SUN_EVENT_SUNRISE="sunrise",
     SUN_EVENT_SUNSET="sunset",
 )
+def _callback_marker(fn):
+    """@callback 桩打标记（ANL-F-045 结构防线）：flush 断言所有挂起的
+    async_call_later 回调都带标记——漏装饰的闭包进真机 HassJob 会分派到
+    executor 线程，桩环境测不出来，用标记锁死。"""
+    fn._stub_callback = True
+    return fn
+
+
 _ha_module(
     "homeassistant.core",
     Event=type("Event", (), {}),
@@ -180,7 +218,7 @@ _ha_module(
     HomeAssistant=type("HomeAssistant", (), {}),
     ServiceCall=type("ServiceCall", (), {}),
     State=type("State", (), {}),
-    callback=_identity,
+    callback=_callback_marker,
     EVENT_HOMEASSISTANT_STARTED="homeassistant_started",
 )
 _ha_module("homeassistant.exceptions", HomeAssistantError=_HomeAssistantError)
@@ -204,9 +242,41 @@ def _fake_track_point_in_time(hass, action, when):
 CALL_LATER_CALLS: list[tuple[float, Any]] = []
 
 
+def flush_deferred_callbacks() -> None:
+    """执行挂起的 async_call_later 回调（延迟拆除到点）。
+
+    唯一入口（ANL-F-053）：两处测试共用本函数而非各写副本，保证
+    _stub_callback 结构断言对每一个挂起回调生效——包括 manager._delay
+    产生的闭包（当前测试面尚无该路径，见台账遗留）。
+    """
+    pending = list(CALL_LATER_CALLS)
+    CALL_LATER_CALLS.clear()
+    for _delay, action in pending:
+        # ANL-F-045 结构防线：漏装饰的闭包在真机 HassJob 分派会落到
+        # executor 线程（跨线程拆面板）；桩环境测不出，用标记锁死
+        assert getattr(action, "_stub_callback", False), (
+            f"async_call_later 回调缺 @callback: {action}"
+        )
+        action(None)
+
+
+@_pytest.fixture(autouse=True)
+def _reset_call_later_calls():
+    """跨测试隔离：延迟回调列表不清理会让 A 测试的 flush 跑到 B 的闭包。"""
+    CALL_LATER_CALLS.clear()
+    yield
+    CALL_LATER_CALLS.clear()
+
+
 def _fake_async_call_later(hass, delay, action):
     CALL_LATER_CALLS.append((delay, action))
-    return lambda: CALL_LATER_CALLS.remove((delay, action))
+
+    def _cancel():
+        # 容忍重复取消/到点后再取消（web 延迟拆除的 handle 撤销路径）
+        if (delay, action) in CALL_LATER_CALLS:
+            CALL_LATER_CALLS.remove((delay, action))
+
+    return _cancel
 
 
 def _fake_track_state_change_event(hass, entities, action):
@@ -340,6 +410,8 @@ _ha_module("homeassistant.helpers.sun", get_astral_event_date=_astral_canary)
 
 # aiohttp：无条件打桩——真实 Response 的负载对象会让 snapshot 断言面
 # 随环境漂移（lux LX-F-018 同款教训）；桩保证 resp.payload 恒为 dict。
+# json_response 走真 json.dumps 往返（ANL-F-021）：time 等不可序列化对象
+# 在桩里就抛 TypeError，而不是漏到真机才炸 GET。
 _ha_module("aiohttp")
 _aio_web = _ha_module("aiohttp.web")
 _aio_web.Request = type("Request", (), {})
@@ -351,10 +423,12 @@ class _StubResponse:
         self.status = status
 
 
+def _stub_json_response(data, status=200):
+    return _StubResponse(payload=_json.loads(_json.dumps(data)), status=status)
+
+
 _aio_web.Response = _StubResponse
-_aio_web.json_response = lambda data, status=200: _StubResponse(
-    payload=data, status=status
-)
+_aio_web.json_response = _stub_json_response
 
 
 # homeassistant.util.dt：可控时钟（anl）+ 全套 lux 需要的方法

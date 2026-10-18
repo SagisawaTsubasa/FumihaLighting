@@ -70,7 +70,12 @@ class FumihaLightingConfigFlow(
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
-        """Dispatch the options flow on the entry kind."""
+        """Dispatch the options flow on the entry kind.
+
+        两侧都无参构造：OptionsFlow 基类无 ``__init__``，向基类传参会
+        TypeError（HA 2025.10 源码核实）；entry 由 flow manager 经
+        ``self.config_entry`` property 注入。
+        """
         if config_entry.data.get(CONF_KIND, KIND_LUX) == KIND_LUX:
-            return LuxZoneOptionsFlow(config_entry)
+            return LuxZoneOptionsFlow()
         return AnlGroupOptionsFlow()

@@ -30,50 +30,25 @@
         }
       },
       "time_details": {
-        "title": "Time details",
-        "description": "Only fields relevant to your choices are shown. Transition duration 0 = instant switch.",
+        "title": "Time anchors",
+        "description": "Fixed-time fields apply when an anchor mode is fixed; the offset applies to sunset/sunrise modes (unused fields are ignored). Transition duration 0 = instant switch.",
         "data": {
+          "start_mode": "Night starts at",
+          "end_mode": "Night ends / daytime starts at",
           "trigger_time": "Night start fixed time",
           "start_offset": "Night start offset (minutes, negative = earlier)",
           "end_time": "Night end fixed time",
           "end_offset": "Night end offset (minutes, negative = earlier)",
           "sun_entity": "Sun entity (default: built-in sun.sun; custom entities need next_rising / next_setting attributes)",
           "start_transition": "Night start transition duration (minutes, 0 = off)",
-          "end_transition": "Night end transition duration (minutes, 0 = off)",
+          "end_transition": "Night end transition duration (minutes, 0 = off; only applies when daytime mode is enabled)",
           "transition_interval": "Transition step interval (minutes)"
         }
-      },
-      "extra_count": {
-        "title": "Extra time periods",
-        "data": {
-          "extra_count": "Number of extra periods (max 5)"
-        }
-      },
-      "extra_period": {
-        "title": "Extra period ({position})",
-        "description": "An extra period is a single anchor time: its parameters apply from the start time until the next anchor (e.g. night start).",
-        "data": {
-          "name": "Name (optional, display only)",
-          "start": "Starts at",
-          "brightness": "Brightness (%)",
-          "color_temp_kelvin": "Color temperature",
-          "transition": "Transition duration (minutes, 0 = instant switch)"
-        }
-      },
-      "lights": {
-        "title": "Select lights",
-        "data": {
-          "lights": "Light entities"
-        }
-      },
-      "lights_extra": {
-        "title": "Per-light extra settings",
-        "description": "Enable custom parameters per light. Only enabled lights get their own settings page.\n\n{lights}",
-        "data": {}
       },
       "settings": {
         "title": "Period parameters",
         "data": {
+          "day_enabled": "Apply daytime settings after night ends",
           "brightness": "Night brightness (%)",
           "color_temp_kelvin": "Night color temperature",
           "day_brightness": "Daytime brightness (%)",
@@ -90,46 +65,18 @@
           "respect_manual": "While a transition is running, a light you adjusted manually is left alone for the rest of that band; it rejoins the schedule at the next anchor or when turned off and on again."
         }
       },
-      "per_light": {
-        "title": "Per-light override ({position})",
-        "description": "Light: {name} (`{entity}`). Set custom parameters for this light, replacing the global values. Fields: night, daytime (if enabled), then one brightness/color-temperature pair per extra period (extra_0 = period 1, etc.).",
-        "data": {
-          "brightness": "Night brightness (%)",
-          "color_temp_kelvin": "Night color temperature",
-          "day_brightness": "Daytime brightness (%)",
-          "day_color_temp_kelvin": "Daytime color temperature",
-          "extra_0_brightness": "Extra period 1 brightness (%)",
-          "extra_0_kelvin": "Extra period 1 color temperature",
-          "extra_1_brightness": "Extra period 2 brightness (%)",
-          "extra_1_kelvin": "Extra period 2 color temperature",
-          "extra_2_brightness": "Extra period 3 brightness (%)",
-          "extra_2_kelvin": "Extra period 3 color temperature",
-          "extra_3_brightness": "Extra period 4 brightness (%)",
-          "extra_3_kelvin": "Extra period 4 color temperature",
-          "extra_4_brightness": "Extra period 5 brightness (%)",
-          "extra_4_kelvin": "Extra period 5 color temperature"
-        }
-      },
       "anl_user": {
-        "title": "Time settings",
-        "description": "Choose how each anchor of the night period is determined and which features are enabled. Only relevant fields are shown on the next page.",
+        "title": "Night-light group",
+        "description": "Pick the lights this group controls. Per-light overrides and extra periods are configured later on the Night Light page.",
         "data": {
-          "start_mode": "Night starts at",
-          "end_mode": "Night ends / daytime starts at",
-          "transition_enabled": "Enable gradual transitions between periods",
-          "day_enabled": "Apply daytime settings after night ends",
-          "extra_enabled": "Enable extra time periods"
+          "lights": "Light entities"
         }
       },
       "anl_reconfigure": {
-        "title": "Time settings",
-        "description": "Choose how each anchor of the night period is determined and which features are enabled. Only relevant fields are shown on the next page.",
+        "title": "Night-light group",
+        "description": "Pick the lights this group controls. Per-light overrides and extra periods are configured later on the Night Light page.",
         "data": {
-          "start_mode": "Night starts at",
-          "end_mode": "Night ends / daytime starts at",
-          "transition_enabled": "Enable gradual transitions between periods",
-          "day_enabled": "Apply daytime settings after night ends",
-          "extra_enabled": "Enable extra time periods"
+          "lights": "Light entities"
         }
       },
       "user": {
@@ -150,7 +97,8 @@
     "abort": {
       "already_configured": "This zone (light + sensor pair) is already configured.",
       "reconfigure_successful": "Configuration changes have been saved.",
-      "unique_id_mismatch": "The new light + sensor pair is already used by another entry."
+      "unique_id_mismatch": "The new light + sensor pair is already used by another entry.",
+      "anl_unique_id_mismatch": "This light set is already configured as another night-light group."
     }
   },
   "options": {
@@ -183,51 +131,10 @@
           "manual_slope": "Fallback linear curve (added lux per 1% brightness) when no calibration has been run; 0 disables."
         }
       },
-      "time_details": {
-        "title": "Time details",
-        "description": "Only fields relevant to your choices are shown. Transition duration 0 = instant switch.",
-        "data": {
-          "trigger_time": "Night start fixed time",
-          "start_offset": "Night start offset (minutes, negative = earlier)",
-          "end_time": "Night end fixed time",
-          "end_offset": "Night end offset (minutes, negative = earlier)",
-          "sun_entity": "Sun entity (default: built-in sun.sun; custom entities need next_rising / next_setting attributes)",
-          "start_transition": "Night start transition duration (minutes, 0 = off)",
-          "end_transition": "Night end transition duration (minutes, 0 = off)",
-          "transition_interval": "Transition step interval (minutes)"
-        }
-      },
-      "extra_count": {
-        "title": "Extra time periods",
-        "data": {
-          "extra_count": "Number of extra periods (max 5)"
-        }
-      },
-      "extra_period": {
-        "title": "Extra period ({position})",
-        "description": "An extra period is a single anchor time: its parameters apply from the start time until the next anchor (e.g. night start).",
-        "data": {
-          "name": "Name (optional, display only)",
-          "start": "Starts at",
-          "brightness": "Brightness (%)",
-          "color_temp_kelvin": "Color temperature",
-          "transition": "Transition duration (minutes, 0 = instant switch)"
-        }
-      },
-      "lights": {
-        "title": "Select lights",
-        "data": {
-          "lights": "Light entities"
-        }
-      },
-      "lights_extra": {
-        "title": "Per-light extra settings",
-        "description": "Enable custom parameters per light. Only enabled lights get their own settings page.\n\n{lights}",
-        "data": {}
-      },
       "settings": {
         "title": "Period parameters",
         "data": {
+          "day_enabled": "Apply daytime settings after night ends",
           "brightness": "Night brightness (%)",
           "color_temp_kelvin": "Night color temperature",
           "day_brightness": "Daytime brightness (%)",
@@ -244,40 +151,22 @@
           "respect_manual": "While a transition is running, a light you adjusted manually is left alone for the rest of that band; it rejoins the schedule at the next anchor or when turned off and on again."
         }
       },
-      "per_light": {
-        "title": "Per-light override ({position})",
-        "description": "Light: {name} (`{entity}`). Set custom parameters for this light, replacing the global values. Fields: night, daytime (if enabled), then one brightness/color-temperature pair per extra period (extra_0 = period 1, etc.).",
-        "data": {
-          "brightness": "Night brightness (%)",
-          "color_temp_kelvin": "Night color temperature",
-          "day_brightness": "Daytime brightness (%)",
-          "day_color_temp_kelvin": "Daytime color temperature",
-          "extra_0_brightness": "Extra period 1 brightness (%)",
-          "extra_0_kelvin": "Extra period 1 color temperature",
-          "extra_1_brightness": "Extra period 2 brightness (%)",
-          "extra_1_kelvin": "Extra period 2 color temperature",
-          "extra_2_brightness": "Extra period 3 brightness (%)",
-          "extra_2_kelvin": "Extra period 3 color temperature",
-          "extra_3_brightness": "Extra period 4 brightness (%)",
-          "extra_3_kelvin": "Extra period 4 color temperature",
-          "extra_4_brightness": "Extra period 5 brightness (%)",
-          "extra_4_kelvin": "Extra period 5 color temperature"
-        }
-      },
       "anl_init": {
-        "title": "Time settings",
-        "description": "Choose how each anchor of the night period is determined and which features are enabled. Only relevant fields are shown on the next page.",
+        "title": "Time anchors",
+        "description": "Fixed-time fields apply when an anchor mode is fixed; the offset applies to sunset/sunrise modes (unused fields are ignored). Transition duration 0 = instant switch. Lights are changed via reconfigure (unique id is bound to the light set).",
         "data": {
           "start_mode": "Night starts at",
           "end_mode": "Night ends / daytime starts at",
-          "transition_enabled": "Enable gradual transitions between periods",
-          "day_enabled": "Apply daytime settings after night ends",
-          "extra_enabled": "Enable extra time periods"
+          "trigger_time": "Night start fixed time",
+          "start_offset": "Night start offset (minutes, negative = earlier)",
+          "end_time": "Night end fixed time",
+          "end_offset": "Night end offset (minutes, negative = earlier)",
+          "sun_entity": "Sun entity (default: built-in sun.sun; custom entities need next_rising / next_setting attributes)",
+          "start_transition": "Night start transition duration (minutes, 0 = off)",
+          "end_transition": "Night end transition duration (minutes, 0 = off; only applies when daytime mode is enabled)",
+          "transition_interval": "Transition step interval (minutes)"
         }
       }
-    },
-    "error": {
-      "no_lights": "Please select at least one light"
     }
   },
   "services": {

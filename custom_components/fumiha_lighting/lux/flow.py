@@ -150,6 +150,13 @@ class LuxZoneFlowMixin:
 class LuxZoneOptionsFlow(config_entries.OptionsFlow):
     """Runtime-tunable options for one zone, split into two pages."""
 
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """HA options-flow entry point: init_step 固定为 "init"（HA 侧常量，
+        缺本步真机打开即 UnknownStep——合并改名时的回归，此处修复）。"""
+        return await self.async_step_lux_init(user_input)
+
     async def async_step_lux_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:

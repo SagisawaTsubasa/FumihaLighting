@@ -239,6 +239,12 @@ def run_checks(browser, base: str) -> None:
         "手动接管" in hallway and "连续偏离 2 步" in hallway,
         hallway[:100],
     )
+    # ANL-F-046：夹具两字段分叉（transition_enabled=true / transitions_active=
+    # false）——chip 必须读生效总闸，旧实现读 transition_enabled 会渲染 → 必红
+    check(
+        "anl: 起效总闸为假时不得宣称过渡带开启",
+        "过渡带开启" not in page_text(page, '[data-manager="anl1"]'),
+    )
 
     # trigger REST write（FL-IMP-02: 新增确认框——先等对话框再点「执行」）
     page.evaluate(
@@ -276,6 +282,224 @@ def run_checks(browser, base: str) -> None:
     )
     check("anl trigger POSTs to own REST (with confirm dialog)", True)
 
+    # ---- anl settings dialog (V1.4.0 config editor) --------------------------
+    # 全局设置弹窗：⚙设置 → 改夜间亮度 → 保存 → POST /anl/config（patch.params）
+    page.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const card = el.shadowRoot && el.shadowRoot.querySelector('[data-manager="anl1"]');
+            if (card) {
+              const btn = card.querySelector('[data-action="settings"]');
+              if (btn) { btn.click(); return true; }
+            }
+          }
+          return false;
+        }"""
+    )
+    page.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.querySelector('[data-extra-row]')) return true;
+          }
+          return false;
+        }""",
+        timeout=9000,
+    )
+    check("anl settings dialog opens with extras section", True)
+    # ANL-F-031 钉：夹具 start_mode 故意是枚举外值 "noon"——必须追加展示且
+    # 选中，不得静默回落首项「固定时间」
+    noon_ok = page.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.querySelector('[data-extra-row]')) {
+              const opt = d.querySelector('select option[value="noon"]');
+              return !!opt && opt.selected;
+            }
+          }
+          return false;
+        }"""
+    )
+    check("anl settings dialog keeps out-of-enum anchor visible+selected", noon_ok)
+    page.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.querySelector('[data-extra-row]')) {
+              // 先把枚举外的 start_mode 修回合法值（用户视角：看见 noon 后修正）
+              const sel = [...d.querySelectorAll('select')][0];
+              sel.value = 'sunset';
+              // 夜间亮度 = 值为 25 的 number 输入（fixture brightness）
+              const inputs = [...d.querySelectorAll('input[type="number"]')];
+              const b = inputs.find(i => i.value === '25');
+              b.value = '18';
+              [...d.querySelectorAll('button')].find(x => x.textContent === '保存设置').click();
+              return true;
+            }
+          }
+          return false;
+        }"""
+    )
+    page.wait_for_function(
+        """() => {
+          const post = (window.__servicePosts || []).find(p => p.path === '/api/fumiha_lighting/anl/config');
+          if (!post) return false;
+          const patch = JSON.parse(post.body).patch;
+          if (!(patch.params && patch.params.brightness === 18 && Array.isArray(patch.extras))) return false;
+          // ANL-F-031 钉（后半）：保存载荷里的 start_mode 必须是用户修后的
+          // sunset，而不是回落出来的 fixed
+          return patch.times && patch.times.start_mode === 'sunset';
+        }""",
+        timeout=4000,
+    )
+    check("anl settings save POSTs config with params+extras", True)
+
+    # ---- anl per-light dialog ------------------------------------------------
+    # 逐灯弹窗：默认跟随全局（夹具 overrides={}）→ 取消勾选改亮度 → 保存 →
+    # POST overrides upsert
+    page.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const card = el.shadowRoot && el.shadowRoot.querySelector('[data-light="light.bedroom"]');
+            if (card) {
+              const btn = card.querySelector('[data-action="light-settings"]');
+              if (btn) { btn.click(); return true; }
+            }
+          }
+          return false;
+        }"""
+    )
+    page.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.textContent.includes('跟随全局设置')) return true;
+          }
+          return false;
+        }""",
+        timeout=9000,
+    )
+    check("anl per-light dialog opens (follow-global default)", True)
+    page.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.textContent.includes('跟随全局设置')) {
+              const cb = d.querySelector('input[type="checkbox"]');
+              cb.checked = false;
+              cb.dispatchEvent(new Event('change'));
+              const inputs = [...d.querySelectorAll('input[type="number"]')];
+              inputs.find(i => i.value === '25').value = '12';
+              [...d.querySelectorAll('button')].find(x => x.textContent === '保存').click();
+              return true;
+            }
+          }
+          return false;
+        }"""
+    )
+    page.wait_for_function(
+        """() => {
+          const posts = (window.__servicePosts || []).filter(p => p.path === '/api/fumiha_lighting/anl/config');
+          return posts.some(p => {
+            const ovr = JSON.parse(p.body).patch.overrides
+              && JSON.parse(p.body).patch.overrides['light.bedroom'];
+            if (!ovr || ovr.brightness !== 12) return false;
+            // ANL-F-033/F-027 钉：值=全局的行不写覆盖——夹具日间开启且
+            // 日间输入=全局值、extras 行=全局值，覆盖里不得出现这两类键
+            // ANL-F-047：夜间色温保持预填=全局值 → 也不得写入覆盖
+            return ovr.color_temp_kelvin === undefined
+              && ovr.day_brightness === undefined
+              && ovr.day_color_temp_kelvin === undefined
+              && ovr.extras === undefined;
+          });
+        }""",
+        timeout=4000,
+    )
+    check("anl per-light override POSTs upsert (global-equal keys omitted)", True)
+
+    # ---- ANL-F-034 钉：设置弹窗空值显式报错，不出 POST ----
+    posts_before = page.evaluate("() => (window.__servicePosts || []).length")
+    page.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const card = el.shadowRoot && el.shadowRoot.querySelector('[data-manager="anl1"]');
+            if (card) {
+              const btn = card.querySelector('[data-action="settings"]');
+              if (btn) { btn.click(); return true; }
+            }
+          }
+          return false;
+        }"""
+    )
+    page.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.querySelector('[data-extra-row]')) return true;
+          }
+          return false;
+        }""",
+        timeout=9000,
+    )
+    page.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.querySelector('[data-extra-row]')) {
+              // 清空夜间亮度（fixture 25）→ 保存 → 必须在 err 行报错且无 POST
+              const b = [...d.querySelectorAll('input[type="number"]')]
+                .find(i => i.value === '25');
+              b.value = '';
+              [...d.querySelectorAll('button')].find(x => x.textContent === '保存设置').click();
+              return true;
+            }
+          }
+          return false;
+        }"""
+    )
+    page.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d) {
+              const err = d.querySelector('.fx-error');
+              if (err && err.style.display !== 'none'
+                  && err.textContent.includes('夜间亮度 不能为空')) return true;
+            }
+          }
+          return false;
+        }""",
+        timeout=4000,
+    )
+    posts_after = page.evaluate("() => (window.__servicePosts || []).length")
+    check("anl settings empty value errors loudly, no POST",
+          posts_after == posts_before)
+    page.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d) {
+              const cancel = [...d.querySelectorAll('button')].find(x => x.textContent === '取消');
+              if (cancel) { cancel.click(); return; }
+            }
+          }
+        }"""
+    )
+    page.wait_for_timeout(200)
+
     # ---- module failure isolation: one bad page must not kill the other ----
     page2 = browser.new_page(viewport={"width": 1280, "height": 900})
     page2.goto(base + "/?badanl=1")
@@ -295,6 +519,38 @@ def run_checks(browser, base: str) -> None:
         str(iso),
     )
     page2.close()
+
+    # ---- ANL-F-035 钉：badconfig 下弹窗构建期异常必须落成 ack toast ----
+    page4 = browser.new_page(viewport={"width": 1280, "height": 900})
+    page4.goto(base + "/?badconfig=1")
+    page4.evaluate("() => { location.hash = 'pn=anl.main'; }")
+    wait_page_dom(page4, '[data-manager="anl1"]')
+    page4.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const card = el.shadowRoot && el.shadowRoot.querySelector('[data-manager="anl1"]');
+            if (card) {
+              const btn = card.querySelector('[data-action="settings"]');
+              if (btn) { btn.click(); return true; }
+            }
+          }
+          return false;
+        }"""
+    )
+    page4.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const toast = el.shadowRoot && el.shadowRoot.querySelector('.fx-toast');
+            if (toast && toast.textContent.includes('打开设置')) return true;
+          }
+          return false;
+        }""",
+        timeout=9000,
+    )
+    check("anl badconfig: dialog build failure surfaces as ack toast", True)
+    page4.close()
 
     # ---- standalone fallback (pages boot without the shell) ------------------
     page3 = browser.new_page(viewport={"width": 1280, "height": 900})

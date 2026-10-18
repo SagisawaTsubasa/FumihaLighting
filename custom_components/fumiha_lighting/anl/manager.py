@@ -243,6 +243,11 @@ class NightLightManager:
             return True
         return any(int(e.get(EXTRA_TRANSITION, 0) or 0) > 0 for e in self.extras)
 
+    # 公开别名（ANL-F-041）：页面「过渡带开启」指示必须读生效总闸而非
+    # transition_enabled 存储派生值（后者在日间关闭时不反映 end_transition
+    # 被 manager 归零的事实）；web 层禁调私有（ANL-F-003 家规）
+    transitions_active = _has_transitions
+
     def params_for(self, entity_id: str, mode: str) -> tuple[int, int]:
         """Resolve effective (brightness, kelvin) for a light, applying overrides."""
         ovr = self.overrides.get(entity_id, {})

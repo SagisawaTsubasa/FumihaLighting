@@ -125,9 +125,20 @@ _NOT_IN_BAND = object()  # _band_params 哨兵：当前不在任何过渡带内
 # 打扰会让灯停在校准末档；None（非 lux 灯/属性缺失/实体缺失）一律不动。
 _CI_HANDBACK_LUX_MODES = ("active", "passthrough")
 
+# F-093：构成生效引用的条目状态白名单（字符串值与 ConfigEntryState 的
+# str-Enum 成员直接相等比较成立）。NOT_LOADED/SETUP_ERROR/SETUP_TIMEOUT
+# 等未运行态不算——条目无运行时不会接手虚拟灯，其残留配置不得永久阻塞
+# 归还。
+_CI_REFERENCING_ENTRY_STATES = (
+    "loaded",
+    "loading",
+    "setup_in_progress",
+    "setup_retry",
+)
+
 
 def _anl_virtual_referenced_elsewhere(
-    hass: HomeAssistant, exclude_entry_id: str, virtual: str
+    hass: HomeAssistant, exclude_entry_id: str | None, virtual: str
 ) -> bool:
     """跨条目引用检查（F-067；F-083 自 web.py 挪入 CI 逻辑单一来源处）。
 
@@ -138,11 +149,25 @@ def _anl_virtual_referenced_elsewhere(
     他条目归还）。走 config_entries 注册表而非 hass.data 运行时桶：删除
     钩子（async_remove_entry）触发时 manager 可能已卸载，注册表里的
     data+options 合并值才是配置真值。
+    F-094：exclude_entry_id=None = 不排除任何条目（检查恒执行）——
+    「None=跳过检查」的旧语义会让 retry 路径重复实现守卫，新挂点按
+    F-089 文档传 None 时静默绕过。
+    F-093：disabled_by 非 None 或 state 不在运行态白名单的条目没有
+    manager 运行时、永远不会真正接手虚拟灯，不算生效引用——否则其
+    残留配置会永久阻塞合法归还（V 恒 active + 双闭环互纠）。白名单含
+    loading/setup_in_progress/setup_retry：即将获得运行时，视为有效
+    引用（宁可不归还也不误关将接手的闭环）。
     """
     for entry in hass.config_entries.async_entries(DOMAIN):
         if entry.entry_id == exclude_entry_id:
             continue
         if entry.data.get(CONF_KIND) != KIND_ANL:
+            continue
+        # F-093：未运行条目不构成生效引用（真机 ConfigEntry 恒有
+        # disabled_by/state；HA 2026.1 契约）。
+        if entry.disabled_by is not None:
+            continue
+        if entry.state not in _CI_REFERENCING_ENTRY_STATES:
             continue
         merged = {**entry.data, **entry.options}
         if (
@@ -176,7 +201,8 @@ async def async_release_virtual_light(
     实例）。F-090：retry_on_calibrating 仅配置侧挂点（web/flow/删条目）传
     True——校准中改写校准收尾且一次性挂点错过即永久丢失，故对 calibrating
     排有界延迟归还；运行面不传（trigger/extra/开灯事件的下一次归还请求即
-    天然重试，堆 timer 反而堆积）。
+    天然重试，堆 timer 反而堆积）。F-094：跨条目检查恒执行（None = 不排除
+    任何条目），retry 补做路径与普通挂点共用同一守卫实现（单一来源）。
     """
     state = hass.states.get(virtual)
     mode = state.attributes.get("mode") if state is not None else None
@@ -191,9 +217,7 @@ async def async_release_virtual_light(
             mode,
         )
         return
-    if exclude_entry_id is not None and _anl_virtual_referenced_elsewhere(
-        hass, exclude_entry_id, virtual
-    ):
+    if _anl_virtual_referenced_elsewhere(hass, exclude_entry_id, virtual):
         _LOGGER.info(
             "恒照度虚拟灯 %s 仍被其他夜灯组条目引用，跳过归还（保持开启）",
             virtual,
@@ -213,7 +237,15 @@ async def async_release_virtual_light(
 
 
 _CI_RELEASE_RETRY_INTERVAL_S = 60
-_CI_RELEASE_RETRY_MAX = 30  # ~30 分钟上限：校准实测 15~25 分钟（lux const）
+# F-092：上限按 README 最坏口径取，不再按「实测 15~25 分钟」——README:13
+# 自述「约 15~40 分钟（传感器上报不畅时可能接近 1 小时）」；lux 源码推演
+# 5% 扫描最坏 ~41 分钟（40 步 × CAL_CMD_SETTLE_S 2s + CAL_FIRST_REPORT_
+# TIMEOUT_S 60s），missed_streak>=2 转 10% 重扫再 +20 步 ≈ 62 分钟。旧
+# 30 分钟上限在慢传感器场景必然先于校准结束放弃，而放弃后没有任何归还
+# 路径（trigger/extra/监听/启动对账全被 _ci_configured 门挡，web/flow
+# 归还要 old_ci_enabled 为真，删除钩子也 return）——归还永久丢失 + 双
+# 闭环互纠。90 分钟覆盖最坏推演并留余量。
+_CI_RELEASE_RETRY_MAX = 90  # 90 次 × 60s = ~90 分钟
 
 
 def _schedule_ci_release_retry(hass: HomeAssistant, virtual: str) -> None:
@@ -224,12 +256,16 @@ def _schedule_ci_release_retry(hass: HomeAssistant, virtual: str) -> None:
     turn_off 会被校准收尾改写（F-076），直接跳过则这次归还永久丢失——
     推迟到 mode 离开 calibrating 后按同一判据补做。每 60s 复查、最多
     _CI_RELEASE_RETRY_MAX 次；自然停止条件：实体消失（无可归还）、新配置
-    接手（任何 anl 条目重新引用该灯——含用户 30 分钟内改回 CI 指回同一灯
-    的场景，归还不得误杀新接管）、mode 已离白名单（idle=lux 已放手，目标
-    达成无需 turn_off）。到上限仍在校准则 DEBUG 放弃（校准时长异常，留给
-    下一次配置动作处理）。回调 @callback（ANL-F-045 纪律）；补做归还走
-    async_release_virtual_light 单一来源（F-089），其协程内部自收口
-    （best-effort 全捕），async_create_task fire-and-forget 安全。
+    接手（任何运行中的 anl 条目重新引用该灯——含用户在重试窗口内改回 CI
+    指回同一灯的场景，归还不得误杀新接管）、mode 已离白名单（idle=lux
+    已放手，目标达成无需 turn_off）。到上限仍在校准则 WARNING 放弃并
+    提示手动归还（F-092：上限已覆盖 README 最坏校准口径；放弃后无自动
+    归还路径——trigger/extra/监听/启动对账全被 _ci_configured 门挡）。
+    回调 @callback（ANL-F-045 纪律）；补做归还走 async_release_virtual_
+    light 单一来源（F-089/F-094：守卫在助手内恒执行），并传 retry_on_
+    calibrating=True——补做执行前校准若重新进入（mode 又回 calibrating）
+    重新排链而非丢归还；其协程内部自收口（best-effort 全捕），
+    async_create_task fire-and-forget 安全。
     """
     retries_left = _CI_RELEASE_RETRY_MAX
 
@@ -251,22 +287,21 @@ def _schedule_ci_release_retry(hass: HomeAssistant, virtual: str) -> None:
                     hass, _CI_RELEASE_RETRY_INTERVAL_S, _attempt
                 )
             else:
-                _LOGGER.debug(
-                    "恒照度虚拟灯 %s 校准超时未结束，放弃延迟归还（F-090）",
+                _LOGGER.warning(
+                    "恒照度虚拟灯 %s 校准超时（约 %d 分钟）未结束，放弃"
+                    "延迟归还（F-092）；校准结束后请手动关闭该虚拟灯，"
+                    "或重新保存对应夜灯组的 CI 配置以触发归还",
                     virtual,
+                    _CI_RELEASE_RETRY_MAX,
                 )
             return
         if state is not None and mode in _CI_HANDBACK_LUX_MODES:
-            if _anl_virtual_referenced_elsewhere(hass, None, virtual):
-                _LOGGER.info(
-                    "恒照度虚拟灯 %s 校准结束后已被其他配置重新引用，"
-                    "放弃延迟归还",
-                    virtual,
-                )
-                return
             hass.async_create_task(
                 async_release_virtual_light(
-                    hass, virtual, exclude_entry_id=None
+                    hass,
+                    virtual,
+                    exclude_entry_id=None,
+                    retry_on_calibrating=True,
                 )
             )
             return

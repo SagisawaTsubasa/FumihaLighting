@@ -158,7 +158,8 @@ async def async_release_virtual_light(
     hass: HomeAssistant,
     virtual: str,
     *,
-    exclude_entry_id: str | None = None,
+    exclude_entry_id: str | None,
+    retry_on_calibrating: bool = False,
 ) -> None:
     """归还（turn_off）恒照度虚拟灯的唯一入口（F-083）。
 
@@ -170,10 +171,19 @@ async def async_release_virtual_light(
     会静默终止别组的日间闭环），INFO 可观测。best-effort：服务失败 WARNING
     不抛（调用方——配置面 web/flow/删条目与运行面 manager——全部是
     best-effort 归还，不因归还失败阻断主流程）。
+    F-089：exclude_entry_id 改必填关键字——每个挂点必须显式表态排除谁
+    （不排除传 None），防新挂点静默绕过跨条目守卫（F-081 即「忘了传」的
+    实例）。F-090：retry_on_calibrating 仅配置侧挂点（web/flow/删条目）传
+    True——校准中改写校准收尾且一次性挂点错过即永久丢失，故对 calibrating
+    排有界延迟归还；运行面不传（trigger/extra/开灯事件的下一次归还请求即
+    天然重试，堆 timer 反而堆积）。
     """
     state = hass.states.get(virtual)
     mode = state.attributes.get("mode") if state is not None else None
     if mode not in _CI_HANDBACK_LUX_MODES:
+        if mode == "calibrating" and retry_on_calibrating:
+            _schedule_ci_release_retry(hass, virtual)
+            return
         _LOGGER.debug(
             "归还跳过：恒照度虚拟灯 %s lux mode=%r 不在归还集合"
             "（idle/calibrating/缺失不碰）",
@@ -197,9 +207,75 @@ async def async_release_virtual_light(
             blocking=True,
         )
     except Exception as err:  # noqa: BLE001
-        _LOGGER.warning(
+            _LOGGER.warning(
             "归还恒照度虚拟灯 %s 失败：%s（继续，不阻断主流程）", virtual, err
         )
+
+
+_CI_RELEASE_RETRY_INTERVAL_S = 60
+_CI_RELEASE_RETRY_MAX = 30  # ~30 分钟上限：校准实测 15~25 分钟（lux const）
+
+
+def _schedule_ci_release_retry(hass: HomeAssistant, virtual: str) -> None:
+    """F-090：calibrating 时的有界延迟归还（仅配置侧挂点经 retry_on_
+    calibrating 启用）。
+
+    配置侧归还（web/flow/删条目）是一次性动作：此刻虚拟灯在 lux 校准中，
+    turn_off 会被校准收尾改写（F-076），直接跳过则这次归还永久丢失——
+    推迟到 mode 离开 calibrating 后按同一判据补做。每 60s 复查、最多
+    _CI_RELEASE_RETRY_MAX 次；自然停止条件：实体消失（无可归还）、新配置
+    接手（任何 anl 条目重新引用该灯——含用户 30 分钟内改回 CI 指回同一灯
+    的场景，归还不得误杀新接管）、mode 已离白名单（idle=lux 已放手，目标
+    达成无需 turn_off）。到上限仍在校准则 DEBUG 放弃（校准时长异常，留给
+    下一次配置动作处理）。回调 @callback（ANL-F-045 纪律）；补做归还走
+    async_release_virtual_light 单一来源（F-089），其协程内部自收口
+    （best-effort 全捕），async_create_task fire-and-forget 安全。
+    """
+    retries_left = _CI_RELEASE_RETRY_MAX
+
+    @callback
+    def _attempt(_now) -> None:
+        nonlocal retries_left
+        state = hass.states.get(virtual)
+        mode = state.attributes.get("mode") if state is not None else None
+        if state is not None and mode == "calibrating":
+            retries_left -= 1
+            if retries_left > 0:
+                _LOGGER.debug(
+                    "恒照度虚拟灯 %s 仍在校准中，%ds 后重试归还（剩 %d 次）",
+                    virtual,
+                    _CI_RELEASE_RETRY_INTERVAL_S,
+                    retries_left,
+                )
+                async_call_later(
+                    hass, _CI_RELEASE_RETRY_INTERVAL_S, _attempt
+                )
+            else:
+                _LOGGER.debug(
+                    "恒照度虚拟灯 %s 校准超时未结束，放弃延迟归还（F-090）",
+                    virtual,
+                )
+            return
+        if state is not None and mode in _CI_HANDBACK_LUX_MODES:
+            if _anl_virtual_referenced_elsewhere(hass, None, virtual):
+                _LOGGER.info(
+                    "恒照度虚拟灯 %s 校准结束后已被其他配置重新引用，"
+                    "放弃延迟归还",
+                    virtual,
+                )
+                return
+            hass.async_create_task(
+                async_release_virtual_light(
+                    hass, virtual, exclude_entry_id=None
+                )
+            )
+            return
+        # idle/实体缺失：lux 已放手或无可归还——归还目标已达成
+        _LOGGER.debug(
+            "恒照度虚拟灯 %s 校准结束（mode=%r），无需延迟归还", virtual, mode
+        )
+
+    async_call_later(hass, _CI_RELEASE_RETRY_INTERVAL_S, _attempt)
 
 
 class LightState(enum.Enum):
@@ -524,7 +600,13 @@ class NightLightManager:
             mode,
             self.day_ci_virtual_light,
         )
-        await self._async_ensure_virtual(False)
+        # F-089：对账归还统一走 async_release_virtual_light——跨条目守卫
+        # 单一来源（其他条目仍引用同一虚拟灯时不动，防误关别组的日间闭环）
+        await async_release_virtual_light(
+            self.hass,
+            self.day_ci_virtual_light,
+            exclude_entry_id=self.entry.entry_id,
+        )
 
     def _effective_transition_bands(self) -> list[tuple]:
         """Transition bands with day-side bands dropped while CI is configured.
@@ -1369,8 +1451,11 @@ class NightLightManager:
                     self.day_ci_virtual_light,
                 )
                 return  # 无 settle 延迟、真实灯零下发
-            # ensure 失败（含 F-068 预检）：params 此刻=日间参数，落到既有
-            # settle 路径（fallback 日间参数直控，WARNING 已由 ensure 节流发出）
+            # ensure 失败（含 F-068 预检/F-084 校准）：params 此刻=日间参数，
+            # turn_on_listen 开时才落到既有 settle 路径（fallback 日间参数
+            # 直控，WARNING 已由 ensure 节流发出）；turn_on_listen 关时由
+            # 下方 F-080 门控直接返回（事件路径零直控）。立即触发的逐灯
+            # fallback 是 async_trigger 路径，不受本分支影响（F-091）
         elif self._ci_configured():
             # 防御性归还：夜间 lux 闭环仍在跑时关掉它避免两闭环抢灯（lux
             # off=纯放手，对真实灯零下发）。F-086：统一走 async_release_

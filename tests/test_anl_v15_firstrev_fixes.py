@@ -339,7 +339,7 @@ def test_f083_release_helper_direct_mode_guard():
             states=SimpleNamespace(get=lambda eid, _m=mode: _virt_state(eid, _m)),
             services=_RecordingServices(calls),
         )
-        run(async_release_virtual_light(hass, VIRT))
+        run(async_release_virtual_light(hass, VIRT, exclude_entry_id=None))
         expected = [("light", "turn_off", {"entity_id": VIRT})] if expect_off else []
         assert calls == expected, f"mode={mode}"
 
@@ -459,3 +459,145 @@ def _recorder(events):
         events.append(("svc", service, data.get("entity_id")))
 
     return _svc
+
+
+# ---------------------------------------------------------------------------
+# F-089：启动对账走共享助手（跨条目守卫）+ exclude_entry_id 必填
+# ---------------------------------------------------------------------------
+
+
+def test_f089_reconcile_skipped_when_other_entry_shares():
+    """启动对账 + 其他 anl 条目仍引用同一虚拟灯 → 零 turn_off（对账不再
+    绕过跨条目守卫，F-089）。"""
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)
+    m = make_ci_manager()
+    other = SimpleNamespace(
+        entry_id="anl2",
+        data={"kind": "anl", "lights": ["light.z"], CONF_DAY_ENABLED: True,
+              CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
+        options={},
+    )
+    m.hass.config_entries = SimpleNamespace(
+        async_entries=lambda domain: [m.entry, other]
+    )
+    svc = []
+    m.hass.services = _RecordingServices(svc)
+    m.hass.states.mapping[VIRT] = _FakeState("on", mode="active")
+    run(m.async_ci_startup_reconcile())
+    assert svc == []  # 跨条目守卫命中：归还跳过
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
+
+
+def test_f089_reconcile_turns_off_when_reference_is_unique():
+    """对照钉：无他条目引用 → 对账照常 turn_off（F-081 语义不回退）。"""
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)
+    m = make_ci_manager()
+    svc = []
+    m.hass.services = _RecordingServices(svc)
+    m.hass.states.mapping[VIRT] = _FakeState("on", mode="active")
+    run(m.async_ci_startup_reconcile())
+    assert svc == [("light", "turn_off", {"entity_id": VIRT})]
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
+
+
+# ---------------------------------------------------------------------------
+# F-090：配置侧归还的 calibrating 有界延迟归还
+# ---------------------------------------------------------------------------
+
+
+def _calib_states_map():
+    return {VIRT: SimpleNamespace(
+        state="on", attributes={"mode": "calibrating"})}
+
+
+def _calib_hass(states_map):
+    """web POST 用例基座：VIRT 校准中 + async_create_task 收集桩。"""
+    hass = _recording_hass()
+    hass.states = SimpleNamespace(get=lambda eid: states_map.get(eid))
+    tasks = []
+    hass.async_create_task = tasks.append
+    return hass, tasks
+
+
+def _calib_entry(entry_id="anl1"):
+    return _config_entry(
+        entry_id=entry_id,
+        data={"kind": "anl", "lights": ["light.a"], CONF_DAY_ENABLED: True,
+              CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
+    )
+
+
+def _post_disable_ci(hass):
+    return run(web.AnlConfigView().post(
+        FakeRequest(hass, {"entry_id": "anl1",
+                           "patch": {"params": {"day_ci_enabled": False}}})
+    ))
+
+
+def test_f090_web_post_release_schedules_retry_on_calibrating():
+    """web POST 关 CI + 校准中 → 零 turn_off + 排 60s 延迟归还（一次性
+    挂点不再永久丢失，F-090）。"""
+    states_map = _calib_states_map()
+    hass, _tasks = _calib_hass(states_map)
+    _anl_bucket(hass, _config_manager(_calib_entry()))
+    stubs.CALL_LATER_CALLS.clear()
+    resp = _post_disable_ci(hass)
+    assert resp.payload["ok"] is True
+    assert hass.services.calls == []
+    assert [d for d, _a in stubs.CALL_LATER_CALLS] == [60]  # 60s 复查
+
+
+def test_f090_retry_completes_after_calibration_ends():
+    """校准结束（mode→active）后重试到点 → 补做 turn_off（无人引用）。"""
+    states_map = _calib_states_map()
+    hass, tasks = _calib_hass(states_map)
+    _anl_bucket(hass, _config_manager(_calib_entry()))
+    stubs.CALL_LATER_CALLS.clear()
+    _post_disable_ci(hass)
+    assert hass.services.calls == []
+    _delay, action = stubs.CALL_LATER_CALLS[-1]
+    states_map[VIRT] = SimpleNamespace(  # 校准结束
+        state="on", attributes={"mode": "active"})
+    action(None)  # @callback 同步复查
+    assert tasks, "校准结束应补做归还"
+    run(tasks[0])
+    assert hass.services.calls == [("light", "turn_off", {"entity_id": VIRT})]
+
+
+def test_f090_retry_yields_to_reconfigured_reference():
+    """重试到点时虚拟灯已被新配置重新引用 → 放弃归还（不误杀新接管）。"""
+    states_map = _calib_states_map()
+    hass, tasks = _calib_hass(states_map)
+    _anl_bucket(hass, _config_manager(_calib_entry()))
+    stubs.CALL_LATER_CALLS.clear()
+    _post_disable_ci(hass)  # 此时 async_entries 空表 → retry 排上
+    reconfigured = SimpleNamespace(
+        entry_id="anl2",
+        data={"kind": "anl", "lights": ["light.z"], CONF_DAY_ENABLED: True,
+              CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
+        options={},
+    )
+    hass.config_entries.async_entries = lambda domain: [reconfigured]
+    _delay, action = stubs.CALL_LATER_CALLS[-1]
+    states_map[VIRT] = SimpleNamespace(
+        state="on", attributes={"mode": "active"})
+    action(None)
+    assert tasks == []  # 新配置接手：放弃归还
+    assert hass.services.calls == []
+
+
+def test_f090_runtime_release_no_retry_on_calibrating():
+    """运行面（夜间触发归还）+ 校准中 → 零服务零 retry timer（下一次
+    trigger/extra/开灯事件是天然重试，F-090 不堆 timer）。"""
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)
+    m = make_ci_manager()
+    svc = []
+    m.hass.services = _RecordingServices(svc)
+    m.hass.states.mapping[VIRT] = _FakeState("on", mode="calibrating")
+    calls = []
+    m._async_process_light = _record(calls)
+    stubs.CALL_LATER_CALLS.clear()
+    run(m.async_trigger("test"))
+    assert svc == []  # calibrating 不碰
+    assert stubs.CALL_LATER_CALLS == []  # 不排延迟归还
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)

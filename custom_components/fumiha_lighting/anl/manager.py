@@ -273,15 +273,14 @@ _CI_RELEASE_RETRY_INTERVAL_S = 60
 # F-097：上限按最大合法步长的最坏校准时长取——步长是合法配置
 # （lux/flow.py 选择器 min=2；lux/logic.py 钳 2..20），calibration_steps(2)
 # = 51 点 → _async_sweep = 基线 1 + 上行 50 + 下行 49 = 100 次
-# _async_cal_step × 62s（CAL_CMD_SETTLE_S 2s + CAL_FIRST_REPORT_TIMEOUT_S
-# 60s，lux/const.py:55-57）≈ 103 分钟；中段连续两档无上报触发 10% 重扫
-# 再 +20 次 ≈ 124 分钟。R7 的 90 分钟只覆盖默认 5% 步长（40+20 次 ≈ 62
-# 分钟），2%/3% 步长会在校准中先放弃且放弃后无任何归还路径（trigger/
-# extra/监听/启动对账全被 _ci_configured 门挡，web/flow 归还要
-# old_ci_enabled 为真，删除钩子也 return）。150 分钟覆盖最坏口径并留
-# ~26 分钟余量；不按灯区生效步长动态计算（manager 须跨 kind 读 lux 条目
-# 配置，徒增耦合）——「非必要不增加变量」取静态上界。
-_CI_RELEASE_RETRY_MAX = 150  # 150 次 × 60s = ~150 分钟
+# _async_cal_step × 80s（F-102 硬上限 = CAL_FIRST_REPORT_TIMEOUT_S 60 +
+# CAL_QUIET_PERIOD_S 20——静默期不再可被连续上报无限续期；
+# CAL_CMD_SETTLE_S 2s 含在 60s 首报窗口内，lux/const.py:55-58）≈ 133 分钟；
+# 中段连续两档无上报触发 10% 重扫再 +20 次 ≈ 160 分钟。R9 的 150 分钟按
+# 62s/步漏算 CAL_QUIET_PERIOD_S（假最坏），2% 步长真实最坏 160 分钟会击穿。
+# 180 分钟覆盖最坏口径并留 ~20 分钟余量；不按灯区生效步长动态计算（manager
+# 须跨 kind 读 lux 条目配置，徒增耦合）——「非必要不增加变量」取静态上界。
+_CI_RELEASE_RETRY_MAX = 180  # 180 次 × 60s = ~180 分钟
 
 
 def _schedule_ci_release_retry(hass: HomeAssistant, virtual: str) -> None:
@@ -295,8 +294,9 @@ def _schedule_ci_release_retry(hass: HomeAssistant, virtual: str) -> None:
     接手（任何运行中的 anl 条目重新引用该灯——含用户在重试窗口内改回 CI
     指回同一灯的场景，归还不得误杀新接管）、mode 已离白名单（idle=lux
     已放手，目标达成无需 turn_off）。到上限仍在校准则 WARNING 放弃并
-    提示手动归还（F-092/F-097：上限 150 分钟已覆盖最大合法步长 2% 的
-    最坏校准 ~124 分钟；放弃后无自动归还路径——trigger/extra/监听/启动
+    提示手动归还（F-092/F-097：上限 180 分钟已覆盖最大合法步长 2% 的
+    最坏校准 ~160 分钟（F-102 硬上限 80s/步口径）；放弃后无自动归还路径——
+    trigger/extra/监听/启动
     对账全被 _ci_configured 门挡，故 WARNING 附自救指引 F-098）。
     回调 @callback（ANL-F-045 纪律）；补做归还走 async_release_virtual_
     light 单一来源（F-089/F-094：守卫在助手内恒执行），并传 retry_on_
@@ -551,20 +551,24 @@ class NightLightManager:
             return None
         return state.attributes.get("mode")
 
-    async def _async_ensure_virtual(self, on: bool) -> bool:
-        """Switch the constant-illuminance virtual light on/off; return success.
+    async def _async_ensure_virtual_on(self) -> bool:
+        """Switch the constant-illuminance virtual light on; return success.
 
         turn_on 绝不带亮度/亮度百分比：带亮度会落 lux passthrough 直控真实灯
         （lux/runtime.py:499-511 实证），不带亮度才进 ACTIVE 闭环
-        （runtime.py:512）；turn_off 是 lux 纯放手语义（mode→IDLE、对真实
-        灯零下发，runtime.py:562-576），夜间锚点据此安全归还。
+        （runtime.py:512）。
+        F-108：原 _async_ensure_virtual(on) 的 False 分支（裸 light.turn_off
+        + 归还文案）全仓零调用，且绕过 F-076 lux mode 守卫/F-086 跨条目检查
+        /F-099 引用日志——一条现成旁路，未来任何调用即可重现两个已修 bug。
+        收窄为 on-only；归还一律走 async_release_virtual_light 单一入口
+        （守卫在助手内恒执行）。
         F-068 状态预检：实体缺失或 unavailable/unknown 时先于服务调用失败
         ——light.turn_on 对不存在 entity_id 不抛异常（服务层静默忽略未匹配
         目标），只看「服务未抛异常」会把假成功当接管。服务失败：首次
         WARNING（_warned_ci 每 manager 实例节流一次，同 _warned_sun_fallback
         模式；预检与异常共用同一节流旗标），后续同实例内 DEBUG；返回 False
         由调用方回落日间参数直控——错误必须响但保可用。
-        F-084：on 侧对称读 lux mode——校准中 lux 对 turn_on 直接忽略
+        F-084：校准中读 lux mode——校准中 lux 对 turn_on 直接忽略
         （lux/runtime.py async_turn_on_requested 的 MODE_CALIBRATING 早退），
         服务不抛异常=假成功，调用方会误判「已接管」而清空 machine，真实灯
         却既无恒照度也无日间参数；按未接管返回 False 回落直控（校准是暂态，
@@ -573,7 +577,7 @@ class NightLightManager:
         服务后二次校验 STATE_ON 不做（R2 审查建议，有意偏离）：blocking
         返回时实体状态可能尚未刷新，会造成假失败；lux 闭环自会处理灯没开。
         """
-        if on and self._virtual_lux_mode() == "calibrating":
+        if self._virtual_lux_mode() == "calibrating":
             # F-084：校准中 turn_on 是假成功（见上），按未接管回落直控
             _LOGGER.debug(
                 "恒照度虚拟灯 %s 校准中，按未接管处理（回落直控）",
@@ -582,62 +586,38 @@ class NightLightManager:
             return False
         state = self.hass.states.get(self.day_ci_virtual_light)
         if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-            # F-079：文案按方向区分——只有接管（on=True）失败才写「回落日间
-            # 参数直控」；归还（on=False）失败时调用方按当前时段（夜间/extra）
-            # 参数继续，不存在日间回落，写「回落日间」会误导排查方向。
-            tail = (
-                "改回落日间参数直控"
-                if on
-                else "归还跳过（虚拟灯状态未知），按当前时段参数继续"
-            )
-            verb = "开启" if on else "关闭"
             if not self._warned_ci:
                 self._warned_ci = True
                 _LOGGER.warning(
-                    "恒照度虚拟灯 %s 不可用，%s %s",
+                    "恒照度虚拟灯 %s 不可用，开启 改回落日间参数直控",
                     self.day_ci_virtual_light,
-                    verb,
-                    tail,
                 )
             else:
                 _LOGGER.debug(
-                    "恒照度虚拟灯 %s 仍不可用，%s %s",
+                    "恒照度虚拟灯 %s 仍不可用，开启 改回落日间参数直控",
                     self.day_ci_virtual_light,
-                    verb,
-                    tail,
                 )
             return False
-        service = SERVICE_TURN_ON if on else SERVICE_TURN_OFF
         try:
             await self.hass.services.async_call(
                 LIGHT_DOMAIN,
-                service,
+                SERVICE_TURN_ON,
                 {ATTR_ENTITY_ID: self.day_ci_virtual_light},
                 blocking=True,
             )
         except Exception as err:  # noqa: BLE001
-            verb = "开启" if on else "关闭"
-            tail = (
-                "本组回落日间参数直控"
-                if on
-                else "归还跳过（虚拟灯状态未知），按当前时段参数继续"
-            )
             if not self._warned_ci:
                 self._warned_ci = True
                 _LOGGER.warning(
-                    "恒照度虚拟灯 %s %s 失败：%s（%s）",
+                    "恒照度虚拟灯 %s 开启 失败：%s（本组回落日间参数直控）",
                     self.day_ci_virtual_light,
-                    verb,
                     err,
-                    tail,
                 )
             else:
                 _LOGGER.debug(
-                    "恒照度虚拟灯 %s %s 仍失败：%s（%s）",
+                    "恒照度虚拟灯 %s 开启 仍失败：%s（本组回落日间参数直控）",
                     self.day_ci_virtual_light,
-                    verb,
                     err,
-                    tail,
                 )
             return False
         return True
@@ -1517,7 +1497,7 @@ class NightLightManager:
             machine.expected = None
             machine.applied = None
             machine.state = LightState.IDLE
-            if await self._async_ensure_virtual(True):
+            if await self._async_ensure_virtual_on():
                 _LOGGER.info(
                     "%s turned on in daytime: constant-illuminance closed loop "
                     "takes over via virtual light %s (real light untouched)",
@@ -1621,7 +1601,7 @@ class NightLightManager:
                         "skip takeover"
                     )
                     return
-            if await self._async_ensure_virtual(True):
+            if await self._async_ensure_virtual_on():
                 # 恒照度闭环接管：真实灯零下发、无验证延迟，全部 machine
                 # 归位（虚拟灯整轮只调一次）
                 for machine in self.machines.values():

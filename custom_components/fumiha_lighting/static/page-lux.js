@@ -338,7 +338,7 @@ class LuxBalancePage extends HTMLElement {
         kit.el("div", {
           class: "cx-note warn",
           style: { marginTop: "8px" },
-          text: "校准进行中（约 15~40 分钟，上报不畅时可能接近 1 小时），期间本区闭环暂停，其他区域闭环自动让路。",
+          text: "校准进行中（默认 5% 步长约 15~40 分钟；2%/3% 细扫最坏可能 2~3 小时），期间本区闭环暂停，其他区域闭环自动让路。",
         }),
         kit.el("div", { style: { marginTop: "8px" } },
           kit.el("button", {
@@ -475,7 +475,7 @@ class LuxBalancePage extends HTMLElement {
           }
           const yes = await kit.confirmDialog(this.shadowRoot, {
             title: "校准 " + z.zone_name,
-            text: "灯将自动 0→100→0 扫描，约 15~40 分钟（传感器上报不畅时可能接近 1 小时），期间该区不可用。现在开始？" + staleNote,
+            text: "灯将自动 0→100→0 扫描，默认 5% 步长约 15~40 分钟；2%/3% 细扫最坏可能 2~3 小时（含传感器上报等待）。期间该区不可用。现在开始？" + staleNote,
             confirmLabel: "开始校准",
           });
           if (!yes) return;

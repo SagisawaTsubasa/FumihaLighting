@@ -622,9 +622,13 @@ class AnlConfigView(HomeAssistantView):
             or (merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or "") != old_virtual
         ):
             # F-083：归还统一走 async_release_virtual_light（lux mode 守卫
-            # + 跨条目检查 + best-effort turn_off，anl/manager.py 单一来源）
+            # + 跨条目检查 + best-effort turn_off，anl/manager.py 单一来源）；
+            # F-090：配置侧挂点启用 calibrating 有界延迟归还
             await async_release_virtual_light(
-                hass, old_virtual, exclude_entry_id=entry.entry_id
+                hass,
+                old_virtual,
+                exclude_entry_id=entry.entry_id,
+                retry_on_calibrating=True,
             )
         hass.config_entries.async_update_entry(entry, options=merged)
         return web.json_response({"ok": True, "pruned_override_extras": pruned})

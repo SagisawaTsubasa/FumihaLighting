@@ -362,8 +362,12 @@ class _FlowMixin:
             new.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
         ) == old_virtual:
             return
+        # F-090：配置侧挂点启用 calibrating 有界延迟归还
         await async_release_virtual_light(
-            self.hass, old_virtual, exclude_entry_id=exclude_entry_id
+            self.hass,
+            old_virtual,
+            exclude_entry_id=exclude_entry_id,
+            retry_on_calibrating=True,
         )
 
     def _carry_gui_keys(self, current: dict, lights=None) -> dict:

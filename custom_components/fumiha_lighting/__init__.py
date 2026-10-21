@@ -115,7 +115,13 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     # 路径（async_unload_entry→manager.stop）故意不动灯，防正常 reload 把
     # 日间恒照度闭环关掉（F-057）；启动/重载侧的归还对账在 anl_async_
     # setup_entry（F-081）。
-    await async_release_virtual_light(hass, virtual, exclude_entry_id=entry.entry_id)
+    # F-090：配置侧挂点启用 calibrating 有界延迟归还
+    await async_release_virtual_light(
+        hass,
+        virtual,
+        exclude_entry_id=entry.entry_id,
+        retry_on_calibrating=True,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,8 @@ from .const import (
     CONF_BRIGHTNESS,
     CONF_COLOR_TEMP_KELVIN,
     CONF_DAY_BRIGHTNESS,
+    CONF_DAY_CI_ENABLED,
+    CONF_DAY_CI_VIRTUAL_LIGHT,
     CONF_DAY_COLOR_TEMP_KELVIN,
     CONF_DAY_ENABLED,
     CONF_END_MODE,
@@ -109,6 +111,7 @@ PARAMS_NUMERIC: dict[str, tuple] = {
 }
 PARAMS_BOOL = (
     CONF_DAY_ENABLED,
+    CONF_DAY_CI_ENABLED,
     CONF_TURN_ON_LISTEN,
     CONF_ONLY_WHEN_ON,
     CONF_RESPECT_MANUAL,
@@ -154,6 +157,8 @@ CONFIG_KEYS = (
     CONF_COLOR_TEMP_KELVIN,
     CONF_DAY_BRIGHTNESS,
     CONF_DAY_COLOR_TEMP_KELVIN,
+    CONF_DAY_CI_ENABLED,
+    CONF_DAY_CI_VIRTUAL_LIGHT,
     CONF_TOLERANCE_BRIGHTNESS,
     CONF_TOLERANCE_KELVIN,
     CONF_VERIFY_DELAY,
@@ -241,6 +246,27 @@ def _entity_check(payload, key):
     return value.strip(), None
 
 
+def _day_ci_virtual_light_check(payload, key):
+    """恒照度虚拟灯实体校验（对 _entity_check 的显式放宽修订）。
+
+    GUI 保存走全量键契约：CI 关时实体字段提交空串/None =「未配置」，
+    必须放行并归一为 ""，否则条件显隐下关掉 CI 的保存会被 400 打断
+    （裸 _entity_check 拒空串，与全量键提交互斥）。非空值走
+    _entity_check 同逻辑（strip、非空字符串）；非 str 且非 None 拒绝。
+    """
+    if key not in payload:
+        return None, None
+    value = payload[key]
+    if value is None or value == "":
+        return "", None
+    if not isinstance(value, str):
+        return None, f"{key} 需为字符串实体 ID 或空串"
+    value = value.strip()
+    if not value:
+        return None, f"{key} 需为非空实体 ID"
+    return value, None
+
+
 def _bool_check(payload, key):
     if key not in payload:
         return None, None
@@ -276,9 +302,10 @@ def validate_times(payload) -> tuple[dict | None, str | None]:
 
 
 def validate_params(payload) -> tuple[dict | None, str | None]:
-    """参数分节：亮度/色温（含日间）+ 容差 + 延迟 + 行为开关。"""
+    """参数分节：亮度/色温（含日间）+ 容差 + 延迟 + 行为开关 + 恒照度虚拟灯。"""
     allowed: dict = {k: _num_check(PARAMS_NUMERIC) for k in PARAMS_NUMERIC}
     allowed.update({k: _bool_check for k in PARAMS_BOOL})
+    allowed[CONF_DAY_CI_VIRTUAL_LIGHT] = _day_ci_virtual_light_check
     return _section(payload, allowed, "params")
 
 
@@ -317,6 +344,11 @@ def validate_extras(payload) -> tuple[list | None, str | None]:
                 return None, f"额外时段 {i + 1} 的 {err}"
             extra[key] = value
         clean.append(extra)
+    # F-070：同刻双时段拒绝——双定时器同触发 + 自循环重排会互踩句柄、
+    # 次日重复触发；_mode_at 对同刻锚点按列表序平局，参数归属也不确定
+    starts = [e[EXTRA_START] for e in clean]
+    if len(starts) != len(set(starts)):
+        return None, "额外时段开始时间不能重复"
     return clean, None
 
 

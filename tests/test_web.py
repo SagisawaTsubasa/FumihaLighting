@@ -337,7 +337,7 @@ def _config_entry(entry_id="anl1", data=None, options=None):
         data=data if data is not None else {},
         options=options if options is not None else {},
         disabled_by=None,
-        state="loaded",
+        state=stubs.ConfigEntryState.LOADED,
     )
 
 

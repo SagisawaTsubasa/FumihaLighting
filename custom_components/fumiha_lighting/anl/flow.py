@@ -22,13 +22,11 @@ import logging
 
 import voluptuous as vol
 
-from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN
 from homeassistant.config_entries import (
     SOURCE_RECONFIGURE,
     ConfigFlowResult,
     OptionsFlow,
 )
-from homeassistant.const import ATTR_ENTITY_ID, SERVICE_TURN_OFF
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.selector import (
     BooleanSelector,
@@ -44,7 +42,6 @@ from homeassistant.helpers.selector import (
 )
 
 from ..const import CONF_KIND, KIND_ANL
-from ..web import _anl_virtual_referenced_elsewhere
 from .config_schema import (
     PARAMS_NUMERIC,
     TIMES_ENUM,
@@ -82,6 +79,7 @@ from .const import (
     DEFAULT_SUN_ENTITY,
     DOMAIN,
 )
+from .manager import async_release_virtual_light
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -354,6 +352,8 @@ class _FlowMixin:
         F-067：归还前跨条目检查——其他 anl 条目仍引用同一虚拟灯时跳过
         turn_off（关掉会静默终止别组的日间闭环），INFO 可观测。排除自身
         条目：reconfigure 流传被改条目 id，options 流传当前条目 id。
+        F-083：归还动作统一走 async_release_virtual_light（lux mode 守卫 +
+        跨条目检查 + best-effort turn_off，anl/manager.py 单一来源）。
         """
         old_virtual = old.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
         if not (old.get(CONF_DAY_CI_ENABLED) and old_virtual):
@@ -362,29 +362,9 @@ class _FlowMixin:
             new.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
         ) == old_virtual:
             return
-        if exclude_entry_id is not None and _anl_virtual_referenced_elsewhere(
-            self.hass, exclude_entry_id, old_virtual
-        ):
-            _LOGGER.info(
-                "恒照度虚拟灯 %s 仍被其他夜灯组条目引用，跳过归还（保持开启）",
-                old_virtual,
-            )
-            _LOGGER.debug(
-                "归还跳过原因：跨条目检查命中其他 anl 条目的 "
-                "day_ci_enabled + 同虚拟灯引用"
-            )
-            return
-        try:
-            await self.hass.services.async_call(
-                LIGHT_DOMAIN,
-                SERVICE_TURN_OFF,
-                {ATTR_ENTITY_ID: old_virtual},
-                blocking=True,
-            )
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.warning(
-                "归还旧恒照度虚拟灯 %s 失败：%s（保存不阻断）", old_virtual, err
-            )
+        await async_release_virtual_light(
+            self.hass, old_virtual, exclude_entry_id=exclude_entry_id
+        )
 
     def _carry_gui_keys(self, current: dict, lights=None) -> dict:
         """GUI 管理键携带（reconfigure 收敛 data / options 全镜像都需要）。

@@ -22,8 +22,6 @@ from homeassistant.components.http import (
     StaticPathConfig,
     require_admin,
 )
-from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN
-from homeassistant.const import ATTR_ENTITY_ID, SERVICE_TURN_OFF
 from homeassistant.core import (
     EVENT_HOMEASSISTANT_STARTED,
     Event,
@@ -62,10 +60,10 @@ from .anl.const import (
     OVR_EXTRAS,
 )
 from .anl.const import DOMAIN as _  # noqa: F401 — 子包自证
+from .anl.manager import async_release_virtual_light
 from .const import (
     API_BASE,
     BUS_EVENT_PAGE_CHANGED,
-    CONF_KIND,
     DOMAIN,
     KIND_ANL,
     KIND_LUX,
@@ -134,36 +132,6 @@ def _lux_runtimes(hass: HomeAssistant) -> dict:
 
 def _anl_managers(hass: HomeAssistant) -> dict:
     return (hass.data.get(DOMAIN) or {}).get("anl", {})
-
-
-def _anl_virtual_referenced_elsewhere(
-    hass: HomeAssistant, exclude_entry_id: str, virtual: str
-) -> bool:
-    """跨条目引用检查（F-067）：除排除条目外，是否还有别的 anl 条目引用同一虚拟灯。
-
-    判据 = 条目 kind 为 anl 且合并 data+options 后 day_enabled 开、
-    day_ci_enabled 开、day_ci_virtual_light 等于待归还实体（F-077：与
-    manager._ci_configured 生效判据同源——「CI 键在但 day_enabled 关」是
-    失效配置，其 manager 运行时零虚拟灯调用，不构成生效引用，不得阻塞
-    他条目归还）。注意归还侧 old_ci_enabled 的宽松判据（web/flow/__init__
-    各挂点）有意保持不动——「旧配置有 CI 键就尝试归还」语义正确，两者
-    不共用谓词。走 config_entries 注册表而非
-    hass.data 运行时桶：删除钩子（async_remove_entry）触发时 manager 可能
-    已卸载，注册表里的 data+options 合并值才是配置真值。
-    """
-    for entry in hass.config_entries.async_entries(DOMAIN):
-        if entry.entry_id == exclude_entry_id:
-            continue
-        if entry.data.get(CONF_KIND) != KIND_ANL:
-            continue
-        merged = {**entry.data, **entry.options}
-        if (
-            merged.get(CONF_DAY_ENABLED)
-            and merged.get(CONF_DAY_CI_ENABLED)
-            and (merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or "") == virtual
-        ):
-            return True
-    return False
 
 
 def _finite_or_none(value, ndigits: int) -> float | None:
@@ -653,27 +621,11 @@ class AnlConfigView(HomeAssistantView):
             not merged.get(CONF_DAY_CI_ENABLED)
             or (merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or "") != old_virtual
         ):
-            if _anl_virtual_referenced_elsewhere(hass, entry.entry_id, old_virtual):
-                _LOGGER.info(
-                    "恒照度虚拟灯 %s 仍被其他夜灯组条目引用，跳过归还（保持开启）",
-                    old_virtual,
-                )
-                _LOGGER.debug(
-                    "归还跳过原因：跨条目检查命中其他 anl 条目的 "
-                    "day_ci_enabled + 同虚拟灯引用"
-                )
-            else:
-                try:
-                    await hass.services.async_call(
-                        LIGHT_DOMAIN,
-                        SERVICE_TURN_OFF,
-                        {ATTR_ENTITY_ID: old_virtual},
-                        blocking=True,
-                    )
-                except Exception as err:  # noqa: BLE001
-                    _LOGGER.warning(
-                        "归还旧恒照度虚拟灯 %s 失败：%s（保存继续）", old_virtual, err
-                    )
+            # F-083：归还统一走 async_release_virtual_light（lux mode 守卫
+            # + 跨条目检查 + best-effort turn_off，anl/manager.py 单一来源）
+            await async_release_virtual_light(
+                hass, old_virtual, exclude_entry_id=entry.entry_id
+            )
         hass.config_entries.async_update_entry(entry, options=merged)
         return web.json_response({"ok": True, "pruned_override_extras": pruned})
 

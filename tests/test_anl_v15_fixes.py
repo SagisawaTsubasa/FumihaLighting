@@ -125,6 +125,12 @@ def _svc_recorder(events):
 def test_web_post_ci_disabled_releases_old_virtual():
     """①存 CI on+virtX → POST 关闭 CI → 200 且 services 收到 turn_off。"""
     hass = _recording_hass()
+    # F-083：归还走助手 lux mode 守卫——桩给出闭环在跑的真实形态
+    hass.states = SimpleNamespace(
+        get=lambda eid: SimpleNamespace(state="on", attributes={"mode": "active"})
+        if eid == VIRT
+        else None
+    )
     _anl_bucket(hass, _config_manager(_ci_entry()))
     resp = run(
         web.AnlConfigView().post(
@@ -154,6 +160,11 @@ def test_web_post_unchanged_ci_zero_calls():
 def test_web_post_repoint_releases_old_only():
     """③改指 X→Y → turn_off 旧灯 X；新灯走注册表校验后落盘。"""
     hass = _recording_hass()
+    hass.states = SimpleNamespace(  # F-083：助手 mode 守卫，见①
+        get=lambda eid: SimpleNamespace(state="on", attributes={"mode": "active"})
+        if eid == VIRT
+        else None
+    )
     _anl_bucket(hass, _config_manager(_ci_entry()))
     _register_virtual("light.new")
     resp = run(
@@ -194,7 +205,14 @@ def test_options_flow_releases_before_entry_update():
         options={},
     )
     opts.hass = SimpleNamespace(
-        states=SimpleNamespace(get=lambda eid: None),
+        # F-083：归还走助手 lux mode 守卫——桩给出闭环在跑的真实形态
+        states=SimpleNamespace(
+            get=lambda eid: SimpleNamespace(
+                state="on", attributes={"mode": "active"}
+            )
+            if eid == VIRT
+            else None
+        ),
         services=SimpleNamespace(async_call=_svc_recorder(events)),
         # F-067：flow 归还前跨条目检查读 config_entries.async_entries
         config_entries=SimpleNamespace(async_entries=lambda domain: []),
@@ -222,7 +240,14 @@ def test_reconfigure_flow_releases_old_virtual_on_ci_off():
     flow = _make_flow()
     events = []
     flow.hass = SimpleNamespace(
-        states=SimpleNamespace(get=lambda eid: None),
+        # F-083：归还走助手 lux mode 守卫——桩给出闭环在跑的真实形态
+        states=SimpleNamespace(
+            get=lambda eid: SimpleNamespace(
+                state="on", attributes={"mode": "active"}
+            )
+            if eid == VIRT
+            else None
+        ),
         services=SimpleNamespace(async_call=_svc_recorder(events)),
         # F-067：flow 归还前跨条目检查读 config_entries.async_entries
         config_entries=SimpleNamespace(async_entries=lambda domain: []),
@@ -252,6 +277,12 @@ def test_reconfigure_flow_releases_old_virtual_on_ci_off():
 def test_remove_entry_anl_releases_virtual_lux_does_not():
     """⑥async_remove_entry：anl 条目真删除 → turn_off；lux 条目 → 零调用。"""
     hass = FakeHass()
+    # F-083：归还走助手 lux mode 守卫——桩给出闭环在跑的真实形态
+    hass.states = SimpleNamespace(
+        get=lambda eid: SimpleNamespace(state="on", attributes={"mode": "active"})
+        if eid == VIRT
+        else None
+    )
     anl_entry = SimpleNamespace(
         entry_id="anl1",
         data={"kind": "anl", "lights": ["light.a"],

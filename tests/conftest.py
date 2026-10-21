@@ -10,6 +10,7 @@ schedule).
 这套测试是「桩模式专用」：即使环境里装了真实 HA 也使用桩。
 """
 
+import enum as _enum
 import json as _json
 import sys as _sys
 import types as _types
@@ -180,9 +181,30 @@ _ha_module(
     ColorMode=_types.SimpleNamespace(BRIGHTNESS="brightness"),
     LightEntity=type("LightEntity", (), {}),
 )
+class _ConfigEntryState(_enum.Enum):
+    """HA 2026.1.0 homeassistant/config_entries.py:141-159 实证成员集：
+    value 是 (str, bool) 元组（recoverable 标记），并非 str-Enum——
+    生产代码必须以枚举成员身份比较，禁止裸字符串（真机恒 False）。
+    无 "loading" 成员（R8 复验疑点已实证排除）。"""
+
+    LOADED = ("loaded", True)
+    SETUP_ERROR = ("setup_error", True)
+    MIGRATION_ERROR = ("migration_error", False)
+    SETUP_RETRY = ("setup_retry", True)
+    NOT_LOADED = ("not_loaded", True)
+    FAILED_UNLOAD = ("failed_unload", False)
+    SETUP_IN_PROGRESS = ("setup_in_progress", False)
+    UNLOAD_IN_PROGRESS = ("unload_in_progress", False)
+
+
+# 公开别名：测试以 stubs.ConfigEntryState.X 构造条目桩
+ConfigEntryState = _ConfigEntryState
+
+
 _ha_module(
     "homeassistant.config_entries",
     ConfigEntry=_ConfigEntry,
+    ConfigEntryState=_ConfigEntryState,
     ConfigFlow=type("ConfigFlow", (_ConfigFlowBase,), {}),
     ConfigFlowResult=dict,
     OptionsFlow=type(

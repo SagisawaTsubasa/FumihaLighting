@@ -18,7 +18,7 @@ from homeassistant.components.light import (
 from homeassistant.components.light import (
     DOMAIN as LIGHT_DOMAIN,
 )
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import (
     ATTR_ENTITY_ID,
     SERVICE_TURN_OFF,
@@ -125,15 +125,19 @@ _NOT_IN_BAND = object()  # _band_params 哨兵：当前不在任何过渡带内
 # 打扰会让灯停在校准末档；None（非 lux 灯/属性缺失/实体缺失）一律不动。
 _CI_HANDBACK_LUX_MODES = ("active", "passthrough")
 
-# F-093：构成生效引用的条目状态白名单（字符串值与 ConfigEntryState 的
-# str-Enum 成员直接相等比较成立）。NOT_LOADED/SETUP_ERROR/SETUP_TIMEOUT
-# 等未运行态不算——条目无运行时不会接手虚拟灯，其残留配置不得永久阻塞
-# 归还。
+# F-093/F-099：构成生效引用的条目状态白名单。实证（HA 2026.1.0
+# homeassistant/config_entries.py:141-159）：成员全集为 loaded/
+# setup_error/migration_error/setup_retry/not_loaded/failed_unload/
+# setup_in_progress/unload_in_progress——没有 "loading"（R8 复验疑点
+# 落实：删）；且 value 是 (str, bool) 元组、并非 str-Enum，禁止与裸
+# 字符串比较（真机恒 False 会让跨条目守卫整体失效），必须用枚举成员
+# 本身比较。NOT_LOADED/SETUP_ERROR/MIGRATION_ERROR/FAILED_UNLOAD/
+# UNLOAD_IN_PROGRESS 等未运行/正在退出态不算——条目无运行时不会接手
+# 虚拟灯，残留配置不得永久阻塞归还（F-093）。
 _CI_REFERENCING_ENTRY_STATES = (
-    "loaded",
-    "loading",
-    "setup_in_progress",
-    "setup_retry",
+    ConfigEntryState.LOADED,
+    ConfigEntryState.SETUP_IN_PROGRESS,
+    ConfigEntryState.SETUP_RETRY,
 )
 
 
@@ -155,9 +159,16 @@ def _anl_virtual_referenced_elsewhere(
     F-093：disabled_by 非 None 或 state 不在运行态白名单的条目没有
     manager 运行时、永远不会真正接手虚拟灯，不算生效引用——否则其
     残留配置会永久阻塞合法归还（V 恒 active + 双闭环互纠）。白名单含
-    loading/setup_in_progress/setup_retry：即将获得运行时，视为有效
-    引用（宁可不归还也不误关将接手的闭环）。
+    setup_in_progress/setup_retry（HA 2026.1 实证无 loading 态）：即将
+    获得运行时，视为有效引用（宁可不归还也不误关将接手的闭环）。
+    F-099：命中条目逐个 DEBUG（entry_id/title/state 可追——跳过归还的
+    INFO 不再让用户猜「是谁在用」）；若所有命中条目都不是 LOADED（长期
+    SETUP_RETRY 等无运行时态），升级 WARNING：该引用可能永不接手，归还
+    将被无限期阻塞，请检查/修复或删除引用条目（SETUP_RETRY 仍视为有效
+    引用——它随时可能重试成功接手，宁可阻塞也不误关将活过来的闭环）。
     """
+    hits = []  # F-099：收集命中以判断「引用是否全部非 LOADED」（提前
+    # return 的 bool 流判不了「全部」，是本判据必需的最小变量）
     for entry in hass.config_entries.async_entries(DOMAIN):
         if entry.entry_id == exclude_entry_id:
             continue
@@ -175,8 +186,30 @@ def _anl_virtual_referenced_elsewhere(
             and merged.get(CONF_DAY_CI_ENABLED)
             and (merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or "") == virtual
         ):
-            return True
-    return False
+            hits.append(entry)
+    if not hits:
+        return False
+    for entry in hits:
+        _LOGGER.debug(
+            "生效引用：条目 %s（title=%r, state=%s, disabled_by=%r）"
+            "仍引用恒照度虚拟灯 %s",
+            entry.entry_id,
+            entry.title,
+            entry.state,
+            entry.disabled_by,
+            virtual,
+        )
+    if all(entry.state != ConfigEntryState.LOADED for entry in hits):
+        _LOGGER.warning(
+            "恒照度虚拟灯 %s 的引用条目全部未完全加载（%s）——归还将被"
+            "无限期阻塞；若该组长期失败不会接手，请检查/修复或删除对应"
+            "夜灯组条目（F-099）",
+            virtual,
+            ", ".join(
+                f"{entry.entry_id}={entry.state}" for entry in hits
+            ),
+        )
+    return True
 
 
 async def async_release_virtual_light(
@@ -231,21 +264,24 @@ async def async_release_virtual_light(
             blocking=True,
         )
     except Exception as err:  # noqa: BLE001
-            _LOGGER.warning(
+        _LOGGER.warning(
             "归还恒照度虚拟灯 %s 失败：%s（继续，不阻断主流程）", virtual, err
         )
 
 
 _CI_RELEASE_RETRY_INTERVAL_S = 60
-# F-092：上限按 README 最坏口径取，不再按「实测 15~25 分钟」——README:13
-# 自述「约 15~40 分钟（传感器上报不畅时可能接近 1 小时）」；lux 源码推演
-# 5% 扫描最坏 ~41 分钟（40 步 × CAL_CMD_SETTLE_S 2s + CAL_FIRST_REPORT_
-# TIMEOUT_S 60s），missed_streak>=2 转 10% 重扫再 +20 步 ≈ 62 分钟。旧
-# 30 分钟上限在慢传感器场景必然先于校准结束放弃，而放弃后没有任何归还
-# 路径（trigger/extra/监听/启动对账全被 _ci_configured 门挡，web/flow
-# 归还要 old_ci_enabled 为真，删除钩子也 return）——归还永久丢失 + 双
-# 闭环互纠。90 分钟覆盖最坏推演并留余量。
-_CI_RELEASE_RETRY_MAX = 90  # 90 次 × 60s = ~90 分钟
+# F-097：上限按最大合法步长的最坏校准时长取——步长是合法配置
+# （lux/flow.py 选择器 min=2；lux/logic.py 钳 2..20），calibration_steps(2)
+# = 51 点 → _async_sweep = 基线 1 + 上行 50 + 下行 49 = 100 次
+# _async_cal_step × 62s（CAL_CMD_SETTLE_S 2s + CAL_FIRST_REPORT_TIMEOUT_S
+# 60s，lux/const.py:55-57）≈ 103 分钟；中段连续两档无上报触发 10% 重扫
+# 再 +20 次 ≈ 124 分钟。R7 的 90 分钟只覆盖默认 5% 步长（40+20 次 ≈ 62
+# 分钟），2%/3% 步长会在校准中先放弃且放弃后无任何归还路径（trigger/
+# extra/监听/启动对账全被 _ci_configured 门挡，web/flow 归还要
+# old_ci_enabled 为真，删除钩子也 return）。150 分钟覆盖最坏口径并留
+# ~26 分钟余量；不按灯区生效步长动态计算（manager 须跨 kind 读 lux 条目
+# 配置，徒增耦合）——「非必要不增加变量」取静态上界。
+_CI_RELEASE_RETRY_MAX = 150  # 150 次 × 60s = ~150 分钟
 
 
 def _schedule_ci_release_retry(hass: HomeAssistant, virtual: str) -> None:
@@ -259,8 +295,9 @@ def _schedule_ci_release_retry(hass: HomeAssistant, virtual: str) -> None:
     接手（任何运行中的 anl 条目重新引用该灯——含用户在重试窗口内改回 CI
     指回同一灯的场景，归还不得误杀新接管）、mode 已离白名单（idle=lux
     已放手，目标达成无需 turn_off）。到上限仍在校准则 WARNING 放弃并
-    提示手动归还（F-092：上限已覆盖 README 最坏校准口径；放弃后无自动
-    归还路径——trigger/extra/监听/启动对账全被 _ci_configured 门挡）。
+    提示手动归还（F-092/F-097：上限 150 分钟已覆盖最大合法步长 2% 的
+    最坏校准 ~124 分钟；放弃后无自动归还路径——trigger/extra/监听/启动
+    对账全被 _ci_configured 门挡，故 WARNING 附自救指引 F-098）。
     回调 @callback（ANL-F-045 纪律）；补做归还走 async_release_virtual_
     light 单一来源（F-089/F-094：守卫在助手内恒执行），并传 retry_on_
     calibrating=True——补做执行前校准若重新进入（mode 又回 calibrating）
@@ -290,7 +327,9 @@ def _schedule_ci_release_retry(hass: HomeAssistant, virtual: str) -> None:
                 _LOGGER.warning(
                     "恒照度虚拟灯 %s 校准超时（约 %d 分钟）未结束，放弃"
                     "延迟归还（F-092）；校准结束后请手动关闭该虚拟灯，"
-                    "或重新保存对应夜灯组的 CI 配置以触发归还",
+                    "或先重新启用该组 CI、再停用/改指以重新触发归还"
+                    "（仅重存关闭状态不会归还，F-098），也可在恒照度"
+                    "页面中止校准后手动关闭",
                     virtual,
                     _CI_RELEASE_RETRY_MAX,
                 )

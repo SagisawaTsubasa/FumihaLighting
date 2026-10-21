@@ -443,8 +443,9 @@ def test_f086_night_trigger_release_skipped_when_other_entry_shares():
         data={"kind": "anl", "lights": ["light.z"], CONF_DAY_ENABLED: True,
               CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
+        title="自动夜灯B",
         disabled_by=None,
-        state="loaded",
+        state=stubs.ConfigEntryState.LOADED,
     )
     m.hass.config_entries = SimpleNamespace(
         async_entries=lambda domain: [
@@ -486,8 +487,9 @@ def test_f089_reconcile_skipped_when_other_entry_shares():
         data={"kind": "anl", "lights": ["light.z"], CONF_DAY_ENABLED: True,
               CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
+        title="自动夜灯B",
         disabled_by=None,
-        state="loaded",
+        state=stubs.ConfigEntryState.LOADED,
     )
     m.hass.config_entries = SimpleNamespace(
         async_entries=lambda domain: [m.entry, other]
@@ -588,8 +590,9 @@ def test_f090_retry_yields_to_reconfigured_reference():
         data={"kind": "anl", "lights": ["light.z"], CONF_DAY_ENABLED: True,
               CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
+        title="自动夜灯B",
         disabled_by=None,
-        state="loaded",
+        state=stubs.ConfigEntryState.LOADED,
     )
     hass.config_entries.async_entries = lambda domain: [reconfigured]
     states_map[VIRT] = SimpleNamespace(
@@ -682,7 +685,13 @@ def test_f093_broken_reference_does_not_block_retry_release():
     setup_error/not_loaded）的其他条目不构成生效引用——重试补做照常
     turn_off。旧判据把它们当生效引用，其 manager 永不接手 → V 恒
     active + 双闭环互纠、归还永久丢失。"""
-    for broken in ("disabled", "setup_error", "not_loaded"):
+    # (label, state, disabled_by)：state 用真机枚举成员（F-099 实证
+    # ConfigEntryState 非 str-Enum，裸字符串比较真机恒 False）
+    for broken in (
+        ("disabled", stubs.ConfigEntryState.LOADED, "user"),
+        ("setup_error", stubs.ConfigEntryState.SETUP_ERROR, None),
+        ("not_loaded", stubs.ConfigEntryState.NOT_LOADED, None),
+    ):
         states_map = _calib_states_map()
         hass, tasks = _calib_hass(states_map)
         _anl_bucket(hass, _config_manager(_calib_entry()))
@@ -695,8 +704,9 @@ def test_f093_broken_reference_does_not_block_retry_release():
                       CONF_DAY_ENABLED: True, CONF_DAY_CI_ENABLED: True,
                       CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
                 options={},
-                disabled_by="user" if _b == "disabled" else None,
-                state="loaded" if _b == "disabled" else _b,
+                title="自动夜灯B",
+                disabled_by=_b[2],
+                state=_b[1],
             )
         ]
         states_map[VIRT] = SimpleNamespace(
@@ -728,3 +738,68 @@ def test_f094_backfill_requeues_when_calibration_reenters():
     run(tasks[0])
     assert [d for d, _a in stubs.CALL_LATER_CALLS] == [60]  # 重排非丢弃
     assert hass.services.calls == []
+
+
+def test_f097_budget_covers_max_legal_step():
+    """F-097/F-100：预算常量必须覆盖最大合法步长的最坏校准——步长 2% 是
+    合法配置（lux/flow.py 选择器 min=2），calibration_steps(2)=51 点 →
+    _async_sweep = 基线 1 + 上行 50 + 下行 49 = 100 次 _async_cal_step；
+    10% 重扫再 +20 次；每步最坏 62s（CAL_CMD_SETTLE_S 2 + CAL_FIRST_
+    REPORT_TIMEOUT_S 60，lux/const.py:55-57）→ 最坏 120×62s ≈ 124 分钟。
+    旧 90 分钟上限会先于校准结束放弃且此后无任何归还路径（F-092）。"""
+    from custom_components.fumiha_lighting.lux.const import (
+        CAL_CMD_SETTLE_S,
+        CAL_FIRST_REPORT_TIMEOUT_S,
+    )
+    from custom_components.fumiha_lighting.lux.logic import calibration_steps
+
+    steps = calibration_steps(2)  # 最小合法步长
+    assert steps[0] == 0 and steps[-1] == 100 and len(steps) == 51
+    sweep_calls = 1 + (len(steps) - 1) + (len(steps) - 2)  # 基线+上行+下行
+    assert sweep_calls == 100
+    resweep_calls = 1 + 10 + 9  # calibration_steps(10)=11 点的完整重扫
+    worst_s = (sweep_calls + resweep_calls) * (
+        CAL_CMD_SETTLE_S + CAL_FIRST_REPORT_TIMEOUT_S
+    )
+    budget_s = (
+        anl_manager._CI_RELEASE_RETRY_MAX
+        * anl_manager._CI_RELEASE_RETRY_INTERVAL_S
+    )
+    assert worst_s >= 124 * 60  # 最坏口径实算
+    assert budget_s >= worst_s  # 预算必须覆盖最坏校准（F-097 修复口径）
+
+
+def test_f099_setup_retry_reference_blocks_but_warns(caplog):
+    """F-099：引用条目全为 SETUP_RETRY（无运行时）→ 仍保守阻塞归还
+    （该态随时可能重试成功接手），但升级 WARNING——旧实现只有无标识
+    INFO，长期失败条目会静默永久阻塞；命中条目 DEBUG 带 entry_id/state
+    可追。"""
+    import logging
+
+    states_map = _calib_states_map()
+    hass, tasks = _calib_hass(states_map)
+    _anl_bucket(hass, _config_manager(_calib_entry()))
+    stubs.CALL_LATER_CALLS.clear()
+    _post_disable_ci(hass)
+    hass.config_entries.async_entries = lambda domain: [SimpleNamespace(
+        entry_id="anl2",
+        data={"kind": "anl", "lights": ["light.z"],
+              CONF_DAY_ENABLED: True, CONF_DAY_CI_ENABLED: True,
+              CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
+        options={},
+        title="自动夜灯B",
+        disabled_by=None,
+        state=stubs.ConfigEntryState.SETUP_RETRY,
+    )]
+    states_map[VIRT] = SimpleNamespace(
+        state="on", attributes={"mode": "active"})
+    with caplog.at_level(logging.DEBUG, logger=MANAGER_LOGGER):
+        stubs.flush_deferred_callbacks()  # F-096：flush 结构门禁
+        assert tasks, "补做已投递，守卫在助手内命中"
+        run(tasks[0])
+    assert hass.services.calls == []  # SETUP_RETRY 仍保守阻塞
+    warns = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("未完全加载" in r.getMessage() and "anl2" in r.getMessage()
+               for r in warns), "全非 LOADED 引用必须升级 WARNING"
+    assert any("anl2" in r.getMessage() and "SETUP_RETRY" in r.getMessage()
+               for r in caplog.records), "命中条目 DEBUG 须带 entry_id/state"

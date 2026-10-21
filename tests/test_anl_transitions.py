@@ -54,8 +54,9 @@ def make_entry(**overrides):
         data=data,
         options={},
         entry_id="anl-test",
+        title="自动夜灯",
         disabled_by=None,
-        state="loaded",
+        state=stubs.ConfigEntryState.LOADED,
     )
 
 

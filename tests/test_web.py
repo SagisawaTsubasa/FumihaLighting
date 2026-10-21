@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from datetime import time as _time
 from types import SimpleNamespace
 
+import conftest as stubs
 import pytest
 from conftest import flush_deferred_callbacks as _flush_deferred
 
@@ -60,6 +61,11 @@ class FakeHttp:
 class FakeServices:
     def __init__(self):
         self.registered = {}
+        self.calls = []
+
+    async def async_call(self, domain, service, data, blocking=False):
+        # F-057：web/删条目的归还路径走 services.async_call——桩记录供断言
+        self.calls.append((domain, service, dict(data)))
 
     def async_register(self, domain, service, handler, schema=None):
         self.registered[(domain, service)] = handler
@@ -77,7 +83,11 @@ class FakeHass:
         self.bus = FakeBus()
         self.http = FakeHttp()
         self.services = FakeServices()
-        self.config_entries = SimpleNamespace(async_update_entry=lambda *a, **k: None)
+        self.config_entries = SimpleNamespace(
+            async_update_entry=lambda *a, **k: None,
+            # F-067：跨条目引用检查读 config_entries.async_entries——桩缺省空表
+            async_entries=lambda domain: [],
+        )
 
 
 class FakeRequest:
@@ -141,7 +151,14 @@ def fake_anl_manager(entry_id="anl1", title="自动夜灯", **overrides):
         transition_enabled=True,  # 存储派生值（end_transition>0）
         transitions_active=False,  # 生效总闸：day 关 → manager 归零（真实分叉）
         day_enabled=False,
+        day_ci_enabled=False,
+        day_ci_virtual_light=None,
         respect_manual=True,
+    )
+    # F-061：序列化读 ci_configured()——默认按真实语义镜像两字段
+    # F-065：镜像 manager._ci_configured 生效判据（含 day_enabled）
+    mgr.ci_configured = lambda: bool(
+        mgr.day_enabled and mgr.day_ci_enabled and mgr.day_ci_virtual_light
     )
     mgr._anchor_modes = lambda: [
         (_time(23, 30), "night"),
@@ -341,7 +358,11 @@ def _recording_hass():
         recorded.append((entry, kw))
         return True
 
-    hass.config_entries = SimpleNamespace(async_update_entry=_update)
+    hass.config_entries = SimpleNamespace(
+        async_update_entry=_update,
+        # F-067：跨条目引用检查读 config_entries.async_entries——桩缺省空表
+        async_entries=lambda domain: [],
+    )
     return hass
 
 
@@ -832,6 +853,7 @@ def test_anl_options_flow_two_step_chain():
 
     opts = AnlGroupOptionsFlow()
     opts.config_entry = SimpleNamespace(
+        entry_id="anl1",
         data={"kind": "anl", "lights": ["light.a"], "brightness": 25},
         options={"extras": [{"name": "晚", "start": "18:00:00", "brightness": 60,
                              "color_temp_kelvin": 3000, "transition": 0}],
@@ -870,6 +892,7 @@ def test_anl_reconfigure_light_change_updates_unique_id():
     flow.hass = SimpleNamespace(states=SimpleNamespace(get=lambda eid: None))
     flow.source = "reconfigure"
     entry = SimpleNamespace(
+        entry_id="anl1",
         data={CONF_KIND: "anl", "lights": ["light.old"], "brightness": 25},
         options={},
         unique_id="anl:light.old",
@@ -1121,6 +1144,7 @@ def test_anl_reconfigure_carries_gui_managed_keys():
     flow.hass = SimpleNamespace(states=SimpleNamespace(get=lambda eid: None))
     flow.source = "reconfigure"
     entry = SimpleNamespace(
+        entry_id="anl1",
         data={CONF_KIND: "anl", "lights": ["light.a"], "brightness": 25},
         options={"extras": [{"name": "晚", "start": "18:00:00", "brightness": 60,
                              "color_temp_kelvin": 3000, "transition": 0}],
@@ -2348,3 +2372,172 @@ def test_turn_off_requested_leaves_real_light_alone():
         assert rt.commanded_pct is None
 
     asyncio.run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# anl day CI (V1.5.0): wizard fields, entry data, serializer, POST guard
+# ---------------------------------------------------------------------------
+
+
+def test_anl_settings_schema_has_ci_fields():
+    """向导第 3 步含两新字段；实体字段为 Optional（CI 关时留空）。"""
+    import voluptuous as vol
+
+    from custom_components.fumiha_lighting.anl.const import (
+        CONF_DAY_CI_ENABLED,
+        CONF_DAY_CI_VIRTUAL_LIGHT,
+    )
+    from custom_components.fumiha_lighting.anl.flow import _settings_schema
+
+    schema = _settings_schema({})
+    markers = {m.schema: m for m in schema.schema}
+    assert CONF_DAY_CI_ENABLED in markers
+    assert CONF_DAY_CI_VIRTUAL_LIGHT in markers
+    assert isinstance(markers[CONF_DAY_CI_ENABLED], vol.Required)
+    assert isinstance(markers[CONF_DAY_CI_VIRTUAL_LIGHT], vol.Optional)
+
+
+def test_anl_entry_data_ci_keys_passthrough_and_none_normalized():
+    """_entry_data 两键透传；实体 None 归一 ""（存储形状，防 None 入库）。"""
+    times_input = {
+        "start_mode": "fixed", "end_mode": "fixed",
+        "trigger_time": "22:00", "end_time": "06:00",
+        "start_offset": 0, "end_offset": 0, "sun_entity": "sun.sun",
+        "start_transition": 0, "end_transition": 0, "transition_interval": 5,
+    }
+
+    def _run_wizard(settings):
+        flow = _make_flow()
+        flow.hass = SimpleNamespace(states=SimpleNamespace(get=lambda eid: None))
+        run(flow.async_step_user({CONF_KIND: KIND_ANL}))
+        run(flow.async_step_anl_user({"lights": ["light.a"]}))
+        run(flow.async_step_time_details(times_input))
+        return run(flow.async_step_settings(settings))
+
+    result = _run_wizard({
+        "day_enabled": False, "brightness": 25, "color_temp_kelvin": 2200,
+        "day_brightness": 100, "day_color_temp_kelvin": 4000,
+        "day_ci_enabled": False, "day_ci_virtual_light": None,
+        "tolerance_brightness": 4, "tolerance_kelvin": 150,
+        "verify_delay": 5, "settle_delay": 1,
+        "turn_on_listen": True, "only_when_on": False, "respect_manual": True,
+    })
+    assert result["type"] == "create_entry"
+    data = result["data"]
+    # F-061：CI on+空实体在参数步被拦截（见 test_anl_v15_fixes）——归一化
+    # 路径改用 CI 关组合驱动，None → "" 归一断言不变
+    assert data["day_ci_enabled"] is False
+    assert data["day_ci_virtual_light"] == ""  # None → "" 归一
+    # 非空值原样透传
+    result2 = _run_wizard({
+        "day_enabled": True, "brightness": 25, "color_temp_kelvin": 2200,
+        "day_brightness": 100, "day_color_temp_kelvin": 4000,
+        "day_ci_enabled": True, "day_ci_virtual_light": "light.virt",
+        "tolerance_brightness": 4, "tolerance_kelvin": 150,
+        "verify_delay": 5, "settle_delay": 1,
+        "turn_on_listen": True, "only_when_on": False, "respect_manual": True,
+    })
+    assert result2["data"]["day_ci_virtual_light"] == "light.virt"
+
+
+def test_anl_snapshot_serializes_day_ci_keys():
+    hass = FakeHass()
+    _anl_bucket(
+        hass,
+        fake_anl_manager(day_ci_enabled=True, day_ci_virtual_light="light.virt"),
+    )
+    resp = run(web.AnlSnapshotView().get(FakeRequest(hass)))
+    m = resp.payload["managers"][0]
+    assert m["day_ci_enabled"] is True
+    assert m["day_ci_virtual_light"] == "light.virt"
+    # 空串归一为 None（页面判「未配置」）
+    hass2 = FakeHass()
+    _anl_bucket(
+        hass2,
+        fake_anl_manager(day_ci_enabled=False, day_ci_virtual_light=""),
+    )
+    resp2 = run(web.AnlSnapshotView().get(FakeRequest(hass2)))
+    assert resp2.payload["managers"][0]["day_ci_virtual_light"] is None
+
+
+def test_anl_config_post_rejects_missing_virtual_light():
+    hass = _recording_hass()
+    entry = _config_entry(data={"kind": "anl", "lights": ["light.a"]})
+    _anl_bucket(hass, _config_manager(entry))
+    hass.states = SimpleNamespace(get=lambda eid: None)
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"params": {
+                                   "day_ci_virtual_light": "light.ghost"}}})
+        )
+    )
+    assert resp.status == 400 and "light.ghost" in resp.payload["error"]
+    assert recorded == []  # 校验失败绝不写条目
+
+
+def test_anl_config_post_rejects_non_light_virtual():
+    """F-073：经注册表桩命中 domain 分支（platform==本集成 而 domain!="light"）
+    ——states 桩版本只遮蔽出 reg_entry is None 路径。platform!=DOMAIN 对照
+    见 test_anl_v15_fixes.test_web_post_new_virtual_wrong_platform_400。"""
+    hass = _recording_hass()
+    entry = _config_entry(data={"kind": "anl", "lights": ["light.a"]})
+    _anl_bucket(hass, _config_manager(entry))
+    stubs._ENTITY_REGISTRY._entities["light.virt"] = SimpleNamespace(
+        entity_id="light.virt", platform="fumiha_lighting", domain="sensor"
+    )
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"params": {
+                                   "day_ci_virtual_light": "light.virt"}}})
+        )
+    )
+    assert resp.status == 400 and "light 实体" in resp.payload["error"]
+
+
+def test_anl_config_post_empty_virtual_light_saves_empty_string():
+    """CI 关时 GUI 全量键提交空串 → 200 且落盘 ""（不查存在性）。"""
+    hass = _recording_hass()
+    entry = _config_entry(data={"kind": "anl", "lights": ["light.a"]})
+    _anl_bucket(hass, _config_manager(entry))
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"params": {
+                                   "day_ci_enabled": False,
+                                   "day_ci_virtual_light": ""}}})
+        )
+    )
+    assert resp.payload["ok"] is True
+    options = recorded[0][1]["options"]
+    assert options["day_ci_virtual_light"] == ""
+    assert options["day_ci_enabled"] is False
+
+
+def test_anl_config_post_valid_virtual_light_ok():
+    hass = _recording_hass()
+    entry = _config_entry(data={"kind": "anl", "lights": ["light.a"]})
+    _anl_bucket(hass, _config_manager(entry))
+    hass.states = SimpleNamespace(
+        get=lambda eid: SimpleNamespace(domain="light", state="off")
+        if eid == "light.virt"
+        else None
+    )
+    # F-058：身份校验改走实体注册表——注册本集成的 light 条目后才放行
+    stubs._ENTITY_REGISTRY._entities["light.virt"] = SimpleNamespace(
+        entity_id="light.virt", platform="fumiha_lighting", domain="light"
+    )
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"params": {
+                                   "day_enabled": True,
+                                   "day_ci_enabled": True,
+                                   "day_ci_virtual_light": "light.virt"}}})
+        )
+    )
+    assert resp.payload["ok"] is True
+    options = recorded[0][1]["options"]
+    assert options["day_ci_enabled"] is True
+    assert options["day_ci_virtual_light"] == "light.virt"

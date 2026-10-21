@@ -195,6 +195,7 @@ _ha_module(
 _ha_module(
     "homeassistant.const",
     ATTR_ENTITY_ID="entity_id",
+    SERVICE_TURN_OFF="turn_off",
     SERVICE_TURN_ON="turn_on",
     STATE_ON="on",
     STATE_OFF="off",
@@ -307,16 +308,29 @@ _ha_module("homeassistant.helpers.storage", Store=_Store)
 
 
 class _EntityRegistryStub:
-    """er.async_get(hass) 的返回物：模块级单例，测试直接塞 _entries_for。"""
+    """er.async_get(hass) 的返回物：模块级单例，测试直接塞 _entries_for。
+
+    _entities（F-058/F-064）：entity_id → 注册表条目桩（带 platform/domain
+    属性），供注册表身份校验用；缺省空表 = 全部未知（原语义不变）。
+    """
 
     def __init__(self):
         self._entries_for: dict = {}
+        self._entities: dict = {}
 
     def async_get(self, entity_id):
-        return None
+        return self._entities.get(entity_id)
 
 
 _ENTITY_REGISTRY = _EntityRegistryStub()
+
+
+@_pytest.fixture(autouse=True)
+def _reset_entity_registry():
+    """跨测试隔离：注册表条目桩不清理会让 A 测试塞的虚拟灯泄漏到 B。"""
+    _ENTITY_REGISTRY._entities.clear()
+    yield
+    _ENTITY_REGISTRY._entities.clear()
 
 
 def _async_entries_for_config_entry(registry, entry_id):

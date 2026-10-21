@@ -15,6 +15,10 @@
  * per-light overrides and extra periods are edited HERE in form dialogs
  * and saved into entry options (the native wizard covers only
  * lights/times/params; extras+overrides are GUI-managed).
+ * V1.5.0: settings-dialog rows are conditionally visible (row registry +
+ * single sync function, event delegation), and a day constant-illumination
+ * mode (day_ci_enabled + virtual light) hands the day segment over to the
+ * lux-side closed loop instead of direct real-light control.
  * ========================================================================== */
 
 const SELF_VER = new URL(import.meta.url).search;
@@ -479,6 +483,9 @@ class AnlPage extends HTMLElement {
     }
     const kit = window.FUMIHA.kit;
     const inputs = {};
+    // 行引用注册表（V1.5.0 条件显隐）：key → dlgRow 行元素，单一同步函数
+    // 按条件切 display；行容器打 data-anl-row 供测试/排查定位
+    const rows = {};
 
     // label 随绑定记录（ANL-F-034）：保存时空值以字段名报错，不再静默跳过
     const bind = (key, el, read, label) => {
@@ -520,23 +527,26 @@ class AnlPage extends HTMLElement {
       bind(key, inp, () =>
         inp.value === "" ? null : readNum(inp, label)
       , label);
-      return dlgRow(label + (lim(limits, section, key).unit ? "（" + lim(limits, section, key).unit + "）" : ""), inp);
+      rows[key] = dlgRow(label + (lim(limits, section, key).unit ? "（" + lim(limits, section, key).unit + "）" : ""), inp);
+      return rows[key];
     };
     const checkInput = (key, checked, label) => {
       const cb = kit.el("input", { type: "checkbox", ...(checked ? { checked: true } : {}) });
       bind(key, cb, () => cb.checked, label);
-      return dlgRow(label, cb);
+      rows[key] = dlgRow(label, cb);
+      return rows[key];
     };
-    const textInput = (key, value, label) => {
+    const textInput = (key, value, label, placeholder, help) => {
       const inp = kit.el("input", {
         class: "cx-input",
         type: "text",
         value: value || "",
         style: { width: "180px" },
-        placeholder: "sun.sun",
+        placeholder: placeholder || "sun.sun",
       });
       bind(key, inp, () => inp.value.trim(), label);
-      return dlgRow(label, inp);
+      rows[key] = dlgRow(label, inp, help);
+      return rows[key];
     };
 
     /* 额外时段动态行 */
@@ -548,6 +558,9 @@ class AnlPage extends HTMLElement {
       const bInp = numInput(extra ? extra.brightness : 60, lim(limits, "extras", "brightness"));
       const kInp = numInput(extra ? extra.color_temp_kelvin : 3000, lim(limits, "extras", "color_temp_kelvin"));
       const tInp = numInput(extra ? extra.transition : 0, lim(limits, "extras", "transition"));
+      // transEl 单独留引用：显隐同步判「任一额外时段过渡>0」时不走 read()
+      //（read 会因空值抛错，显隐必须对半填状态容错）
+      row.transEl = tInp;
       const sInp = kit.el("input", {
         class: "cx-input",
         type: "time",
@@ -590,6 +603,8 @@ class AnlPage extends HTMLElement {
       delBtn.addEventListener("click", () => {
         row.live = false;
         wrap.remove();
+        // 增删行可能改变「任一过渡>0」判定 → 手动补调一次显隐（V1.5.0）
+        syncVisibility();
       });
       extrasRows.push(row);
       extrasBox.append(wrap);
@@ -605,16 +620,23 @@ class AnlPage extends HTMLElement {
           return;
         }
         addExtraRow(null);
+        syncVisibility();
       },
     });
 
+    // 选择/时间行的行容器在此注册（输入类行由各 helper 注册进 rows）
+    rows.start_mode = dlgRow("夜间开始于", selInput("start_mode", config.start_mode));
+    rows.trigger_time = dlgRow("夜间开始固定时间", timeInput("trigger_time", config.trigger_time, "夜间开始固定时间"));
+    rows.end_mode = dlgRow("夜间结束于", selInput("end_mode", config.end_mode));
+    rows.end_time = dlgRow("夜间结束固定时间", timeInput("end_time", config.end_time, "夜间结束固定时间"));
+
     const body = [
       dlgSection("时间锚点", [
-        dlgRow("夜间开始于", selInput("start_mode", config.start_mode)),
-        dlgRow("夜间开始固定时间", timeInput("trigger_time", config.trigger_time, "夜间开始固定时间")),
+        rows.start_mode,
+        rows.trigger_time,
         numField("times", "start_offset", config.start_offset, "夜间开始偏移"),
-        dlgRow("夜间结束于", selInput("end_mode", config.end_mode)),
-        dlgRow("夜间结束固定时间", timeInput("end_time", config.end_time, "夜间结束固定时间")),
+        rows.end_mode,
+        rows.end_time,
         numField("times", "end_offset", config.end_offset, "夜间结束偏移"),
         textInput("sun_entity", config.sun_entity, "日出日落实体"),
         numField("times", "start_transition", config.start_transition, "入夜过渡时长"),
@@ -623,10 +645,20 @@ class AnlPage extends HTMLElement {
       ]),
       dlgSection("时段参数", [
         checkInput("day_enabled", !!config.day_enabled, "启用日间模式"),
+        // 日间恒照度（V1.5.0）：开时日间段由 lux 恒照度闭环接管，日间
+        // 亮度/色温行隐藏（值保留），改显虚拟恒照度灯行
+        checkInput("day_ci_enabled", !!config.day_ci_enabled, "日间恒照度模式"),
         numField("params", "brightness", config.brightness, "夜间亮度"),
         numField("params", "color_temp_kelvin", config.color_temp_kelvin, "夜间色温"),
         numField("params", "day_brightness", config.day_brightness, "日间亮度"),
         numField("params", "day_color_temp_kelvin", config.day_color_temp_kelvin, "日间色温"),
+        textInput(
+          "day_ci_virtual_light",
+          config.day_ci_virtual_light,
+          "虚拟恒照度灯",
+          "light.xxx_heng_zhao_du_deng",
+          "选择恒照度虚拟灯（fumiha_lighting 集成）"
+        ),
         numField("params", "tolerance_brightness", config.tolerance_brightness, "亮度容差"),
         numField("params", "tolerance_kelvin", config.tolerance_kelvin, "色温容差"),
         numField("params", "verify_delay", config.verify_delay, "验证延迟"),
@@ -641,27 +673,89 @@ class AnlPage extends HTMLElement {
       ),
     ];
 
-    // 天亮过渡只在日间模式下生效（ANL-F-041）：manager 会把 day_enabled=false
-    // 时的 end_transition 归零——输入框跟随 day_enabled 置灰，不留静默无操作
-    const dayCb = inputs.day_enabled && inputs.day_enabled.el;
-    const endTransInp = inputs.end_transition && inputs.end_transition.el;
-    const endTransRow = endTransInp ? endTransInp.closest("div") : null;
-    const syncEndTransition = () => {
-      const gated = !dayCb || !dayCb.checked;
-      if (endTransInp) {
-        endTransInp.disabled = gated;
-        endTransInp.title = gated ? "天亮过渡需要先启用日间模式" : "";
+    // 行容器打 key 标记（V1.5.0）：测试/排查按 data-anl-row 定位行
+    for (const [key, row] of Object.entries(rows)) {
+      row.dataset.anlRow = key;
+    }
+
+    /* 单一显隐同步（V1.5.0 重构）：所有条件行集中在此按 inputs 当前值切
+     * display——不逐控件挂监听，改对弹窗内容容器做事件委托（input/change
+     * 都驱动），extras 增删行后手动补调。显隐只动 display，值不清——
+     * 全量键提交不丢存储值。 */
+    const show = (key, visible) => {
+      // F-063：dlgRow 行容器是 inline display:flex——恢复可见写 "" 会抹掉
+      // 内联 flex，整行退化为 block 布局；必须显式写回 "flex"
+      if (rows[key]) rows[key].style.display = visible ? "flex" : "none";
+    };
+    const rawNum = (key) => {
+      const field = inputs[key];
+      const v = field ? parseFloat(field.el.value) : NaN;
+      return Number.isFinite(v) ? v : 0;
+    };
+    const syncVisibility = () => {
+      const sm = inputs.start_mode.el.value;
+      const em = inputs.end_mode.el.value;
+      const dayOn = inputs.day_enabled.el.checked;
+      // F-065：CI 是日间子功能——日间模式关闭时自动取消勾选 CI 复选框
+      //（行本就隐藏；取消勾选让全量键提交自洽，不触服务端
+      // day_ci_enabled×day_enabled 400）。必须在读 ciOn 之前执行，
+      // 显隐与提交值同源。
+      if (!dayOn && inputs.day_ci_enabled.el.checked) {
+        inputs.day_ci_enabled.el.checked = false;
       }
-      if (endTransRow) {
-        endTransRow.title = gated ? "天亮过渡需要先启用日间模式" : "";
+      const ciOn = inputs.day_ci_enabled.el.checked;
+      show("trigger_time", sm === "fixed");
+      show("start_offset", sm !== "fixed");
+      show("end_time", em === "fixed");
+      show("end_offset", em !== "fixed");
+      show("sun_entity", sm !== "fixed" || em !== "fixed");
+      show("day_ci_enabled", dayOn);
+      show("day_brightness", dayOn && !ciOn);
+      show("day_color_temp_kelvin", dayOn && !ciOn);
+      show("day_ci_virtual_light", dayOn && ciOn);
+      const extraTrans = extrasRows.some((r) => {
+        if (!r.live || !r.transEl) return false;
+        const v = parseFloat(r.transEl.value);
+        return Number.isFinite(v) && v > 0;
+      });
+      show(
+        "transition_interval",
+        rawNum("start_transition") > 0 ||
+          rawNum("end_transition") > 0 ||
+          extraTrans
+      );
+      // 天亮过渡只在日间模式下生效（ANL-F-041）：manager 会把 day_enabled=false
+      // 时的 end_transition 归零——输入框跟随 day_enabled 置灰（V1.4.0 的
+      // syncEndTransition 并入此处统一同步），不留静默无操作
+      const gated = !dayOn;
+      // F-062（V1.5.0）：CI 开时日侧过渡带被跳过——两个过渡输入挂悬停提示，
+      // 值不禁用（存储保留，CI 关后恢复生效）；天亮过渡的置灰提示优先
+      //（日间模式关时 CI 行已隐藏，无从谈起）
+      const ciTransNote = "日间恒照度开启时，日侧过渡带被跳过，此值暂不生效";
+      const ciNoteOn = ciOn && dayOn;
+      inputs.start_transition.el.title = ciNoteOn ? ciTransNote : "";
+      const endTransInp = inputs.end_transition.el;
+      endTransInp.disabled = gated;
+      endTransInp.title = gated
+        ? "天亮过渡需要先启用日间模式"
+        : ciNoteOn
+        ? ciTransNote
+        : "";
+      if (rows.end_transition) {
+        rows.end_transition.title = gated ? "天亮过渡需要先启用日间模式" : "";
       }
     };
-    if (dayCb) dayCb.addEventListener("change", syncEndTransition);
-    syncEndTransition();
+
+    // 弹窗内容包一层容器承载事件委托；构建后立即同步一次（初始态正确，
+    // 不依赖用户操作）
+    const content = kit.el("div", {}, ...body);
+    content.addEventListener("input", syncVisibility);
+    content.addEventListener("change", syncVisibility);
+    syncVisibility();
 
     await this._openDialog(
       m.title + " — 全局设置",
-      body,
+      [content],
       async () => {
         const times = {};
         const params = {};
@@ -699,6 +793,14 @@ class AnlPage extends HTMLElement {
           "only_when_on",
           "respect_manual",
         ].forEach((k) => pick(params, k));
+        // 日间恒照度（V1.5.0）：CI 关时虚拟灯空串合法——不走 pick()（会把
+        // 空串当空值报错），单独读取；CI 开而灯空 → 显式拦保存报错
+        params.day_ci_enabled = inputs.day_ci_enabled.read();
+        const ciVirtualLight = inputs.day_ci_virtual_light.read();
+        if (params.day_ci_enabled && !ciVirtualLight) {
+          throw new Error("日间恒照度需填写虚拟恒照度灯实体");
+        }
+        params.day_ci_virtual_light = ciVirtualLight;
         const extras = extrasRows.filter((r) => r.live).map((r) => r.read());
         const resp = await kit.api(this._hass).post(CONFIG_URL, {
           entry_id: m.entry_id,
@@ -737,6 +839,12 @@ class AnlPage extends HTMLElement {
     const gid = lt.entity_id;
     const ovr = (config.overrides || {})[gid] || null;
     const dayOn = !!config.day_enabled;
+    // 日间恒照度（V1.5.0）：CI 接管日间段时逐灯日间覆盖不生效——日间段
+    // 不渲染，保存走保留分支（存储保留，关 CI 后恢复生效）。F-061：取快照
+    // 生效值而非 config 存储值——存储可能开着但未配灯，生效值才决定日间段
+    // 是否真被恒照度接管（设置弹窗编辑面仍读存储值，不改）
+    const ciOn = !!m.day_ci_active;
+    const dayVisible = dayOn && !ciOn;
     const extras = config.extras || [];
     const controls = [];
     // 显式引用绑定（ANL-F-025）：保存按 key 读输入，不按 DOM 位置
@@ -761,7 +869,7 @@ class AnlPage extends HTMLElement {
       numField("params", "brightness", pick("brightness"), "夜间亮度"),
       numField("params", "color_temp_kelvin", pick("color_temp_kelvin"), "夜间色温"),
     ];
-    const dayRowEls = dayOn
+    const dayRowEls = dayVisible
       ? [
           numField("params", "day_brightness", pick("day_brightness"), "日间亮度"),
           numField(
@@ -809,7 +917,18 @@ class AnlPage extends HTMLElement {
     const body = [
       followRow,
       dlgSection("夜间参数", nightRowEls),
-      ...(dayOn ? [dlgSection("日间参数", dayRowEls)] : []),
+      ...(dayVisible ? [dlgSection("日间参数", dayRowEls)] : []),
+      ...(dayOn && ciOn
+        ? [
+            kit.el("div", {
+              class: "cx-note",
+              style: { marginTop: "10px" },
+              text:
+                "日间恒照度模式开启中——日间参数由恒照度闭环接管，" +
+                "逐灯日间覆盖暂不生效（保留存储）",
+            }),
+          ]
+        : []),
       ...(extras.length
         ? [dlgSection("额外时段覆盖", extraRefs.map((r) => r.el))]
         : []),
@@ -834,7 +953,7 @@ class AnlPage extends HTMLElement {
           const v = readNum(refs[k], k === "brightness" ? "夜间亮度" : "夜间色温");
           if (v !== config[k]) override[k] = v;
         }
-        if (dayOn) {
+        if (dayVisible) {
           // 与 extras 同判据（ANL-F-033）：值=全局就不写覆盖——预填值就是
           // 全局值，无条件写会把当时的全局日间参数钉死成覆盖，之后全局
           // 改日间参数对该灯永久失效
@@ -844,7 +963,8 @@ class AnlPage extends HTMLElement {
           }
         } else if (ovr) {
           // 未渲染字段不因本次保存丢失（ANL-F-027 静默丢弃面）：日间已关
-          // 时保留该灯既有的日间覆盖键，重新开日间后仍然生效
+          // 或日间恒照度接管（V1.5.0）时都不渲染日间段——保留该灯既有的
+          // 日间覆盖键，恢复跟随条件后仍然生效
           if (ovr.day_brightness != null) {
             override.day_brightness = ovr.day_brightness;
           }
@@ -956,6 +1076,9 @@ class AnlPage extends HTMLElement {
     ];
     if (m.transitions_active) summaryBits.push("过渡带开启");
     if (m.day_enabled) summaryBits.push("日间时段");
+    // 日间恒照度（V1.5.0）：接管态随快照下发，摘要直接可见。F-061：读生效值
+    // day_ci_active——存储开着但未配灯（active=false）时不得谎报接管
+    if (m.day_ci_active) summaryBits.push("日间恒照度");
     if (m.respect_manual) summaryBits.push("尊重手动");
     const summary = kit.el(
       "div",

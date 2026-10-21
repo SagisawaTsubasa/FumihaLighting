@@ -120,6 +120,14 @@ def test_validate_extras_rejects_over_five():
     assert "最多" in validate_extras([_extra()] * 6)[1]
 
 
+def test_validate_extras_rejects_duplicate_starts():
+    """F-070：同刻双时段拒绝（双定时器重排丢句柄的配置面防线）；不同 start 放行。"""
+    dup = validate_extras([_extra(), _extra()])
+    assert dup[0] is None and "重复" in dup[1]
+    ok = validate_extras([_extra(), _extra(start="20:00")])
+    assert ok[1] is None and len(ok[0]) == 2
+
+
 # ---- validate_overrides ---------------------------------------------------
 
 
@@ -165,3 +173,40 @@ def test_limits_payload_covers_all_specs():
     assert sample == {"min": 1, "max": 100, "step": 1, "default": 25, "unit": "%"}
     assert limits["max_extras"] == 5
     assert limits["enums"]["start_mode"] == ["fixed", "sunset", "sunrise"]
+
+
+# ---- day CI keys (V1.5.0) --------------------------------------------------
+
+
+def test_validate_params_rejects_non_bool_day_ci_enabled():
+    clean, err = validate_params({"day_ci_enabled": "yes"})
+    assert clean is None and "布尔" in err
+
+
+def test_validate_params_day_ci_virtual_light_empty_normalized():
+    """CI 关时 GUI 全量键提交发空串/None = 未配置，放行并归一 ""。"""
+    clean, err = validate_params({"day_ci_virtual_light": ""})
+    assert err is None and clean["day_ci_virtual_light"] == ""
+    clean, err = validate_params({"day_ci_virtual_light": None})
+    assert err is None and clean["day_ci_virtual_light"] == ""
+
+
+def test_validate_params_day_ci_virtual_light_entity_ok():
+    clean, err = validate_params({"day_ci_virtual_light": " light.virt "})
+    assert err is None and clean["day_ci_virtual_light"] == "light.virt"
+
+
+def test_validate_params_day_ci_virtual_light_rejects_bad_values():
+    clean, err = validate_params({"day_ci_virtual_light": 5})
+    assert clean is None and "day_ci_virtual_light" in err
+    # 纯空白串走 _entity_check 同逻辑 → 拒绝
+    clean, err = validate_params({"day_ci_virtual_light": "   "})
+    assert clean is None and "非空实体 ID" in err
+
+
+def test_validate_params_day_ci_keys_absent_skipped():
+    """patch 语义：缺省键跳过，clean 不含两键。"""
+    clean, err = validate_params({"brightness": 30})
+    assert err is None
+    assert "day_ci_enabled" not in clean
+    assert "day_ci_virtual_light" not in clean

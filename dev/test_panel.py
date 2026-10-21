@@ -26,6 +26,101 @@ def check(name: str, cond: bool, detail: str = "") -> None:
         FAILURES.append(f"{name}: {detail}")
 
 
+# ---- V1.5.0 条件显隐用 JS 片段（与既有用例同一 shadowRoot 穿透模式） ---------
+OPEN_SETTINGS_JS = """() => {
+  const p = document.getElementById('hub');
+  for (const el of p.shadowRoot.querySelectorAll('*')) {
+    const card = el.shadowRoot && el.shadowRoot.querySelector('[data-manager="anl1"]');
+    if (card) {
+      const btn = card.querySelector('[data-action="settings"]');
+      if (btn) { btn.click(); return true; }
+    }
+  }
+  return false;
+}"""
+
+WAIT_SETTINGS_JS = """() => {
+  const p = document.getElementById('hub');
+  for (const el of p.shadowRoot.querySelectorAll('*')) {
+    const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+    if (d && d.querySelector('[data-extra-row]')) return true;
+  }
+  return false;
+}"""
+
+# 把当前设置弹窗与行状态读取器登记到 window，供后续步骤反复读行显隐
+INSTALL_ROW_STATE_JS = """() => {
+  const p = document.getElementById('hub');
+  for (const el of p.shadowRoot.querySelectorAll('*')) {
+    const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+    if (d && d.querySelector('[data-extra-row]')) {
+      window.__anlSettingsDialog = d;
+      window.__anlRowState = () => {
+        const keys = ['trigger_time', 'start_offset', 'end_time', 'end_offset',
+          'sun_entity', 'day_ci_enabled', 'day_brightness',
+          'day_color_temp_kelvin', 'day_ci_virtual_light',
+          'transition_interval'];
+        const out = {};
+        keys.forEach((k) => {
+          const row = d.querySelector('[data-anl-row="' + k + '"]');
+          out[k] = !!row && row.style.display !== 'none';
+          // F-063：可见行还须断 computed display 为 flex——dlgRow 行容器是
+          // inline flex，'' 清内联会让行退化为 block，布尔显隐抓不到
+          out[k + '_display'] = row ? getComputedStyle(row).display : null;
+        });
+        return out;
+      };
+      return true;
+    }
+  }
+  return false;
+}"""
+
+CANCEL_DIALOG_JS = """() => {
+  const p = document.getElementById('hub');
+  for (const el of p.shadowRoot.querySelectorAll('*')) {
+    const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+    if (d) {
+      const cancel = [...d.querySelectorAll('button')].find(
+        (x) => x.textContent === '取消'
+      );
+      if (cancel) { cancel.click(); return true; }
+    }
+  }
+  return false;
+}"""
+
+# dialog close 事件的 remove() 是排队任务：close 后节点会短暂残留 DOM——
+# 连开两个弹窗前必须等旧节点真正移除，否则行状态捕获到旧弹窗（其保存键
+# 在成功保存后保持 disabled，二次点击无效）
+NO_DIALOG_JS = """() => {
+  const p = document.getElementById('hub');
+  for (const el of p.shadowRoot.querySelectorAll('*')) {
+    if (el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog')) {
+      return false;
+    }
+  }
+  return true;
+}"""
+
+# F-062：读当前设置弹窗里两个过渡输入的 title（CI 跳过提示 / 置灰提示）
+READ_TRANS_TITLES_JS = """() => {
+  const p = document.getElementById('hub');
+  for (const el of p.shadowRoot.querySelectorAll('*')) {
+    const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+    if (d && d.querySelector('[data-extra-row]')) {
+      const pick = (k) => {
+        const row = d.querySelector('[data-anl-row="' + k + '"]');
+        const inp = row && row.querySelector('input');
+        return inp ? inp.title : null;
+      };
+      return { start: pick('start_transition'), end: pick('end_transition') };
+    }
+  }
+  return null;
+}"""
+
+
 def start_server() -> tuple[ThreadingHTTPServer, int]:
     spec = importlib.util.spec_from_file_location(
         "fl_serve", Path(__file__).parent / "serve.py"
@@ -245,6 +340,8 @@ def run_checks(browser, base: str) -> None:
         "anl: 起效总闸为假时不得宣称过渡带开启",
         "过渡带开启" not in page_text(page, '[data-manager="anl1"]'),
     )
+    # F-061 钉（默认态）：CI 全关（day_ci_active=false）→ 摘要无恒照度 tag
+    check("anl default: CI off → no 日间恒照度 tag", "日间恒照度" not in anl)
 
     # trigger REST write（FL-IMP-02: 新增确认框——先等对话框再点「执行」）
     page.evaluate(
@@ -500,6 +597,264 @@ def run_checks(browser, base: str) -> None:
     )
     page.wait_for_timeout(200)
 
+    # ---- V1.5.0 条件显隐：行注册表 + 单一 _syncVisibility ---------------------
+    page.evaluate(OPEN_SETTINGS_JS)
+    page.wait_for_function(WAIT_SETTINGS_JS, timeout=9000)
+    page.evaluate(INSTALL_ROW_STATE_JS)
+    vis1 = page.evaluate("() => window.__anlRowState()")
+    check(
+        "anl visibility: non-fixed start hides trigger_time, shows start_offset",
+        bool(vis1) and not vis1["trigger_time"] and vis1["start_offset"],
+        str(vis1),
+    )
+    check(
+        "anl visibility: non-fixed end hides end_time, shows end_offset",
+        bool(vis1) and not vis1["end_time"] and vis1["end_offset"],
+        str(vis1),
+    )
+    check(
+        "anl visibility: any non-fixed anchor shows sun_entity row",
+        bool(vis1) and vis1["sun_entity"],
+        str(vis1),
+    )
+    check(
+        "anl visibility: day on + CI off shows CI switch, hides virtual light row",
+        bool(vis1) and vis1["day_ci_enabled"] and vis1["day_brightness"]
+        and vis1["day_color_temp_kelvin"] and not vis1["day_ci_virtual_light"]
+        and vis1["day_brightness_display"] == "flex",
+        str(vis1),
+    )
+    check(
+        "anl visibility: zero transitions hides transition_interval row",
+        bool(vis1) and not vis1["transition_interval"],
+        str(vis1),
+    )
+
+    # start_mode → fixed：换出固定时间行，藏偏移行
+    page.evaluate(
+        """() => {
+          const sel = [...window.__anlSettingsDialog.querySelectorAll('select')][0];
+          sel.value = 'fixed';
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }"""
+    )
+    vis2 = page.evaluate("() => window.__anlRowState()")
+    check(
+        "anl visibility: start fixed swaps in trigger_time, hides start_offset",
+        bool(vis2) and vis2["trigger_time"] and not vis2["start_offset"]
+        and vis2["trigger_time_display"] == "flex",
+        str(vis2),
+    )
+    check(
+        "anl visibility: end still non-fixed keeps sun_entity row",
+        bool(vis2) and vis2["sun_entity"],
+        str(vis2),
+    )
+
+    # end_mode → fixed：两锚点全 fixed → sun_entity 行隐藏
+    page.evaluate(
+        """() => {
+          const sel = [...window.__anlSettingsDialog.querySelectorAll('select')][1];
+          sel.value = 'fixed';
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }"""
+    )
+    vis3 = page.evaluate("() => window.__anlRowState()")
+    check(
+        "anl visibility: end fixed swaps in end_time, hides end_offset",
+        bool(vis3) and vis3["end_time"] and not vis3["end_offset"],
+        str(vis3),
+    )
+    check(
+        "anl visibility: both anchors fixed hides sun_entity row",
+        bool(vis3) and not vis3["sun_entity"],
+        str(vis3),
+    )
+
+    # start_mode → sunset：反转回偏移行，sun_entity 复现
+    page.evaluate(
+        """() => {
+          const sel = [...window.__anlSettingsDialog.querySelectorAll('select')][0];
+          sel.value = 'sunset';
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }"""
+    )
+    vis4 = page.evaluate("() => window.__anlRowState()")
+    check(
+        "anl visibility: start sunset swaps back to offset row + sun_entity",
+        bool(vis4) and not vis4["trigger_time"] and vis4["start_offset"]
+        and vis4["sun_entity"],
+        str(vis4),
+    )
+
+    # 日间恒照度开关：勾选 → 日间亮度/色温行藏、虚拟灯行现
+    page.evaluate(
+        """() => {
+          const d = window.__anlSettingsDialog;
+          const cb = d.querySelector('[data-anl-row="day_ci_enabled"] input[type="checkbox"]');
+          cb.checked = true;
+          cb.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }"""
+    )
+    vis5 = page.evaluate("() => window.__anlRowState()")
+    check(
+        "anl visibility: CI on hides day brightness/kelvin, shows virtual light row",
+        bool(vis5) and not vis5["day_brightness"]
+        and not vis5["day_color_temp_kelvin"] and vis5["day_ci_virtual_light"]
+        and vis5["day_ci_virtual_light_display"] == "flex",
+        str(vis5),
+    )
+
+    page.evaluate(
+        """() => {
+          const d = window.__anlSettingsDialog;
+          const cb = d.querySelector('[data-anl-row="day_ci_enabled"] input[type="checkbox"]');
+          cb.checked = false;
+          cb.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }"""
+    )
+    vis6 = page.evaluate("() => window.__anlRowState()")
+    check(
+        "anl visibility: CI off restores day rows, hides virtual light row",
+        bool(vis6) and vis6["day_brightness"] and vis6["day_color_temp_kelvin"]
+        and not vis6["day_ci_virtual_light"]
+        and vis6["day_brightness_display"] == "flex",
+        str(vis6),
+    )
+
+    # day_enabled 关：CI 行与日间参数行全藏，end_transition 置灰（ANL-F-041）
+    page.evaluate(
+        """() => {
+          const d = window.__anlSettingsDialog;
+          const ci = d.querySelector('[data-anl-row="day_ci_enabled"] input[type="checkbox"]');
+          ci.checked = true;
+          ci.dispatchEvent(new Event('change', { bubbles: true }));
+          const cb = d.querySelector('[data-anl-row="day_enabled"] input[type="checkbox"]');
+          cb.checked = false;
+          cb.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }"""
+    )
+    vis7 = page.evaluate("() => window.__anlRowState()")
+    end_trans = page.evaluate(
+        """() => {
+          const row = window.__anlSettingsDialog.querySelector(
+            '[data-anl-row="end_transition"]');
+          return {
+            shown: !!row && row.style.display !== 'none',
+            disabled: !!row && row.querySelector('input').disabled,
+          };
+        }"""
+    )
+    check(
+        "anl visibility: day off hides CI/day rows, end_transition stays greyed",
+        bool(vis7) and not vis7["day_ci_enabled"]
+        and not vis7["day_ci_virtual_light"] and not vis7["day_brightness"]
+        and end_trans["shown"] and end_trans["disabled"],
+        str(vis7) + " / " + str(end_trans),
+    )
+    # F-065：关日间模式后 CI 复选框被自动取消勾选（提交值=false——
+    # checkbox.checked 即保存时 POST params.day_ci_enabled 的取值源）
+    ci_checked = page.evaluate(
+        "() => window.__anlSettingsDialog.querySelector("
+        "'[data-anl-row=\"day_ci_enabled\"] input[type=\"checkbox\"]').checked"
+    )
+    check("anl F-065: day off auto-unchecks CI checkbox (submits false)",
+          ci_checked is False, str(ci_checked))
+    # 恢复 day_enabled（后续保存测试回到日间开启态）
+    page.evaluate(
+        """() => {
+          const d = window.__anlSettingsDialog;
+          const cb = d.querySelector('[data-anl-row="day_enabled"] input[type="checkbox"]');
+          cb.checked = true;
+          cb.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        }"""
+    )
+
+    # transition_interval 行：入夜过渡改 >0 后出现
+    page.evaluate(
+        """() => {
+          const d = window.__anlSettingsDialog;
+          const st = d.querySelector('[data-anl-row="start_transition"] input[type="number"]');
+          st.value = '30';
+          st.dispatchEvent(new Event('input', { bubbles: true }));
+          return true;
+        }"""
+    )
+    vis8 = page.evaluate("() => window.__anlRowState()")
+    check(
+        "anl visibility: start_transition>0 reveals transition_interval row",
+        bool(vis8) and vis8["transition_interval"],
+        str(vis8),
+    )
+
+    # 保存发键断言：勾 CI + 填虚拟灯 → POST patch.params 带两键
+    page.evaluate(
+        """() => {
+          const d = window.__anlSettingsDialog;
+          const cb = d.querySelector('[data-anl-row="day_ci_enabled"] input[type="checkbox"]');
+          cb.checked = true;
+          cb.dispatchEvent(new Event('change', { bubbles: true }));
+          const vl = d.querySelector('[data-anl-row="day_ci_virtual_light"] input[type="text"]');
+          vl.value = 'light.bedroom_heng_zhao_du_deng';
+          [...d.querySelectorAll('button')].find((x) => x.textContent === '保存设置').click();
+          return true;
+        }"""
+    )
+    page.wait_for_function(
+        """() => (window.__servicePosts || []).some((p) => {
+          if (p.path !== '/api/fumiha_lighting/anl/config') return false;
+          const params = JSON.parse(p.body).patch.params;
+          return params && params.day_ci_enabled === true
+            && params.day_ci_virtual_light === 'light.bedroom_heng_zhao_du_deng';
+        })""",
+        timeout=4000,
+    )
+    check("anl settings save POSTs day_ci_enabled + virtual light keys", True)
+
+    # CI 开但虚拟灯空 → 保存被拦（err 行报错、零 POST）
+    posts_before = page.evaluate("() => (window.__servicePosts || []).length")
+    page.wait_for_function(NO_DIALOG_JS, timeout=4000)
+    page.evaluate(OPEN_SETTINGS_JS)
+    page.wait_for_function(WAIT_SETTINGS_JS, timeout=9000)
+    page.evaluate(INSTALL_ROW_STATE_JS)
+    page.evaluate(
+        """() => {
+          const d = window.__anlSettingsDialog;
+          const cb = d.querySelector('[data-anl-row="day_ci_enabled"] input[type="checkbox"]');
+          cb.checked = true;
+          cb.dispatchEvent(new Event('change', { bubbles: true }));
+          const vl = d.querySelector('[data-anl-row="day_ci_virtual_light"] input[type="text"]');
+          vl.value = '';
+          [...d.querySelectorAll('button')].find((x) => x.textContent === '保存设置').click();
+          return true;
+        }"""
+    )
+    page.wait_for_function(
+        """() => {
+          const d = window.__anlSettingsDialog;
+          if (!d) return false;
+          const err = d.querySelector('.fx-error');
+          return err && err.style.display !== 'none'
+            && err.textContent.includes('日间恒照度需填写虚拟恒照度灯实体');
+        }""",
+        timeout=4000,
+    )
+    posts_after = page.evaluate("() => (window.__servicePosts || []).length")
+    check(
+        "anl settings CI without virtual light errors loudly, no POST",
+        posts_after == posts_before,
+        f"posts {posts_before} -> {posts_after}",
+    )
+    page.evaluate(CANCEL_DIALOG_JS)
+    page.wait_for_timeout(200)
+
     # ---- module failure isolation: one bad page must not kill the other ----
     page2 = browser.new_page(viewport={"width": 1280, "height": 900})
     page2.goto(base + "/?badanl=1")
@@ -551,6 +906,197 @@ def run_checks(browser, base: str) -> None:
     )
     check("anl badconfig: dialog build failure surfaces as ack toast", True)
     page4.close()
+
+    # ---- V1.5.0 ?ci=1 夹具：manager 摘要 tag + 逐灯弹窗日间段接管说明 ----------
+    page5 = browser.new_page(viewport={"width": 1280, "height": 900})
+    page5.goto(base + "/?ci=1")
+    page5.evaluate("() => { location.hash = 'pn=anl.main'; }")
+    wait_page_dom(page5, '[data-manager="anl1"]')
+    anl5 = page_text(page5, '[data-manager="anl1"]')
+    check(
+        "anl ?ci=1: manager summary shows 日间恒照度 tag",
+        "日间恒照度" in anl5,
+        anl5[:120],
+    )
+
+    # 逐灯弹窗：CI 接管 → 日间参数段不渲染，改显恒照度说明 note
+    page5.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const card = el.shadowRoot && el.shadowRoot.querySelector('[data-light="light.bedroom"]');
+            if (card) {
+              const btn = card.querySelector('[data-action="light-settings"]');
+              if (btn) { btn.click(); return true; }
+            }
+          }
+          return false;
+        }"""
+    )
+    page5.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.textContent.includes('跟随全局设置')) return true;
+          }
+          return false;
+        }""",
+        timeout=9000,
+    )
+    ci_note = page5.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.textContent.includes('跟随全局设置')) {
+              return {
+                headers: [...d.querySelectorAll('h3')].map((h) => h.textContent),
+                hasNote: d.textContent.includes('恒照度闭环接管'),
+              };
+            }
+          }
+          return null;
+        }"""
+    )
+    check(
+        "anl ?ci=1: per-light dialog hides day section, shows CI takeover note",
+        bool(ci_note) and "日间参数" not in ci_note["headers"]
+        and "夜间参数" in ci_note["headers"] and ci_note["hasNote"],
+        str(ci_note),
+    )
+    page5.evaluate(CANCEL_DIALOG_JS)
+    page5.wait_for_timeout(200)
+
+    # 全局设置弹窗（?ci=1）：CI 预勾选、虚拟灯行可见且预填
+    page5.evaluate(OPEN_SETTINGS_JS)
+    page5.wait_for_function(WAIT_SETTINGS_JS, timeout=9000)
+    ci_state = page5.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.querySelector('[data-extra-row]')) {
+              const row = d.querySelector('[data-anl-row="day_ci_virtual_light"]');
+              const ciRow = d.querySelector('[data-anl-row="day_ci_enabled"]');
+              const ciCb = ciRow && ciRow.querySelector('input[type="checkbox"]');
+              const vl = row && row.querySelector('input[type="text"]');
+              return {
+                ciChecked: !!(ciCb && ciCb.checked),
+                rowShown: !!row && row.style.display !== 'none',
+                value: vl ? vl.value : null,
+              };
+            }
+          }
+          return null;
+        }"""
+    )
+    check(
+        "anl ?ci=1: settings dialog CI prefilled, virtual light row visible",
+        bool(ci_state) and ci_state["ciChecked"] and ci_state["rowShown"]
+        and ci_state["value"] == "light.bedroom_heng_zhao_du_deng",
+        str(ci_state),
+    )
+
+    # F-062 钉：CI 开 → 两个过渡输入挂「日侧过渡带被跳过」悬停提示
+    trans_titles = page5.evaluate(READ_TRANS_TITLES_JS)
+    ci_skip_note = "日间恒照度开启时，日侧过渡带被跳过，此值暂不生效"
+    check(
+        "anl ?ci=1: CI on puts skip tooltip on both transition inputs",
+        bool(trans_titles) and trans_titles["start"] == ci_skip_note
+        and trans_titles["end"] == ci_skip_note,
+        str(trans_titles),
+    )
+    # 取消勾选 CI → 提示清掉（值不禁用，存储保留）
+    page5.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.querySelector('[data-extra-row]')) {
+              const cb = d.querySelector(
+                '[data-anl-row="day_ci_enabled"] input[type="checkbox"]');
+              cb.checked = false;
+              cb.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
+            }
+          }
+          return false;
+        }"""
+    )
+    trans_titles_off = page5.evaluate(READ_TRANS_TITLES_JS)
+    check(
+        "anl ?ci=1: unchecking CI clears transition tooltips",
+        bool(trans_titles_off) and trans_titles_off["start"] == ""
+        and trans_titles_off["end"] == "",
+        str(trans_titles_off),
+    )
+    page5.evaluate(CANCEL_DIALOG_JS)
+    page5.wait_for_timeout(200)
+    page5.close()
+
+    # ---- V1.5.0 F-061 钉：?cibroken=1 存储开但未配灯 → 不得谎报接管 ----------
+    page6 = browser.new_page(viewport={"width": 1280, "height": 900})
+    page6.goto(base + "/?cibroken=1")
+    page6.evaluate("() => { location.hash = 'pn=anl.main'; }")
+    wait_page_dom(page6, '[data-manager="anl1"]')
+    anl6 = page_text(page6, '[data-manager="anl1"]')
+    check(
+        "anl ?cibroken=1: manager summary has no 日间恒照度 tag",
+        "日间恒照度" not in anl6,
+        anl6[:120],
+    )
+
+    # 逐灯弹窗：生效值 false → 日间段照常渲染，无恒照度接管说明
+    page6.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const card = el.shadowRoot
+              && el.shadowRoot.querySelector('[data-light="light.bedroom"]');
+            if (card) {
+              const btn = card.querySelector('[data-action="light-settings"]');
+              if (btn) { btn.click(); return true; }
+            }
+          }
+          return false;
+        }"""
+    )
+    page6.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.textContent.includes('跟随全局设置')) return true;
+          }
+          return false;
+        }""",
+        timeout=9000,
+    )
+    broken_note = page6.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.textContent.includes('跟随全局设置')) {
+              return {
+                headers: [...d.querySelectorAll('h3')].map((h) => h.textContent),
+                hasNote: d.textContent.includes('恒照度闭环接管'),
+              };
+            }
+          }
+          return null;
+        }"""
+    )
+    check(
+        "anl ?cibroken=1: per-light dialog keeps day section, no CI note",
+        bool(broken_note) and "日间参数" in broken_note["headers"]
+        and "夜间参数" in broken_note["headers"] and not broken_note["hasNote"],
+        str(broken_note),
+    )
+    page6.evaluate(CANCEL_DIALOG_JS)
+    page6.wait_for_timeout(200)
+    page6.close()
 
     # ---- standalone fallback (pages boot without the shell) ------------------
     page3 = browser.new_page(viewport={"width": 1280, "height": 900})

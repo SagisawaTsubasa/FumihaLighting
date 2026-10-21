@@ -56,6 +56,13 @@
     }];
   }
   function anlManagers() {
+    // ?ci=1 → 日间恒照度开启态（V1.5.0 manager 摘要 tag 的夹具）
+    // ?cibroken=1 → 谎报形状（F-061）：存储开但未配灯——day_ci_enabled=true
+    // 而 day_ci_active=false，chip/逐灯弹窗只认生效值，不得显示恒照度接管
+    var q = new URLSearchParams(location.search);
+    var ci = q.get("ci") === "1";
+    var ciBroken = q.get("cibroken") === "1";
+    var ciStorage = ci || ciBroken;
     return [{
       entry_id: "anl1", title: "自动夜灯", current_mode: "night",
       next_anchor: "2026-10-13T23:30:00+08:00",
@@ -71,10 +78,20 @@
       // 而 transitions_active=false（日间关闭 → manager 归零），chip 只能读后者
       transition_enabled: true, transitions_active: false,
       day_enabled: true, respect_manual: true,
+      // web._serialize_anl_manager 契约（V1.5.0）：三键随快照下发——
+      // day_ci_enabled 存储值、day_ci_active 生效值（_ci_configured()，可与
+      // 存储值分叉）、day_ci_virtual_light（字符串或 null）
+      day_ci_enabled: ciStorage,
+      day_ci_active: ci,
+      day_ci_virtual_light: ciStorage ? "light.bedroom_heng_zhao_du_deng" : null,
     }];
   }
   function anlConfig() {
-    // 编辑器数据契约（web.AnlConfigView.get）：config 白名单键 + limits
+    // 编辑器数据契约（web.AnlConfigView.get）：config 白名单键 + limits。
+    // ?cibroken=1 时存储层同样开着——编辑面读存储值，F-061 的分叉只发生在
+    // 快照生效值上
+    var q = new URLSearchParams(location.search);
+    var ci = q.get("ci") === "1" || q.get("cibroken") === "1";
     return {
       ok: true,
       config: {
@@ -87,6 +104,9 @@
         transition_enabled: false, start_transition: 0, end_transition: 0,
         transition_interval: 5,
         day_enabled: true, brightness: 25, color_temp_kelvin: 2200,
+        // V1.5.0 契约：config 白名单两新键（默认关；?ci=1 开启并预填虚拟灯）
+        day_ci_enabled: ci,
+        day_ci_virtual_light: ci ? "light.bedroom_heng_zhao_du_deng" : "",
         day_brightness: 100, day_color_temp_kelvin: 4000,
         tolerance_brightness: 4, tolerance_kelvin: 150,
         verify_delay: 5, settle_delay: 1,

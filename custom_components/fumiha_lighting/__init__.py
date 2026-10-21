@@ -17,19 +17,24 @@ import logging
 import voluptuous as vol
 
 import homeassistant.helpers.config_validation as cv
+from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_ENTITY_ID
+from homeassistant.const import ATTR_ENTITY_ID, SERVICE_TURN_OFF
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.service import async_extract_entity_ids
 
-from .anl.const import SERVICE_TRIGGER_NOW
+from .anl.const import (
+    CONF_DAY_CI_ENABLED,
+    CONF_DAY_CI_VIRTUAL_LIGHT,
+    SERVICE_TRIGGER_NOW,
+)
 from .const import CONF_KIND, DOMAIN, KIND_ANL, KIND_LUX
 from .lux.const import SERVICE_CALIBRATE
 from .lux.runtime import ZoneRuntime
 from .lux.store import ZoneStorage
-from .web import async_setup_web, async_unload_web
+from .web import _anl_virtual_referenced_elsewhere, async_setup_web, async_unload_web
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -95,6 +100,35 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Drop per-entry storage (the lux calibration curve) on delete."""
     if entry.data.get(CONF_KIND, KIND_LUX) == KIND_LUX:
         await ZoneStorage(hass, entry.entry_id).async_remove()
+        return
+    # F-057：anl 条目真删除时归还 CI 虚拟灯。本钩子只在删除触发、reload
+    # 不触发——卸载路径（async_unload_entry→manager.stop）故意不动灯，防
+    # 正常 reload 把日间恒照度闭环关掉。best-effort：失败 WARNING 不阻断
+    # 删除（lux off=纯放手，对真实灯零下发）。
+    merged = {**entry.data, **entry.options}
+    virtual = merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
+    if not (merged.get(CONF_DAY_CI_ENABLED) and virtual):
+        return
+    # F-067：跨条目检查——其他 anl 条目仍引用同一虚拟灯时跳过归还（删除
+    # 本条目不应关掉别组的日间闭环），INFO 可观测
+    if _anl_virtual_referenced_elsewhere(hass, entry.entry_id, virtual):
+        _LOGGER.info(
+            "恒照度虚拟灯 %s 仍被其他夜灯组条目引用，删除条目 %s 时跳过归还"
+            "（保持开启）",
+            virtual,
+            entry.entry_id,
+        )
+        _LOGGER.debug(
+            "归还跳过原因：跨条目检查命中其他 anl 条目的 "
+            "day_ci_enabled + 同虚拟灯引用"
+        )
+        return
+    try:
+        await hass.services.async_call(
+            LIGHT_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: virtual}, blocking=True
+        )
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning("删除条目归还恒照度虚拟灯 %s 失败：%s", virtual, err)
 
 
 # ---------------------------------------------------------------------------

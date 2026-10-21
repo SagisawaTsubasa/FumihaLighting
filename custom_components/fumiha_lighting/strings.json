@@ -115,12 +115,14 @@
         "data": {
           "scan_interval_s": "Adjustment interval (seconds)",
           "deadband_pct": "Deadband (%)",
+          "deadband_lux": "Illuminance deadband (lx)",
           "min_brightness_pct": "Minimum brightness (%)",
           "auto_turn_off": "Auto turn off when ambient meets target"
         },
         "data_description": {
           "scan_interval_s": "Closed-loop re-evaluation period while the light is on.",
           "deadband_pct": "Adjustments smaller than this are skipped to avoid flicker.",
+          "deadband_lux": "Corrections whose illuminance gap is smaller than this are skipped to suppress sensor quantisation noise and prevent brightness hunting.",
           "min_brightness_pct": "Lower bound for computed brightness; guards the unstable low-end LED region.",
           "auto_turn_off": "Turn the light off after two consecutive cycles with ambient at or above target."
         }
@@ -186,7 +188,7 @@
   "services": {
     "calibrate": {
       "name": "Start calibration",
-      "description": "Run the automatic curve calibration sweep: the light steps 0→100% and back, about 15-40 minutes total (up to nearly an hour when sensor updates lag) — stay out of the bathroom while it runs. Only one zone per bathroom can calibrate at a time: without a target the first calibratable zone starts (others are skipped and logged); with a target the call raises when it matches no zone or is blocked by the calibration mutex."
+      "description": "Run the automatic curve calibration sweep: the light steps 0→100% and back — stay out of the bathroom while it runs. The default 5% step takes about 15-40 minutes total (up to nearly an hour when sensor updates lag); fine 2%/3% sweeps can take 2-3 hours at worst (including sensor reporting waits). Only one zone per bathroom can calibrate at a time: without a target the first calibratable zone starts (others are skipped and logged); with a target the call raises when it matches no zone or is blocked by the calibration mutex."
     },
     "trigger_now": {
       "name": "Trigger now",

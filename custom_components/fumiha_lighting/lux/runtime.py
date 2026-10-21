@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import statistics
 from collections import deque
 from collections.abc import Callable
@@ -115,6 +116,19 @@ def _lux_stale_reason(state) -> str | None:
                 f"数据已 {int(age // 60)} 分钟未更新（超过 {limit_min} 分钟可信窗口）"
             )
     return None
+
+
+def _parse_lux_state(state) -> float | None:
+    """float(state.state) 且要求有限（F-104）：NaN/inf 能通过 float()，但
+    NaN 混进中值窗口会污染整窗（median 传 NaN）、下游 max(0.0, nan)=0 会
+    算出错误亮度下发；非数字字符串同样不可用。web 层 _finite_or_none
+    （web.py）同判据——「非有限即不可用」。None = 调用方按 stale 处理。
+    """
+    try:
+        value = float(state.state)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
 
 
 class ZoneRuntime:
@@ -268,12 +282,19 @@ class ZoneRuntime:
         new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             return
+        lux_now = _parse_lux_state(new_state)
+        if lux_now is None:
+            # F-104：非数字/非有限读数按数据不可信处理（一次 WARNING 节流、
+            # 清滤波窗口）；不排评估——闭环在 _async_compute_decision 同判据
+            # 处保持当前亮度
+            self._mark_lux_stale("照度读数非数字或非有限值")
+            return
+        if self._stale_warned:
+            # 恢复：清窗防断档前后读数混算（F-104）
+            self._lux_window.clear()
         self.lux_stale = False
         self._stale_warned = False
-        try:
-            self._lux_window.append(float(new_state.state))
-        except (TypeError, ValueError):
-            pass
+        self._lux_window.append(lux_now)
         self._schedule_evaluate("lux")
 
     @callback
@@ -331,26 +352,35 @@ class ZoneRuntime:
                         self.async_evaluate("lux")
                     )
 
+    def _mark_lux_stale(self, reason: str) -> None:
+        """照度数据不可信的统一收口（F-104）：一次 WARNING 节流（_stale_
+        warned）、置 lux_stale 供页面显示、清空滤波窗口——坏值与断档前的
+        旧读数不得再进中值（V1.2.2 滤波只服务可信数据）。"""
+        self._lux_window.clear()
+        if not self._stale_warned:
+            self._stale_warned = True
+            self.lux_stale = True
+            _LOGGER.warning(
+                "%s: 照度数据不可信（%s），保持当前亮度", self.zone_name, reason
+            )
+            self.notify()
+
     async def _async_compute_decision(
         self,
     ) -> tuple[Decision | None, float]:
         lux_state = self.hass.states.get(self.lux_entity)
         stale_reason = _lux_stale_reason(lux_state)
         if stale_reason is not None:
-            if not self._stale_warned:
-                self._stale_warned = True
-                self.lux_stale = True
-                _LOGGER.warning(
-                    "%s: 照度数据不可信（%s），保持当前亮度",
-                    self.zone_name,
-                    stale_reason,
-                )
-                self.notify()
+            self._mark_lux_stale(stale_reason)
             return None, 0.0
-        try:
-            lux_now = float(lux_state.state)
-        except (TypeError, ValueError):
+        lux_now = _parse_lux_state(lux_state)
+        if lux_now is None:
+            # F-104：非数字/非有限值与 stale 同路——闭环不得拿坏数据调灯
+            self._mark_lux_stale("照度读数非数字或非有限值")
             return None, 0.0
+        if self._stale_warned:
+            # 恢复：清窗防断档前后读数混算（F-104）
+            self._lux_window.clear()
         self.lux_stale = False
         self._stale_warned = False
         # V1.2.2 读数滤波：瞬时值含量化噪声，中值窗口压平抖动
@@ -519,9 +549,11 @@ class ZoneRuntime:
                 self.commanded_pct = None
                 self.notify()
                 return
-            try:
-                lux_now = float(lux_state.state)
-            except (TypeError, ValueError):
+            lux_now = _parse_lux_state(lux_state)
+            if lux_now is None:
+                # F-104：非数字/非有限值与 stale 同路——不拿坏数据算亮度，
+                # 无级 turn_on 由灯保持自身默认
+                self._mark_lux_stale("照度读数非数字或非有限值")
                 await self._async_call_light("turn_on", {})
                 self.commanded_pct = None
                 self.notify()
@@ -676,8 +708,11 @@ class ZoneRuntime:
                     await eval_task
                 except asyncio.CancelledError:
                     raise
-                except Exception:
-                    pass
+                except Exception as err:  # noqa: BLE001 — 校准不能因前一次评估失败而中止
+                    # F-109：静默 pass 会让基线在非预期灯态上采集；WARNING 可追
+                    _LOGGER.warning(
+                        "%s: 校准前在飞评估失败（继续采集）：%s", self.zone_name, err
+                    )
             async with self._apply_lock:
                 # Let any in-flight light write land before we capture state.
                 light_state = self.hass.states.get(self.light_entity)
@@ -806,9 +841,10 @@ class ZoneRuntime:
             # Change-driven sensor: a redundant turn-off produces no report.
             # The light was already off, so the current reading IS the baseline.
             cur = self.hass.states.get(self.lux_entity)
-            if cur is not None and cur.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-                with contextlib.suppress(TypeError, ValueError):
-                    baseline_samples = [float(cur.state)]
+            if cur is not None:
+                cur_value = _parse_lux_state(cur)  # F-104：非有限/非数字不进采样
+                if cur_value is not None:
+                    baseline_samples = [cur_value]
         if not baseline_samples:
             raise CalibrationError("基线阶段未收到照度数据（传感器无读数）")
         baseline = statistics.median(baseline_samples)
@@ -882,6 +918,14 @@ class ZoneRuntime:
         samples: list[float] = []
         last_lc = None
         first_deadline = started + timedelta(seconds=CAL_FIRST_REPORT_TIMEOUT_S)
+        # F-102 硬上限：连续上报的变化值会不断把 quiet_deadline 推后，两个
+        # 软 break 可永不成立 → _async_cal_step 永不返回、_async_sweep 不
+        # 前进、整组恒照度挂起（垃圾传感器每 <20s 报一个新值即可触发）。
+        # started 起算 = CAL_FIRST_REPORT_TIMEOUT_S + CAL_QUIET_PERIOD_S，
+        # 也是 anl 侧归还预算（manager._CI_RELEASE_RETRY_MAX）的每步最坏口径。
+        hard_deadline = started + timedelta(
+            seconds=CAL_FIRST_REPORT_TIMEOUT_S + CAL_QUIET_PERIOD_S
+        )
         quiet_deadline: datetime | None = None
         while True:
             now = dt_util.utcnow()
@@ -889,14 +933,18 @@ class ZoneRuntime:
             if state is not None:
                 lc = state.last_changed
                 if lc >= started and lc != last_lc:
-                    try:
-                        value = float(state.state)
-                    except (TypeError, ValueError):
-                        value = None
+                    value = _parse_lux_state(state)
                     if value is not None:
                         samples.append(value)
                         last_lc = lc
                         quiet_deadline = now + timedelta(seconds=CAL_QUIET_PERIOD_S)
+            if now >= hard_deadline:
+                _LOGGER.warning(
+                    "%s: 校准 %s 档静默期超时（连续上报不停），按已采样本收口",
+                    self.zone_name,
+                    "基线" if pct is None else f"{pct}%",
+                )
+                break
             if quiet_deadline is not None and now >= quiet_deadline:
                 break
             if quiet_deadline is None and now >= first_deadline:

@@ -435,7 +435,9 @@ def test_f085_ci_day_trigger_only_when_on_any_on_takes_over():
 
 def test_f086_night_trigger_release_skipped_when_other_entry_shares():
     """夜间触发归还 + 其他 anl 条目仍引用同一虚拟灯 → 零 turn_off（不误关
-    别组日间闭环）、本组夜间直控照常。"""
+    别组日间闭环）、本组夜间直控照常。自条目桩 state 也用枚举成员（F-105：
+    裸字符串 "loaded" 恒不在枚举白名单里，会在 state 过滤处被静默 continue
+    ——排除逻辑早于该过滤的防回归盲区）。"""
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)
     m = make_ci_manager()
     other = SimpleNamespace(
@@ -450,7 +452,8 @@ def test_f086_night_trigger_release_skipped_when_other_entry_shares():
     m.hass.config_entries = SimpleNamespace(
         async_entries=lambda domain: [
             SimpleNamespace(entry_id=m.entry.entry_id, data=make_entry().data,
-                            options={}, disabled_by=None, state="loaded"),
+                            options={}, disabled_by=None, title="自动夜灯",
+                            state=stubs.ConfigEntryState.LOADED),
             other,
         ]
     )
@@ -461,6 +464,31 @@ def test_f086_night_trigger_release_skipped_when_other_entry_shares():
     m._async_process_light = _record(calls)
     run(m.async_trigger("test"))
     assert svc == []  # 跨条目引用在：归还跳过
+    assert calls == [(LIGHT, 25, 2200, None)]  # 夜间直控照常
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
+
+
+def test_f086_self_entry_does_not_block_release():
+    """F-105 补钉：条目自身引用同一虚拟灯不构成「其他条目引用」——
+    exclude_entry_id 排除必须在 state 白名单过滤之后仍然生效（若排除失效，
+    自条目会成为命中 → 自引用把归还永久阻塞；本用例把它钉成 turn_off
+    必须发出）。"""
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)
+    m = make_ci_manager()
+    m.hass.config_entries = SimpleNamespace(
+        async_entries=lambda domain: [
+            SimpleNamespace(entry_id=m.entry.entry_id, data=make_entry().data,
+                            options={}, disabled_by=None, title="自动夜灯",
+                            state=stubs.ConfigEntryState.LOADED),
+        ]
+    )
+    svc = []
+    m.hass.services = _RecordingServices(svc)
+    m.hass.states.mapping[VIRT] = _FakeState("on", mode="active")
+    calls = []
+    m._async_process_light = _record(calls)
+    run(m.async_trigger("test"))
+    assert svc == [("light", "turn_off", {"entity_id": VIRT})]  # 自条目不阻塞归还
     assert calls == [(LIGHT, 25, 2200, None)]  # 夜间直控照常
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
 
@@ -630,7 +658,7 @@ def test_f090_runtime_release_no_retry_on_calibrating():
 def test_f092_retry_survives_31_rechecks():
     """F-092：~31 分钟（31 次 60s 复查）仍在校准 → 仍再排未放弃。旧上限
     30 分钟在此处已放弃且此后无任何归还路径（trigger/extra/监听/对账全被
-    _ci_configured 门挡）——新上限 90 分钟覆盖 README 最坏校准口径。"""
+    _ci_configured 门挡）——新上限 180 分钟覆盖 README 最坏校准口径。"""
     states_map = _calib_states_map()
     hass, tasks = _calib_hass(states_map)
     _anl_bucket(hass, _config_manager(_calib_entry()))
@@ -741,15 +769,17 @@ def test_f094_backfill_requeues_when_calibration_reenters():
 
 
 def test_f097_budget_covers_max_legal_step():
-    """F-097/F-100：预算常量必须覆盖最大合法步长的最坏校准——步长 2% 是
-    合法配置（lux/flow.py 选择器 min=2），calibration_steps(2)=51 点 →
+    """F-097/F-100/F-103：预算常量必须覆盖最大合法步长的最坏校准——步长
+    2% 是合法配置（lux/flow.py 选择器 min=2），calibration_steps(2)=51 点 →
     _async_sweep = 基线 1 + 上行 50 + 下行 49 = 100 次 _async_cal_step；
-    10% 重扫再 +20 次；每步最坏 62s（CAL_CMD_SETTLE_S 2 + CAL_FIRST_
-    REPORT_TIMEOUT_S 60，lux/const.py:55-57）→ 最坏 120×62s ≈ 124 分钟。
-    旧 90 分钟上限会先于校准结束放弃且此后无任何归还路径（F-092）。"""
+    10% 重扫再 +20 次；每步最坏 80s（F-102 硬上限 = CAL_FIRST_REPORT_
+    TIMEOUT_S 60 + CAL_QUIET_PERIOD_S 20，lux/const.py:55-58；CAL_CMD_
+    SETTLE_S 2s 含在 60s 首报窗口内）→ 最坏 120×80s = 160 分钟。R9 的
+    150 分钟按 62s/步漏算 CAL_QUIET_PERIOD_S（假最坏），会被连续上报的
+    静默期续期击穿。"""
     from custom_components.fumiha_lighting.lux.const import (
-        CAL_CMD_SETTLE_S,
         CAL_FIRST_REPORT_TIMEOUT_S,
+        CAL_QUIET_PERIOD_S,
     )
     from custom_components.fumiha_lighting.lux.logic import calibration_steps
 
@@ -759,14 +789,14 @@ def test_f097_budget_covers_max_legal_step():
     assert sweep_calls == 100
     resweep_calls = 1 + 10 + 9  # calibration_steps(10)=11 点的完整重扫
     worst_s = (sweep_calls + resweep_calls) * (
-        CAL_CMD_SETTLE_S + CAL_FIRST_REPORT_TIMEOUT_S
+        CAL_FIRST_REPORT_TIMEOUT_S + CAL_QUIET_PERIOD_S
     )
     budget_s = (
         anl_manager._CI_RELEASE_RETRY_MAX
         * anl_manager._CI_RELEASE_RETRY_INTERVAL_S
     )
-    assert worst_s >= 124 * 60  # 最坏口径实算
-    assert budget_s >= worst_s  # 预算必须覆盖最坏校准（F-097 修复口径）
+    assert worst_s >= 160 * 60  # 最坏口径实算（F-102 硬上限 80s/步）
+    assert budget_s >= worst_s  # 预算必须覆盖最坏校准（F-097/F-103 修复口径）
 
 
 def test_f099_setup_retry_reference_blocks_but_warns(caplog):

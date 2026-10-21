@@ -49,7 +49,14 @@ def make_entry(**overrides):
     }
     data.update(overrides)
     # entry_id：F-086 归还助手读 entry.entry_id 排除自身——真机 ConfigEntry 必有
-    return SimpleNamespace(data=data, options={}, entry_id="anl-test")
+    # disabled_by/state：F-093 引用判据读这两个真机恒有属性，桩补默认形态
+    return SimpleNamespace(
+        data=data,
+        options={},
+        entry_id="anl-test",
+        disabled_by=None,
+        state="loaded",
+    )
 
 
 def make_manager(**entry_overrides) -> NightLightManager:

@@ -42,6 +42,7 @@ from test_web import (
 )
 
 import custom_components.fumiha_lighting.anl as anl_pkg
+from custom_components.fumiha_lighting.anl import manager as anl_manager
 from custom_components.fumiha_lighting import web
 from custom_components.fumiha_lighting.anl.const import (
     CONF_DAY_CI_ENABLED,
@@ -306,6 +307,9 @@ def test_f083_options_flow_release_skipped_when_calibrating():
     }))
     assert final["type"] == "create_entry"
     assert events == []  # 校准中不碰
+    # F-096：配置侧挂点 retry_on_calibrating=True——校准中排 60s 延迟归还
+    # （既有用例只钉「零 turn_off」，漏了「有 retry」）
+    assert [d for d, _a in stubs.CALL_LATER_CALLS] == [60]
 
 
 def test_f083_remove_entry_release_skipped_when_calibrating():
@@ -322,6 +326,8 @@ def test_f083_remove_entry_release_skipped_when_calibrating():
     )
     run(pkg.async_remove_entry(hass, entry))
     assert hass.services.calls == []
+    # F-096：删条目挂点同上——校准中排 60s 延迟归还
+    assert [d for d, _a in stubs.CALL_LATER_CALLS] == [60]
 
 
 def test_f083_release_helper_direct_mode_guard():
@@ -338,6 +344,8 @@ def test_f083_release_helper_direct_mode_guard():
         hass = SimpleNamespace(
             states=SimpleNamespace(get=lambda eid, _m=mode: _virt_state(eid, _m)),
             services=_RecordingServices(calls),
+            # F-094：守卫单一来源——助手恒执行引用检查，桩补空表
+            config_entries=SimpleNamespace(async_entries=lambda domain: []),
         )
         run(async_release_virtual_light(hass, VIRT, exclude_entry_id=None))
         expected = [("light", "turn_off", {"entity_id": VIRT})] if expect_off else []
@@ -435,11 +443,13 @@ def test_f086_night_trigger_release_skipped_when_other_entry_shares():
         data={"kind": "anl", "lights": ["light.z"], CONF_DAY_ENABLED: True,
               CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
+        disabled_by=None,
+        state="loaded",
     )
     m.hass.config_entries = SimpleNamespace(
         async_entries=lambda domain: [
             SimpleNamespace(entry_id=m.entry.entry_id, data=make_entry().data,
-                            options={}),
+                            options={}, disabled_by=None, state="loaded"),
             other,
         ]
     )
@@ -476,6 +486,8 @@ def test_f089_reconcile_skipped_when_other_entry_shares():
         data={"kind": "anl", "lights": ["light.z"], CONF_DAY_ENABLED: True,
               CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
+        disabled_by=None,
+        state="loaded",
     )
     m.hass.config_entries = SimpleNamespace(
         async_entries=lambda domain: [m.entry, other]
@@ -555,10 +567,10 @@ def test_f090_retry_completes_after_calibration_ends():
     stubs.CALL_LATER_CALLS.clear()
     _post_disable_ci(hass)
     assert hass.services.calls == []
-    _delay, action = stubs.CALL_LATER_CALLS[-1]
     states_map[VIRT] = SimpleNamespace(  # 校准结束
         state="on", attributes={"mode": "active"})
-    action(None)  # @callback 同步复查
+    # F-096：走 flush 入口——_stub_callback 结构断言对 retry 回调生效
+    stubs.flush_deferred_callbacks()
     assert tasks, "校准结束应补做归还"
     run(tasks[0])
     assert hass.services.calls == [("light", "turn_off", {"entity_id": VIRT})]
@@ -576,13 +588,17 @@ def test_f090_retry_yields_to_reconfigured_reference():
         data={"kind": "anl", "lights": ["light.z"], CONF_DAY_ENABLED: True,
               CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
+        disabled_by=None,
+        state="loaded",
     )
     hass.config_entries.async_entries = lambda domain: [reconfigured]
-    _delay, action = stubs.CALL_LATER_CALLS[-1]
     states_map[VIRT] = SimpleNamespace(
         state="on", attributes={"mode": "active"})
-    action(None)
-    assert tasks == []  # 新配置接手：放弃归还
+    # F-096：flush 结构门禁；F-094：守卫单一来源——补做协程在助手内
+    # 命中引用判据后跳过（retry 不再自带 pre-check）
+    stubs.flush_deferred_callbacks()
+    assert tasks, "补做已投递，守卫在助手内命中"
+    run(tasks[0])
     assert hass.services.calls == []
 
 
@@ -601,3 +617,114 @@ def test_f090_runtime_release_no_retry_on_calibrating():
     assert svc == []  # calibrating 不碰
     assert stubs.CALL_LATER_CALLS == []  # 不排延迟归还
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
+
+
+# ---------------------------------------------------------------------------
+# R7 修复批（F-092~F-096）回归钉
+# ---------------------------------------------------------------------------
+
+
+def test_f092_retry_survives_31_rechecks():
+    """F-092：~31 分钟（31 次 60s 复查）仍在校准 → 仍再排未放弃。旧上限
+    30 分钟在此处已放弃且此后无任何归还路径（trigger/extra/监听/对账全被
+    _ci_configured 门挡）——新上限 90 分钟覆盖 README 最坏校准口径。"""
+    states_map = _calib_states_map()
+    hass, tasks = _calib_hass(states_map)
+    _anl_bucket(hass, _config_manager(_calib_entry()))
+    stubs.CALL_LATER_CALLS.clear()
+    _post_disable_ci(hass)
+    for _ in range(31):
+        stubs.flush_deferred_callbacks()  # 每次复查仍校准 → 再排 60s
+    assert [d for d, _a in stubs.CALL_LATER_CALLS] == [60]  # 链仍在
+    assert tasks == [] and hass.services.calls == []  # 未提前归还
+
+
+def test_f092_gives_up_with_warning_after_budget(monkeypatch, caplog):
+    """F-092：预算耗尽才放弃，且 WARNING 可观测（含虚拟灯实体与手动归还
+    指引）——旧实现 DEBUG 放弃，用户无从得知归还已永久丢失。"""
+    import logging
+
+    states_map = _calib_states_map()
+    hass, tasks = _calib_hass(states_map)
+    _anl_bucket(hass, _config_manager(_calib_entry()))
+    monkeypatch.setattr(anl_manager, "_CI_RELEASE_RETRY_MAX", 2)
+    stubs.CALL_LATER_CALLS.clear()
+    _post_disable_ci(hass)
+    with caplog.at_level(logging.WARNING, logger=MANAGER_LOGGER):
+        stubs.flush_deferred_callbacks()  # 复查#1：仍校准 → 再排
+        assert [d for d, _a in stubs.CALL_LATER_CALLS] == [60]
+        stubs.flush_deferred_callbacks()  # 复查#2：预算耗尽 → 放弃
+    assert stubs.CALL_LATER_CALLS == []  # 不再排链
+    assert tasks == [] and hass.services.calls == []  # 放弃≠误归还
+    warns = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warns, "放弃必须 WARNING 落日志"
+    assert any(VIRT in r.getMessage() and "手动" in r.getMessage()
+               for r in warns)
+
+
+def test_f090_retry_requeues_each_recheck():
+    """F-096 补钉：校准中连续两次复查 → 每次再排 60s、零服务（重试链
+    不断；既有用例只钉首次排程）。"""
+    states_map = _calib_states_map()
+    hass, _tasks = _calib_hass(states_map)
+    _anl_bucket(hass, _config_manager(_calib_entry()))
+    stubs.CALL_LATER_CALLS.clear()
+    _post_disable_ci(hass)
+    stubs.flush_deferred_callbacks()  # 复查#1
+    assert [d for d, _a in stubs.CALL_LATER_CALLS] == [60]
+    stubs.flush_deferred_callbacks()  # 复查#2
+    assert [d for d, _a in stubs.CALL_LATER_CALLS] == [60]
+    assert hass.services.calls == []
+
+
+def test_f093_broken_reference_does_not_block_retry_release():
+    """F-093：停用（disabled_by 非 None）或未运行（state 白名单外：
+    setup_error/not_loaded）的其他条目不构成生效引用——重试补做照常
+    turn_off。旧判据把它们当生效引用，其 manager 永不接手 → V 恒
+    active + 双闭环互纠、归还永久丢失。"""
+    for broken in ("disabled", "setup_error", "not_loaded"):
+        states_map = _calib_states_map()
+        hass, tasks = _calib_hass(states_map)
+        _anl_bucket(hass, _config_manager(_calib_entry()))
+        stubs.CALL_LATER_CALLS.clear()
+        _post_disable_ci(hass)
+        hass.config_entries.async_entries = lambda domain, _b=broken: [
+            SimpleNamespace(
+                entry_id="anl2",
+                data={"kind": "anl", "lights": ["light.z"],
+                      CONF_DAY_ENABLED: True, CONF_DAY_CI_ENABLED: True,
+                      CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
+                options={},
+                disabled_by="user" if _b == "disabled" else None,
+                state="loaded" if _b == "disabled" else _b,
+            )
+        ]
+        states_map[VIRT] = SimpleNamespace(
+            state="on", attributes={"mode": "active"})
+        stubs.flush_deferred_callbacks()  # F-096：flush 结构门禁
+        assert tasks, f"broken={broken} 应仍投递补做"
+        run(tasks[0])
+        assert hass.services.calls == [
+            ("light", "turn_off", {"entity_id": VIRT})
+        ], f"broken={broken} 应照常归还"
+
+
+def test_f094_backfill_requeues_when_calibration_reenters():
+    """F-094：补做协程运行前校准重新进入（mode 又回 calibrating）→ 助手
+    经 retry_on_calibrating=True 重新排链而非丢归还（补做与普通挂点共用
+    单一助手，守卫/重排不再各写一份）。"""
+    states_map = _calib_states_map()
+    hass, tasks = _calib_hass(states_map)
+    _anl_bucket(hass, _config_manager(_calib_entry()))
+    stubs.CALL_LATER_CALLS.clear()
+    _post_disable_ci(hass)
+    states_map[VIRT] = SimpleNamespace(  # 校准结束
+        state="on", attributes={"mode": "active"})
+    stubs.flush_deferred_callbacks()
+    assert tasks, "校准结束应投递补做"
+    assert stubs.CALL_LATER_CALLS == []  # _attempt 已消费重试链
+    states_map[VIRT] = SimpleNamespace(  # 补做运行前重新进入校准
+        state="on", attributes={"mode": "calibrating"})
+    run(tasks[0])
+    assert [d for d, _a in stubs.CALL_LATER_CALLS] == [60]  # 重排非丢弃
+    assert hass.services.calls == []

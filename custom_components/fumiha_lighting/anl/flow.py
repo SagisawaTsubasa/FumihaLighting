@@ -340,7 +340,7 @@ class _FlowMixin:
         return data
 
     async def _async_release_stale_virtual(
-        self, old: dict, new: dict, exclude_entry_id: str | None = None
+        self, old: dict, new: dict, *, exclude_entry_id: str | None
     ) -> None:
         """CI 停用或改指时归还旧虚拟灯（F-057 双闭环互纠）。
 
@@ -354,6 +354,10 @@ class _FlowMixin:
         条目：reconfigure 流传被改条目 id，options 流传当前条目 id。
         F-083：归还动作统一走 async_release_virtual_light（lux mode 守卫 +
         跨条目检查 + best-effort turn_off，anl/manager.py 单一来源）。
+        F-095：exclude_entry_id 关键字必填（与 helper 的 F-089 纪律对齐）
+        ——归还发生在落盘之前，此刻当前条目 data/options 的旧值仍引用
+        old_virtual；省略该参会把当前条目自己当成「其他引用」而静默跳过
+        归还（F-081「忘了传」形状，防线不得止步于 helper）。
         """
         old_virtual = old.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
         if not (old.get(CONF_DAY_CI_ENABLED) and old_virtual):
@@ -424,9 +428,11 @@ class AnlGroupFlowMixin(_FlowMixin):
             if entry.unique_id != self.unique_id:
                 self._abort_if_unique_id_configured(error="anl_unique_id_mismatch")
             # F-057：改指/停用 CI 时归还旧虚拟灯——abort 路径之后才动灯；
-            # F-067：排除自身条目做跨条目引用检查
+            # F-067：排除自身条目做跨条目引用检查（F-095：关键字必填）
             await self._async_release_stale_virtual(
-                current, self._entry_data(), entry.entry_id
+                current,
+                self._entry_data(),
+                exclude_entry_id=entry.entry_id,
             )
             # options 清空 + GUI 管理键并入 data：全量收敛进 data，GUI 改动不丢
             return self.async_update_reload_and_abort(
@@ -505,8 +511,10 @@ class AnlGroupOptionsFlow(_FlowMixin, OptionsFlow):
             ),
         }
         # F-057：CI 停用/改指 → 先归还旧虚拟灯，再创建 options 条目；
-        # F-067：排除当前条目做跨条目引用检查
+        # F-067：排除当前条目做跨条目引用检查（F-095：关键字必填）
         await self._async_release_stale_virtual(
-            self._current, new_data, self.config_entry.entry_id
+            self._current,
+            new_data,
+            exclude_entry_id=self.config_entry.entry_id,
         )
         return self.async_create_entry(title="", data=new_data)

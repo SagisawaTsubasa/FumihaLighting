@@ -329,11 +329,15 @@ def test_anl_trigger_snapshots_managers():
 
 
 def _config_entry(entry_id="anl1", data=None, options=None):
+    # disabled_by/state：F-093 引用判据读这两个真机 ConfigEntry 恒有的
+    # 属性——桩补默认形态（未禁用、已加载），保桩忠实度
     return SimpleNamespace(
         entry_id=entry_id,
         title="自动夜灯",
         data=data if data is not None else {},
         options=options if options is not None else {},
+        disabled_by=None,
+        state="loaded",
     )
 
 

@@ -312,6 +312,8 @@ def test_remove_entry_release_skipped_when_other_entry_shares_virtual(caplog):
               CONF_DAY_ENABLED: True, CONF_DAY_CI_ENABLED: True,
               CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
+        disabled_by=None,  # F-093：引用判据读真机 ConfigEntry 恒有的两属性
+        state="loaded",
     )
     hass.states = SimpleNamespace(  # F-083：助手 mode 守卫，见 web 用例
         get=lambda eid: SimpleNamespace(state="on", attributes={"mode": "active"})
@@ -346,6 +348,8 @@ def test_options_flow_release_skipped_when_other_entry_shares_virtual():
               CONF_DAY_ENABLED: True, CONF_DAY_CI_ENABLED: True,
               CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
+        disabled_by=None,  # F-093：引用判据读真机 ConfigEntry 恒有的两属性
+        state="loaded",
     )
     opts = AnlGroupOptionsFlow()
     opts.config_entry = entry_a

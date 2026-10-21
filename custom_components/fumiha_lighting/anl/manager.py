@@ -44,6 +44,7 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.helpers.sun import get_astral_event_date
 
+from ..const import CONF_KIND, KIND_ANL
 from .const import (
     ANCHOR_FIXED,
     ANCHOR_SUNRISE,
@@ -94,6 +95,7 @@ from .const import (
     DEFAULT_TRIGGER_TIME,
     DEFAULT_TURN_ON_LISTEN,
     DEFAULT_VERIFY_DELAY,
+    DOMAIN,
     EXTRA_BRIGHTNESS,
     EXTRA_COLOR_TEMP_KELVIN,
     EXTRA_START,
@@ -122,6 +124,82 @@ _NOT_IN_BAND = object()  # _band_params 哨兵：当前不在任何过渡带内
 # _cal_pending_off、扫频结束跳过亮度恢复（runtime.py:565-571、738）——此时
 # 打扰会让灯停在校准末档；None（非 lux 灯/属性缺失/实体缺失）一律不动。
 _CI_HANDBACK_LUX_MODES = ("active", "passthrough")
+
+
+def _anl_virtual_referenced_elsewhere(
+    hass: HomeAssistant, exclude_entry_id: str, virtual: str
+) -> bool:
+    """跨条目引用检查（F-067；F-083 自 web.py 挪入 CI 逻辑单一来源处）。
+
+    判据 = 条目 kind 为 anl 且合并 data+options 后 day_enabled 开、
+    day_ci_enabled 开、day_ci_virtual_light 等于待归还实体（F-077：与
+    manager._ci_configured 生效判据同源——「CI 键在但 day_enabled 关」是
+    失效配置，其 manager 运行时零虚拟灯调用，不构成生效引用，不得阻塞
+    他条目归还）。走 config_entries 注册表而非 hass.data 运行时桶：删除
+    钩子（async_remove_entry）触发时 manager 可能已卸载，注册表里的
+    data+options 合并值才是配置真值。
+    """
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if entry.entry_id == exclude_entry_id:
+            continue
+        if entry.data.get(CONF_KIND) != KIND_ANL:
+            continue
+        merged = {**entry.data, **entry.options}
+        if (
+            merged.get(CONF_DAY_ENABLED)
+            and merged.get(CONF_DAY_CI_ENABLED)
+            and (merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or "") == virtual
+        ):
+            return True
+    return False
+
+
+async def async_release_virtual_light(
+    hass: HomeAssistant,
+    virtual: str,
+    *,
+    exclude_entry_id: str | None = None,
+) -> None:
+    """归还（turn_off）恒照度虚拟灯的唯一入口（F-083）。
+
+    lux mode 守卫（F-076 白名单单一来源）：只有闭环真在跑（active/
+    passthrough）才关——calibrating 时 lux 对 turn_off 只置 _cal_pending_off、
+    扫频结束跳过亮度恢复（runtime.py:565-571、738）；idle 无闭环可放；
+    None（实体缺失/非 lux 灯/属性缺失）一律不动。F-086：exclude_entry_id
+    给定时先过跨条目引用检查——其他 anl 条目仍引用同一虚拟灯时跳过（关掉
+    会静默终止别组的日间闭环），INFO 可观测。best-effort：服务失败 WARNING
+    不抛（调用方——配置面 web/flow/删条目与运行面 manager——全部是
+    best-effort 归还，不因归还失败阻断主流程）。
+    """
+    state = hass.states.get(virtual)
+    mode = state.attributes.get("mode") if state is not None else None
+    if mode not in _CI_HANDBACK_LUX_MODES:
+        _LOGGER.debug(
+            "归还跳过：恒照度虚拟灯 %s lux mode=%r 不在归还集合"
+            "（idle/calibrating/缺失不碰）",
+            virtual,
+            mode,
+        )
+        return
+    if exclude_entry_id is not None and _anl_virtual_referenced_elsewhere(
+        hass, exclude_entry_id, virtual
+    ):
+        _LOGGER.info(
+            "恒照度虚拟灯 %s 仍被其他夜灯组条目引用，跳过归还（保持开启）",
+            virtual,
+        )
+        return
+    try:
+        await hass.services.async_call(
+            LIGHT_DOMAIN,
+            SERVICE_TURN_OFF,
+            {ATTR_ENTITY_ID: virtual},
+            blocking=True,
+        )
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning(
+            "归还恒照度虚拟灯 %s 失败：%s（继续，不阻断主流程）", virtual, err
+        )
 
 
 class LightState(enum.Enum):
@@ -336,9 +414,22 @@ class NightLightManager:
         WARNING（_warned_ci 每 manager 实例节流一次，同 _warned_sun_fallback
         模式；预检与异常共用同一节流旗标），后续同实例内 DEBUG；返回 False
         由调用方回落日间参数直控——错误必须响但保可用。
+        F-084：on 侧对称读 lux mode——校准中 lux 对 turn_on 直接忽略
+        （lux/runtime.py async_turn_on_requested 的 MODE_CALIBRATING 早退），
+        服务不抛异常=假成功，调用方会误判「已接管」而清空 machine，真实灯
+        却既无恒照度也无日间参数；按未接管返回 False 回落直控（校准是暂态，
+        扫频 finally 自会恢复现场；DEBUG 不打 WARNING——校准期暂停是 lux
+        既有语义）。
         服务后二次校验 STATE_ON 不做（R2 审查建议，有意偏离）：blocking
         返回时实体状态可能尚未刷新，会造成假失败；lux 闭环自会处理灯没开。
         """
+        if on and self._virtual_lux_mode() == "calibrating":
+            # F-084：校准中 turn_on 是假成功（见上），按未接管回落直控
+            _LOGGER.debug(
+                "恒照度虚拟灯 %s 校准中，按未接管处理（回落直控）",
+                self.day_ci_virtual_light,
+            )
+            return False
         state = self.hass.states.get(self.day_ci_virtual_light)
         if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             # F-079：文案按方向区分——只有接管（on=True）失败才写「回落日间
@@ -400,6 +491,40 @@ class NightLightManager:
                 )
             return False
         return True
+
+    async def async_ci_startup_reconcile(self) -> None:
+        """Startup/reload hand-back reconciliation (F-081).
+
+        HA 重启或集成 reload 跨过夜锚后：日间被 CI 接管的 lux 闭环在本条目
+        侧没有任何会归还它的触发器（夜锚定时器排在下一次锚点，extra 定时器
+        只管自己的起点）——虚拟灯整夜开着，lux 与夜间直控互相纠偏。启动时
+        对账一次：CI 配置开、当前解析时段非日间、且闭环真在跑（F-076 白名
+        单）→ 归还；幂等（夜间触发/extra 起点同判据再归还无害）。当前是
+        日间则不碰——重启前接管的闭环继续跑正是期望状态，「天亮不主动接
+        管」红线不越界；idle/calibrating/None 同 F-076 一律不动。由
+        anl_async_setup_entry 在 manager.start() 之后 await（异常沿 setup
+        面可见，不吞；协程内全链无未捕获异常源——ensure 自带全捕）。
+        """
+        if self._stopped or not self._ci_configured():
+            return
+        now = dt_util.now()
+        mode = self._mode_at(now.hour * 60 + now.minute)
+        if mode == MODE_DAY:
+            return
+        if self._virtual_lux_mode() not in _CI_HANDBACK_LUX_MODES:
+            _LOGGER.debug(
+                "startup reconcile: virtual light %s lux mode not active, "
+                "skip hand-back",
+                self.day_ci_virtual_light,
+            )
+            return
+        _LOGGER.info(
+            "启动对账：当前处于非日间时段（%s），归还恒照度虚拟灯 %s"
+            "（重启/重载跨过夜锚，防 lux 闭环整夜残留）",
+            mode,
+            self.day_ci_virtual_light,
+        )
+        await self._async_ensure_virtual(False)
 
     def _effective_transition_bands(self) -> list[tuple]:
         """Transition bands with day-side bands dropped while CI is configured.
@@ -465,7 +590,11 @@ class NightLightManager:
         # 额外时段起点定时器无条件排（F-059）：extras 可以没有过渡带，
         # 「0=立即」时段的参数按时生效只靠这里的定时器
         self._schedule_extra_starts()
-        if self.turn_on_listen:
+        if self.turn_on_listen or self._ci_configured():
+            # F-080：监听注册与 turn_on_listen 解耦——CI 配置开时本回调是
+            # 日间接管链的唯一事件入口，不注册则日间恒照度整链静默失效而
+            # 快照仍按 _ci_configured 谎报接管。回调内 settle 直控单独以
+            # turn_on_listen 门控（未开监听的老语义不回退）。
             self._unsub_state = async_track_state_change_event(
                 self.hass, self.lights, self._async_light_state_changed
             )
@@ -710,16 +839,14 @@ class NightLightManager:
         参数生效的唯一入口——页面「0=立即」文案由此成立。
         """
         if self._ci_configured():
-            # F-076：只归还真在跑的 lux 闭环（active/passthrough）——校准中
-            # turn_off 只置 _cal_pending_off 会跳过恢复；idle/未知模式不动
-            if self._virtual_lux_mode() in _CI_HANDBACK_LUX_MODES:
-                await self._async_ensure_virtual(False)
-            else:
-                _LOGGER.debug(
-                    "extra start: virtual light %s lux mode not active, "
-                    "skip hand-back",
-                    self.day_ci_virtual_light,
-                )
+            # F-086：归还统一走 async_release_virtual_light——F-076 lux
+            # mode 守卫 + F-067 跨条目检查（他组仍引用同一虚拟灯时不动）
+            # 单一来源；幂等，与 async_trigger 非日间路径同语义
+            await async_release_virtual_light(
+                self.hass,
+                self.day_ci_virtual_light,
+                exclude_entry_id=self.entry.entry_id,
+            )
 
         async def _apply(entity_id: str):
             machine = self.machines[entity_id]
@@ -1081,8 +1208,15 @@ class NightLightManager:
         """Process one light's scheduled step (P3-7: 逐灯并发，互不阻塞)."""
         if self._stopped:
             return
-        mode_now = self._mode_at(when.hour * 60 + when.minute)
-        if self._ci_configured() and mode_now == MODE_DAY:
+        # F-088：_mode_at 是锚点解析（sun 锚含天文计算），只在有消费方时
+        # 执行——CI 日间守卫（仅 CI 配置开）与 F-066 extra 屏障（仅 extras
+        # 非空时 mode_now 才可能命中 extra_*）；两者皆无关时零解析
+        ci = self._ci_configured()
+        if ci or self.extras:
+            mode_now = self._mode_at(when.hour * 60 + when.minute)
+        else:
+            mode_now = None
+        if ci and mode_now == MODE_DAY:
             # F-060：CI 下非日侧带的窗口可能跨过日间锚点，落在日间的步进
             # 不得直控真实灯。被动计划步也不得经 lux 把关着的灯点亮——
             # 日间接管只归 trigger/listener 路径（此处不做 ensure_virtual）。
@@ -1191,6 +1325,10 @@ class NightLightManager:
         self, event: Event[EventStateChangedData]
     ) -> None:
         """Handle a configured light turning on inside the night window."""
+        if self._stopped:
+            # F-082：F-078 同款第四处——卸载后事件分派竞态，不触发虚拟灯
+            # 调用、不排 settle
+            return
         old_state = event.data["old_state"]
         new_state = event.data["new_state"]
         if new_state is None or new_state.state != STATE_ON:
@@ -1234,12 +1372,24 @@ class NightLightManager:
             # ensure 失败（含 F-068 预检）：params 此刻=日间参数，落到既有
             # settle 路径（fallback 日间参数直控，WARNING 已由 ensure 节流发出）
         elif self._ci_configured():
-            # 防御性归还：夜间 lux 闭环仍在跑（F-076：判 attributes["mode"]
-            # 而非 state——state 是真灯镜像，本集成夜间开灯也会命中）时关掉
-            # 它避免两闭环抢灯（lux off=纯放手，对真实灯零下发）；idle/
-            # calibrating/None 不动（calibrating 时 lux 自己收尾）
-            if self._virtual_lux_mode() in _CI_HANDBACK_LUX_MODES:
-                await self._async_ensure_virtual(False)
+            # 防御性归还：夜间 lux 闭环仍在跑时关掉它避免两闭环抢灯（lux
+            # off=纯放手，对真实灯零下发）。F-086：统一走 async_release_
+            # virtual_light——F-076 lux mode 守卫（判 attributes["mode"] 而非
+            # state——state 是真灯镜像，本集成夜间开灯也会命中；idle/
+            # calibrating/None 不动，calibrating 时 lux 自己收尾）+ 跨条目
+            # 检查单一来源
+            await async_release_virtual_light(
+                self.hass,
+                self.day_ci_virtual_light,
+                exclude_entry_id=self.entry.entry_id,
+            )
+        if not self.turn_on_listen:
+            # F-080：监听器可仅为 CI 注册（turn_on_listen=False）——settle
+            # 直控是开灯监听的原有功能，未开启时不得经此路径直控真实灯。
+            # CI 日间 ensure 失败的 WARNING 已由 ensure 节流发出（立即触发
+            # 的逐灯 fallback 是 async_trigger 路径，不受本门控影响）；
+            # 夜间/extra 的防御性归还在上方完成，到此结束。
+            return
         # 关→开重新加入曲线：清接管并重设预期基准与计数
         machine.manual_override = False
         machine.mismatch_steps = 0
@@ -1297,6 +1447,21 @@ class NightLightManager:
         now = dt_util.now()
         mode = self._mode_at(now.hour * 60 + now.minute)
         if self._ci_active_for(mode):
+            # F-085：only_when_on 准入——组内灯全关时不经 lux 闭环点亮
+            # （夜间同语义=逐灯 SKIPPED_OFF；CI 是组级操作，准入按组判）。
+            if self.only_when_on:
+                any_on = False
+                for entity_id in self.lights:
+                    st = self.hass.states.get(entity_id)
+                    if st is not None and st.state == STATE_ON:
+                        any_on = True
+                        break
+                if not any_on:
+                    _LOGGER.debug(
+                        "CI daytime trigger: all lights off (only_when_on), "
+                        "skip takeover"
+                    )
+                    return
             if await self._async_ensure_virtual(True):
                 # 恒照度闭环接管：真实灯零下发、无验证延迟，全部 machine
                 # 归位（虚拟灯整轮只调一次）
@@ -1313,16 +1478,15 @@ class NightLightManager:
             # 夜间/额外时段：每轮一次幂等归还虚拟灯（lux off=纯放手，对真实
             # 灯零下发），失败不阻断夜间下发（告警已响）；在 gather 之前
             # 执行，「先关虚拟灯、后直控真实灯」的顺序由此钉住。
-            # F-076：只归还真在跑的 lux 闭环（active/passthrough）——idle
-            # 无闭环可放、calibrating 时打扰会让校准收尾跳过亮度恢复
-            if self._virtual_lux_mode() in _CI_HANDBACK_LUX_MODES:
-                await self._async_ensure_virtual(False)
-            else:
-                _LOGGER.debug(
-                    "trigger: virtual light %s lux mode not active, "
-                    "skip hand-back",
-                    self.day_ci_virtual_light,
-                )
+            # F-086：统一走 async_release_virtual_light——F-076 lux mode
+            # 守卫（active/passthrough 才关；idle 无闭环可放、calibrating
+            # 时打扰会让校准收尾跳过亮度恢复）+ F-067 跨条目检查（他组仍
+            # 引用同一虚拟灯时不动，防误关别组的日间闭环）
+            await async_release_virtual_light(
+                self.hass,
+                self.day_ci_virtual_light,
+                exclude_entry_id=self.entry.entry_id,
+            )
 
         async def _one(entity_id: str) -> None:
             params = self.current_params(entity_id)

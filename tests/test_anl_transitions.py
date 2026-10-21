@@ -48,7 +48,8 @@ def make_entry(**overrides):
         CONF_DAY_ENABLED: True,
     }
     data.update(overrides)
-    return SimpleNamespace(data=data, options={})
+    # entry_id：F-086 归还助手读 entry.entry_id 排除自身——真机 ConfigEntry 必有
+    return SimpleNamespace(data=data, options={}, entry_id="anl-test")
 
 
 def make_manager(**entry_overrides) -> NightLightManager:
@@ -58,6 +59,9 @@ def make_manager(**entry_overrides) -> NightLightManager:
     manager.hass = SimpleNamespace(
         states=_FakeStates(),
         async_create_task=lambda coro: asyncio.get_event_loop().create_task(coro),
+        # F-086：归还统一走 async_release_virtual_light——跨条目检查读
+        # config_entries.async_entries（真机 hass 必有；缺省空表=无他组引用）
+        config_entries=SimpleNamespace(async_entries=lambda domain: []),
     )
     return manager
 

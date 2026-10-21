@@ -17,9 +17,8 @@ import logging
 import voluptuous as vol
 
 import homeassistant.helpers.config_validation as cv
-from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_ENTITY_ID, SERVICE_TURN_OFF
+from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -30,11 +29,12 @@ from .anl.const import (
     CONF_DAY_CI_VIRTUAL_LIGHT,
     SERVICE_TRIGGER_NOW,
 )
+from .anl.manager import async_release_virtual_light
 from .const import CONF_KIND, DOMAIN, KIND_ANL, KIND_LUX
 from .lux.const import SERVICE_CALIBRATE
 from .lux.runtime import ZoneRuntime
 from .lux.store import ZoneStorage
-from .web import _anl_virtual_referenced_elsewhere, async_setup_web, async_unload_web
+from .web import async_setup_web, async_unload_web
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -109,26 +109,13 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     virtual = merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
     if not (merged.get(CONF_DAY_CI_ENABLED) and virtual):
         return
-    # F-067：跨条目检查——其他 anl 条目仍引用同一虚拟灯时跳过归还（删除
-    # 本条目不应关掉别组的日间闭环），INFO 可观测
-    if _anl_virtual_referenced_elsewhere(hass, entry.entry_id, virtual):
-        _LOGGER.info(
-            "恒照度虚拟灯 %s 仍被其他夜灯组条目引用，删除条目 %s 时跳过归还"
-            "（保持开启）",
-            virtual,
-            entry.entry_id,
-        )
-        _LOGGER.debug(
-            "归还跳过原因：跨条目检查命中其他 anl 条目的 "
-            "day_ci_enabled + 同虚拟灯引用"
-        )
-        return
-    try:
-        await hass.services.async_call(
-            LIGHT_DOMAIN, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: virtual}, blocking=True
-        )
-    except Exception as err:  # noqa: BLE001
-        _LOGGER.warning("删除条目归还恒照度虚拟灯 %s 失败：%s", virtual, err)
+    # F-083：归还统一走 async_release_virtual_light（lux mode 守卫 + 跨条
+    # 目检查——删除本条目不应关掉别组的日间闭环——+ best-effort turn_off，
+    # anl/manager.py 单一来源）。本钩子只在删除触发、reload 不触发——卸载
+    # 路径（async_unload_entry→manager.stop）故意不动灯，防正常 reload 把
+    # 日间恒照度闭环关掉（F-057）；启动/重载侧的归还对账在 anl_async_
+    # setup_entry（F-081）。
+    await async_release_virtual_light(hass, virtual, exclude_entry_id=entry.entry_id)
 
 
 # ---------------------------------------------------------------------------

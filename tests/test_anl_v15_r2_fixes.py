@@ -271,9 +271,16 @@ def test_web_post_release_skipped_when_other_entry_shares_virtual(caplog):
               CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
     )
     hass = _recording_hass()
+    # F-083：归还走助手 lux mode 守卫——桩给出闭环在跑的真实形态
+    hass.states = SimpleNamespace(
+        get=lambda eid: SimpleNamespace(state="on", attributes={"mode": "active"})
+        if eid == VIRT
+        else None
+    )
     hass.config_entries.async_entries = lambda domain: [entry_a, entry_b]
     _anl_bucket(hass, _config_manager(entry_a))
-    with caplog.at_level(logging.INFO, logger=WEB_LOGGER):
+    # F-083：归还助手落 anl/manager.py——「跳过归还」INFO 由 manager logger 发出
+    with caplog.at_level(logging.INFO, logger=MANAGER_LOGGER):
         resp = run(
             web.AnlConfigView().post(
                 FakeRequest(hass, {"entry_id": "anl1",
@@ -305,6 +312,11 @@ def test_remove_entry_release_skipped_when_other_entry_shares_virtual(caplog):
               CONF_DAY_ENABLED: True, CONF_DAY_CI_ENABLED: True,
               CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
+    )
+    hass.states = SimpleNamespace(  # F-083：助手 mode 守卫，见 web 用例
+        get=lambda eid: SimpleNamespace(state="on", attributes={"mode": "active"})
+        if eid == VIRT
+        else None
     )
     hass.config_entries = SimpleNamespace(
         async_entries=lambda domain: [entry_a, entry_b]
@@ -339,8 +351,12 @@ def test_options_flow_release_skipped_when_other_entry_shares_virtual():
     opts.config_entry = entry_a
     opts.hass = SimpleNamespace(
         # 虚拟灯可见（state=on）：预检放行，turn_off 跳过必须由跨条目检查达成
+        # （F-083 助手读 attributes["mode"]——本桩不带 mode → 守卫不碰，零
+        # turn_off 由 mode 守卫与跨条目检查双重达成）
         states=SimpleNamespace(
-            get=lambda eid: SimpleNamespace(state="on") if eid == VIRT else None
+            get=lambda eid: SimpleNamespace(state="on", attributes={})
+            if eid == VIRT
+            else None
         ),
         services=SimpleNamespace(async_call=_svc_recorder(events)),
         config_entries=SimpleNamespace(async_entries=lambda domain: [entry_a, entry_b]),
@@ -366,6 +382,11 @@ def test_options_flow_release_skipped_when_other_entry_shares_virtual():
 def test_web_post_release_turns_off_when_reference_is_unique():
     """对照钉：唯一引用（无其他条目）→ turn_off 照旧（既有语义不回退）。"""
     hass = _recording_hass()
+    hass.states = SimpleNamespace(  # F-083：助手 mode 守卫，闭环在跑
+        get=lambda eid: SimpleNamespace(state="on", attributes={"mode": "active"})
+        if eid == VIRT
+        else None
+    )
     _anl_bucket(hass, _config_manager(_ci_entry()))
     resp = run(
         web.AnlConfigView().post(

@@ -2383,26 +2383,24 @@ def test_turn_off_requested_leaves_real_light_alone():
 # ---------------------------------------------------------------------------
 
 
-def test_anl_settings_schema_has_ci_fields():
-    """向导第 3 步含两新字段；实体字段为 Optional（CI 关时留空）。"""
-    import voluptuous as vol
-
+def test_anl_settings_schema_has_no_ci_fields():
+    """V1.6.0 单灯化：CI 两键移出向导第 3 步（GUI 编辑 + 携带）。"""
     from custom_components.fumiha_lighting.anl.const import (
         CONF_DAY_CI_ENABLED,
+        CONF_DAY_CI_LIGHTS,
         CONF_DAY_CI_VIRTUAL_LIGHT,
     )
     from custom_components.fumiha_lighting.anl.flow import _settings_schema
 
     schema = _settings_schema({})
-    markers = {m.schema: m for m in schema.schema}
-    assert CONF_DAY_CI_ENABLED in markers
-    assert CONF_DAY_CI_VIRTUAL_LIGHT in markers
-    assert isinstance(markers[CONF_DAY_CI_ENABLED], vol.Required)
-    assert isinstance(markers[CONF_DAY_CI_VIRTUAL_LIGHT], vol.Optional)
+    keys = {m.schema for m in schema.schema}
+    assert CONF_DAY_CI_ENABLED not in keys
+    assert CONF_DAY_CI_LIGHTS not in keys
+    assert CONF_DAY_CI_VIRTUAL_LIGHT not in keys
 
 
-def test_anl_entry_data_ci_keys_passthrough_and_none_normalized():
-    """_entry_data 两键透传；实体 None 归一 ""（存储形状，防 None 入库）。"""
+def test_anl_entry_data_wizard_produces_no_ci_keys():
+    """V1.6.0：向导产物不含 CI 键（新条目 CI 关，GUI 后补；死键不固化）。"""
     times_input = {
         "start_mode": "fixed", "end_mode": "fixed",
         "trigger_time": "22:00", "end_time": "06:00",
@@ -2419,29 +2417,17 @@ def test_anl_entry_data_ci_keys_passthrough_and_none_normalized():
         return run(flow.async_step_settings(settings))
 
     result = _run_wizard({
-        "day_enabled": False, "brightness": 25, "color_temp_kelvin": 2200,
+        "day_enabled": True, "brightness": 25, "color_temp_kelvin": 2200,
         "day_brightness": 100, "day_color_temp_kelvin": 4000,
-        "day_ci_enabled": False, "day_ci_virtual_light": None,
         "tolerance_brightness": 4, "tolerance_kelvin": 150,
         "verify_delay": 5, "settle_delay": 1,
         "turn_on_listen": True, "only_when_on": False, "respect_manual": True,
     })
     assert result["type"] == "create_entry"
     data = result["data"]
-    # F-061：CI on+空实体在参数步被拦截（见 test_anl_v15_fixes）——归一化
-    # 路径改用 CI 关组合驱动，None → "" 归一断言不变
-    assert data["day_ci_enabled"] is False
-    assert data["day_ci_virtual_light"] == ""  # None → "" 归一
-    # 非空值原样透传
-    result2 = _run_wizard({
-        "day_enabled": True, "brightness": 25, "color_temp_kelvin": 2200,
-        "day_brightness": 100, "day_color_temp_kelvin": 4000,
-        "day_ci_enabled": True, "day_ci_virtual_light": "light.virt",
-        "tolerance_brightness": 4, "tolerance_kelvin": 150,
-        "verify_delay": 5, "settle_delay": 1,
-        "turn_on_listen": True, "only_when_on": False, "respect_manual": True,
-    })
-    assert result2["data"]["day_ci_virtual_light"] == "light.virt"
+    assert "day_ci_enabled" not in data
+    assert "day_ci_lights" not in data
+    assert "day_ci_virtual_light" not in data
 
 
 def test_anl_snapshot_serializes_day_ci_keys():

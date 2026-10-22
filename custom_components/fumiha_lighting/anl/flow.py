@@ -4,13 +4,17 @@
 时段**不在向导里**——它们由夜灯助手页面的 GUI 设置弹窗经
 /api/fumiha_lighting/anl/config 读写（唯一编辑入口），向导产物不含
 extras/overrides（manager 对这些键按缺省值消费，GUI 后补）。
+V1.6.0：日间恒照度两键同样移出向导（day_ci_lights/day_ci_virtual_light
+由 GUI 编辑），保存时经 _GUI_MANAGED_KEYS 携带——存量 day_ci_enabled=true
+条目携带时展开为当时灯集（读入迁移的写侧对偶，防 reconfigure/options
+保存把 CI 静默清零）。
 
-reconfigure/options 保存时把条目里 GUI 管理的键（extras/extra_count/
-overrides）携带过去，避免向导保存把 GUI 改动冲掉；overrides 同时按当前
-灯集裁剪，不留死键。CI 停用或改指时在创建/更新条目之前 best-effort
-归还旧虚拟灯（F-057；被其他 anl 条目引用时跳过——F-067）；CI 开而虚拟
-灯为空在参数步就地拦截（F-061）；CI 开而日间模式关在参数步就地拦截
-（F-065）；灯集里混入本集成的虚拟恒照度灯在灯具步就地拦截（F-064）。
+reconfigure/options 保存时把条目里 GUI 管理的键携带过去，避免向导保存
+把 GUI 改动冲掉；overrides/day_ci_lights 同时按当前灯集裁剪，不留死键。
+CI 停用或改指时在创建/更新条目之前 best-effort 归还旧虚拟灯（F-057；
+被其他 anl 条目引用时跳过——F-067，判据走读入迁移生效清单）。灯集里
+混入本集成的虚拟恒照度灯在灯具步就地拦截（F-064）；CI 跨字段校验
+（清单非空需 day_enabled/虚拟灯）由 web POST 链承担——向导不配 CI。
 
 Entry data gains ``kind="anl"``; unique_id is ``anl:<lights>``，reconfigure
 改灯时同步更新并查重（lux 同款）。
@@ -56,6 +60,7 @@ from .const import (
     CONF_COLOR_TEMP_KELVIN,
     CONF_DAY_BRIGHTNESS,
     CONF_DAY_CI_ENABLED,
+    CONF_DAY_CI_LIGHTS,
     CONF_DAY_CI_VIRTUAL_LIGHT,
     CONF_DAY_COLOR_TEMP_KELVIN,
     CONF_DAY_ENABLED,
@@ -79,16 +84,23 @@ from .const import (
     DEFAULT_SUN_ENTITY,
     DOMAIN,
 )
-from .manager import async_release_virtual_light
+from .manager import (
+    _entry_effective_day_ci_lights,
+    async_release_virtual_light,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 # 向导保存时原样携带的 GUI 管理键（防 reconfigure 清 options 丢数据）。
 # custom_per_light/extra_count 不在内：manager 用 len(self.extras) 自算数量，
 # 两者均为零消费死键（ANL-F-022/029），旧条目残留值不再向 options 固化。
+# V1.6.0：day_ci_lights/day_ci_virtual_light 移入 GUI 编辑，向导保存同样
+# 携带（day_ci_lights 按灯集裁剪、存量旧键展开见 _carry_gui_keys）。
 _GUI_MANAGED_KEYS = (
     CONF_EXTRAS,
     CONF_OVERRIDES,
+    CONF_DAY_CI_LIGHTS,
+    CONF_DAY_CI_VIRTUAL_LIGHT,
 )
 
 # 向导只建 times/params 字段（extras 移入 GUI 编辑器），无需 extras 规格
@@ -172,7 +184,7 @@ def _settings_schema(defaults: dict) -> vol.Schema:
     """Step 3: day toggle + period params + tolerances + delays + toggles.
 
     日间参数字段恒显示：day_enabled 关闭时 manager 不消费（消费端已核对）。
-    CI 两字段同样平铺（day_ci_enabled 关时虚拟灯实体服务端忽略）。
+    V1.6.0：CI 两键移出向导（GUI 设置弹窗编辑，_GUI_MANAGED_KEYS 携带）。
     """
     schema: dict = {
         vol.Required(
@@ -183,20 +195,6 @@ def _settings_schema(defaults: dict) -> vol.Schema:
     _add_period_fields(
         schema, CONF_DAY_BRIGHTNESS, CONF_DAY_COLOR_TEMP_KELVIN, defaults
     )
-    # 日间恒照度联动（V1.5.0）：向导平铺无条件显隐是原生表单的既定约束，
-    # 条件显隐由夜灯助手页面 GUI 设置弹窗承担；CI 关时实体字段留空
-    # （None）→ _entry_data 归一 ""，服务端按「未配置」消费。
-    schema[
-        vol.Required(
-            CONF_DAY_CI_ENABLED, default=defaults.get(CONF_DAY_CI_ENABLED, False)
-        )
-    ] = BooleanSelector()
-    schema[
-        vol.Optional(
-            CONF_DAY_CI_VIRTUAL_LIGHT,
-            default=defaults.get(CONF_DAY_CI_VIRTUAL_LIGHT) or None,
-        )
-    ] = EntitySelector(EntitySelectorConfig(domain="light", integration=DOMAIN))
     for key in (
         CONF_TOLERANCE_BRIGHTNESS,
         CONF_TOLERANCE_KELVIN,
@@ -285,29 +283,19 @@ class _FlowMixin:
         return self.async_show_form(step_id="time_details", data_schema=schema)
 
     async def _async_step_settings(self, user_input=None):
-        """Step 3: parameters."""
-        errors: dict | None = None
+        """Step 3: parameters.
+
+        V1.6.0：CI 跨字段校验随两键移出向导（web POST 链 400 承担），
+        本步零表单错误。
+        """
         if user_input is not None:
-            if user_input.get(CONF_DAY_CI_ENABLED) and not user_input.get(
-                CONF_DAY_ENABLED
-            ):
-                # F-065：CI 是日间子功能——日间模式关时 CI 完全不生效
-                #（运行时零虚拟灯调用、快照不报接管），向导入口就拦不落盘
-                errors = {"base": "day_ci_needs_day_enabled"}
-            elif user_input.get(CONF_DAY_CI_ENABLED) and not (
-                user_input.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
-            ):
-                # F-061：CI 开但虚拟灯为空——静默放行会让页面谎报恒照度
-                # 已接管；就地拦截重显表单，不落 _settings
-                errors = {"base": "day_ci_needs_virtual_light"}
-            else:
-                self._settings = user_input
-                return await self._finish()
+            self._settings = user_input
+            return await self._finish()
         schema = _settings_schema(self._defaults)
         if self._suggest is not None:
             schema = self.add_suggested_values_to_schema(schema, self._suggest)
         return self.async_show_form(
-            step_id="settings", data_schema=schema, errors=errors
+            step_id="settings", data_schema=schema, errors=None
         )
 
     def _entry_data(self, include_lights: bool = True) -> dict:
@@ -329,10 +317,6 @@ class _FlowMixin:
             CONF_TRANSITION_ENABLED: transitions_on,
             **self._settings,
         }
-        # CI 实体字段存储形状归一：EntitySelector Optional 留空提交 None，
-        # 统一落 ""（未配置），防 None 入库
-        if data.get(CONF_DAY_CI_VIRTUAL_LIGHT) is None:
-            data[CONF_DAY_CI_VIRTUAL_LIGHT] = ""
         if include_lights:
             data[CONF_LIGHTS] = self._lights
         # include_lights=False：options 流没有灯具步，_lights 恒空——不写
@@ -344,11 +328,16 @@ class _FlowMixin:
     ) -> None:
         """CI 停用或改指时归还旧虚拟灯（F-057 双闭环互纠）。
 
-        旧配置 CI 开且配了灯、新配置关闭或改指 → best-effort turn_off 旧灯
-        （lux off=纯放手，对真实灯零下发）；失败 WARNING 不阻断保存。只在
-        创建/更新条目之前调用（reconfigure/options 的 _finish）；新建流没有
-        旧条目，不调。reload/卸载路径不归还——正常 reload 会把 CI 关掉、
-        日间闭环还在，归还只属于「配置真的放弃该灯」的边界。
+        旧配置生效 CI 清单非空且配了灯、新配置不再引用同一虚拟灯 →
+        best-effort turn_off 旧灯（lux off=纯放手，对真实灯零下发）；失败
+        WARNING 不阻断保存。只在创建/更新条目之前调用（reconfigure/options
+        的 _finish）；新建流没有旧条目，不调。reload/卸载路径不归还——正常
+        reload 会把 CI 关掉、日间闭环还在，归还只属于「配置真的放弃该灯」
+        的边界。
+        V1.6.0：旧侧引用判据走读入迁移生效清单（_entry_effective_day_ci_
+        lights 单一来源，存量 day_ci_enabled=true 形状同样构成引用）；新侧
+        「仍引用」=day_enabled 开 + 清单非空 + 虚拟灯同——day_enabled 关的
+        失效配置不构成引用（F-077 同源），关日间模式的向导保存也会归还。
         F-067：归还前跨条目检查——其他 anl 条目仍引用同一虚拟灯时跳过
         turn_off（关掉会静默终止别组的日间闭环），INFO 可观测。排除自身
         条目：reconfigure 流传被改条目 id，options 流传当前条目 id。
@@ -360,11 +349,13 @@ class _FlowMixin:
         归还（F-081「忘了传」形状，防线不得止步于 helper）。
         """
         old_virtual = old.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
-        if not (old.get(CONF_DAY_CI_ENABLED) and old_virtual):
+        if not (_entry_effective_day_ci_lights(old) and old_virtual):
             return
-        if new.get(CONF_DAY_CI_ENABLED) and (
-            new.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
-        ) == old_virtual:
+        if (
+            new.get(CONF_DAY_ENABLED)
+            and new.get(CONF_DAY_CI_LIGHTS)
+            and (new.get(CONF_DAY_CI_VIRTUAL_LIGHT) or "") == old_virtual
+        ):
             return
         # F-090：配置侧挂点启用 calibrating 有界延迟归还
         await async_release_virtual_light(
@@ -377,9 +368,13 @@ class _FlowMixin:
     def _carry_gui_keys(self, current: dict, lights=None) -> dict:
         """GUI 管理键携带（reconfigure 收敛 data / options 全镜像都需要）。
 
-        overrides 按灯集裁剪：灯具被移除后其覆盖一并丢弃，不留死键
-        （ANL-F-017 灯集面）。lights 缺省取向导灯集（reconfigure 改灯场景）；
-        options 流没有灯具步，须显式传条目现有灯集。
+        overrides/day_ci_lights 按灯集裁剪：灯具被移除后其覆盖/接管成员
+        一并丢弃，不留死键（ANL-F-017 灯集面）。lights 缺省取向导灯集
+        （reconfigure 改灯场景）；options 流没有灯具步，须显式传条目现有
+        灯集。V1.6.0 写侧迁移对偶：存量条目 day_ci_lights 缺失而旧
+        day_ci_enabled=true → 携带时展开为当时灯集（与 manager 读入迁移
+        _entry_effective_day_ci_lights 同语义）——否则 reconfigure/options
+        保存的新 data 不含旧键，CI 会被静默清零。
         """
         carry = {k: current[k] for k in _GUI_MANAGED_KEYS if k in current}
         overrides = carry.get(CONF_OVERRIDES)
@@ -388,6 +383,12 @@ class _FlowMixin:
             carry[CONF_OVERRIDES] = {
                 k: v for k, v in overrides.items() if k in keep
             }
+        ci_lights = current.get(CONF_DAY_CI_LIGHTS)
+        if ci_lights is None and current.get(CONF_DAY_CI_ENABLED):
+            ci_lights = list(current.get(CONF_LIGHTS, []) or [])
+        if isinstance(ci_lights, list):
+            keep = set(lights if lights is not None else self._lights)
+            carry[CONF_DAY_CI_LIGHTS] = [e for e in ci_lights if e in keep]
         return carry
 
 

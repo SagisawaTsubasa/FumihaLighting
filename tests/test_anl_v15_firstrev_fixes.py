@@ -300,11 +300,7 @@ def test_f083_options_flow_release_skipped_when_calibrating():
     )
     run(opts.async_step_init(None))
     run(opts.async_step_anl_init(_TIMES))
-    final = run(opts.async_step_settings({
-        **_SETTINGS,
-        "day_ci_enabled": False,
-        "day_ci_virtual_light": VIRT,
-    }))
+    final = run(opts.async_step_settings({**_SETTINGS}))
     assert final["type"] == "create_entry"
     assert events == []  # 校准中不碰
     # F-096：配置侧挂点 retry_on_calibrating=True——校准中排 60s 延迟归还

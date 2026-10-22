@@ -79,8 +79,6 @@ _SETTINGS = {
     "color_temp_kelvin": 2200,
     "day_brightness": 100,
     "day_color_temp_kelvin": 4000,
-    "day_ci_enabled": False,
-    "day_ci_virtual_light": None,
     "tolerance_brightness": 4,
     "tolerance_kelvin": 150,
     "verify_delay": 5,
@@ -168,29 +166,6 @@ def test_web_post_ci_on_day_disabled_400():
     assert "day_enabled" in resp.payload["error"]
     assert recorded == []
     assert hass.services.calls == []
-
-
-def test_options_flow_ci_without_day_enabled_reshows_form():
-    """options 流 CI on + day_enabled False → 表单错误 base，不落 _settings。"""
-    opts = AnlGroupOptionsFlow()
-    opts.config_entry = SimpleNamespace(
-        data={"kind": "anl", "lights": ["light.a"],
-              CONF_DAY_CI_LIGHTS: ["light.a"], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
-        options={},
-    )
-    opts.hass = SimpleNamespace(
-        states=SimpleNamespace(get=lambda eid: None),
-        config_entries=SimpleNamespace(async_entries=lambda domain: []),
-    )
-    run(opts.async_step_init(None))
-    run(opts.async_step_anl_init(_TIMES))
-    result = run(opts.async_step_settings({
-        **_SETTINGS,  # day_enabled=False
-        "day_ci_enabled": True,
-        "day_ci_virtual_light": VIRT,
-    }))
-    assert result["type"] == "form"
-    assert result["errors"] == {"base": "day_ci_needs_day_enabled"}
 
 
 def test_snapshot_day_ci_active_false_when_day_disabled():
@@ -376,11 +351,7 @@ def test_options_flow_release_skipped_when_other_entry_shares_virtual():
     opts.async_create_entry = _recording_create
     run(opts.async_step_init(None))
     run(opts.async_step_anl_init(_TIMES))
-    final = run(opts.async_step_settings({
-        **_SETTINGS,
-        "day_ci_enabled": False,
-        "day_ci_virtual_light": VIRT,
-    }))
+    final = run(opts.async_step_settings({**_SETTINGS}))
     assert final["type"] == "create_entry"
     assert events == [("entry",)]  # 无 turn_off——归还被跨条目检查跳过
 

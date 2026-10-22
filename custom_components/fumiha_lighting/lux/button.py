@@ -24,7 +24,9 @@ async def async_setup_entry(
 
 
 class CalibrateButton(ButtonEntity):
-    """Press to start the 0→100→0 sweep; takes about 15~25 minutes."""
+    """Press to start the 0→100→0 sweep; takes about 15-40 minutes
+    (up to about 1 h 20 min at worst with lagging sensor updates).
+    """
 
     _attr_should_poll = False
     _attr_has_entity_name = True

@@ -158,8 +158,16 @@ def _register_services(hass: HomeAssistant) -> None:
     if not already:
 
         async def handle_calibrate(call: ServiceCall) -> None:
-            unknown_keys = set(call.data) - _TARGET_KEYS
-            has_target = bool(set(call.data) & _TARGET_KEYS)
+            # V1.6.0 P3（R11 报告发现 6）：目标判定拓宽——`target` 键也在
+            # 目标集合内。R11「待确认」注：本机无 HA site-packages，无法
+            # 实证 2026.1 的 async_call 是否把 target 以 call.data["target"]
+            # 嵌套形态摊入 data；若嵌套到达，旧判定（只认 _TARGET_KEYS）
+            # 会走「未识别到有效目标」静默放弃——services.yaml 推荐的 target
+            # 写法静默不执行。拓宽后两种形态（target 摊平进 _TARGET_KEYS /
+            # 以 target 键嵌套）都视为有目标，async_extract_entity_ids 本身
+            # 两种形态都能解析。
+            unknown_keys = set(call.data) - _TARGET_KEYS - {"target"}
+            has_target = bool({"target", *_TARGET_KEYS} & set(call.data))
             if unknown_keys and not has_target:
                 _LOGGER.warning("fumiha_lighting.calibrate: 未识别到有效目标，放弃执行")
                 return
@@ -209,8 +217,12 @@ def _register_services(hass: HomeAssistant) -> None:
             DOMAIN,
             SERVICE_CALIBRATE,
             handle_calibrate,
+            # V1.6.0 P3（R11 报告发现 6）：entity_id 换 cv.entity_ids——
+            # HA 惯例（= ensure_list_csv + 逐个校验），接受 "light.x" 标量
+            # 与 ["light.x"] 列表两种 YAML 写法；旧 vol.All(list, [str])
+            # 拒标量是最常见 YAML 形态在服务校验阶段直接失败的原因。
             schema=vol.Schema(
-                {vol.Optional(ATTR_ENTITY_ID): vol.All(list, [str])},
+                {vol.Optional(ATTR_ENTITY_ID): cv.entity_ids},
                 extra=vol.ALLOW_EXTRA,
             ),
         )

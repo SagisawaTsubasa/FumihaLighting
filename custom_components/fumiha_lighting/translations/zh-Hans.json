@@ -53,8 +53,6 @@
           "color_temp_kelvin": "夜间色温",
           "day_brightness": "日间亮度（%）",
           "day_color_temp_kelvin": "日间色温",
-          "day_ci_enabled": "日间恒照度模式",
-          "day_ci_virtual_light": "恒照度虚拟灯",
           "tolerance_brightness": "亮度容差（%）",
           "tolerance_kelvin": "色温容差",
           "verify_delay": "控制后验证延迟",
@@ -64,8 +62,6 @@
           "respect_manual": "尊重手动调节"
         },
         "data_description": {
-          "day_ci_enabled": "开启后日间亮度/色温由恒照度闭环接管：白天开灯或触发落在日间时点亮所选虚拟灯，夜间开始锚点自动关闭归还。日间参数与逐灯日间覆盖此时不生效（保留存储）。",
-          "day_ci_virtual_light": "选择恒照度功能提供的虚拟恒照度灯（fumiha_lighting 集成的 light 实体）。",
           "respect_manual": "过渡进行期间，被手动调节过的灯在本过渡带内不再干预；下个锚点归位，关→开也会重新加入曲线。"
         }
       },
@@ -96,9 +92,7 @@
       "light_no_brightness": "这盏灯不支持亮度调节。",
       "light_is_virtual": "这盏灯是 Fumiha Lighting 恒照度功能生成的虚拟灯；请选择真实灯具。",
       "unique_id_mismatch": "新的灯 + 传感器组合已被其他条目使用。",
-      "no_lights": "请至少选择一盏灯",
-      "day_ci_needs_virtual_light": "日间恒照度模式需要选择虚拟恒照度灯：取消勾选该开关，或选择一个实体。",
-      "day_ci_needs_day_enabled": "日间恒照度模式需要先启用日间模式（day_enabled）。"
+      "no_lights": "请至少选择一盏灯"
     },
     "abort": {
       "already_configured": "该区域（灯 + 传感器组合）已配置过。",
@@ -147,8 +141,6 @@
           "color_temp_kelvin": "夜间色温",
           "day_brightness": "日间亮度（%）",
           "day_color_temp_kelvin": "日间色温",
-          "day_ci_enabled": "日间恒照度模式",
-          "day_ci_virtual_light": "恒照度虚拟灯",
           "tolerance_brightness": "亮度容差（%）",
           "tolerance_kelvin": "色温容差",
           "verify_delay": "控制后验证延迟",
@@ -158,8 +150,6 @@
           "respect_manual": "尊重手动调节"
         },
         "data_description": {
-          "day_ci_enabled": "开启后日间亮度/色温由恒照度闭环接管：白天开灯或触发落在日间时点亮所选虚拟灯，夜间开始锚点自动关闭归还。日间参数与逐灯日间覆盖此时不生效（保留存储）。",
-          "day_ci_virtual_light": "选择恒照度功能提供的虚拟恒照度灯（fumiha_lighting 集成的 light 实体）。",
           "respect_manual": "过渡进行期间，被手动调节过的灯在本过渡带内不再干预；下个锚点归位，关→开也会重新加入曲线。"
         }
       },
@@ -180,10 +170,7 @@
         }
       }
     },
-    "error": {
-      "day_ci_needs_virtual_light": "日间恒照度模式需要选择虚拟恒照度灯：取消勾选该开关，或选择一个实体。",
-      "day_ci_needs_day_enabled": "日间恒照度模式需要先启用日间模式（day_enabled）。"
-    }
+    "error": {}
   },
   "services": {
     "calibrate": {

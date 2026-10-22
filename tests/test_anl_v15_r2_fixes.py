@@ -44,7 +44,7 @@ from test_web import (
 import custom_components.fumiha_lighting as pkg
 from custom_components.fumiha_lighting import web
 from custom_components.fumiha_lighting.anl.const import (
-    CONF_DAY_CI_ENABLED,
+    CONF_DAY_CI_LIGHTS,
     CONF_DAY_CI_VIRTUAL_LIGHT,
     CONF_DAY_ENABLED,
     CONF_EXTRAS,
@@ -107,7 +107,7 @@ def _ci_entry(**extra):
         "kind": "anl",
         "lights": ["light.a"],
         CONF_DAY_ENABLED: True,
-        CONF_DAY_CI_ENABLED: True,
+        CONF_DAY_CI_LIGHTS: ["light.a"],
         CONF_DAY_CI_VIRTUAL_LIGHT: VIRT,
     }
     data.update(extra)
@@ -153,7 +153,7 @@ def test_web_post_ci_on_day_disabled_400():
         data={
             "kind": "anl",
             "lights": ["light.a"],
-            CONF_DAY_CI_ENABLED: True,
+            CONF_DAY_CI_LIGHTS: ["light.a"],
             CONF_DAY_CI_VIRTUAL_LIGHT: VIRT,
         }
     )  # 刻意不带 day_enabled 键 = 日间模式关
@@ -175,7 +175,7 @@ def test_options_flow_ci_without_day_enabled_reshows_form():
     opts = AnlGroupOptionsFlow()
     opts.config_entry = SimpleNamespace(
         data={"kind": "anl", "lights": ["light.a"],
-              CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
+              CONF_DAY_CI_LIGHTS: ["light.a"], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
     )
     opts.hass = SimpleNamespace(
@@ -199,7 +199,7 @@ def test_snapshot_day_ci_active_false_when_day_disabled():
     _anl_bucket(
         hass,
         fake_anl_manager(
-            day_enabled=False, day_ci_enabled=True, day_ci_virtual_light=VIRT
+            day_enabled=False, day_ci_lights=["light.a"], day_ci_virtual_light=VIRT
         ),
     )
     resp = run(web.AnlSnapshotView().get(FakeRequest(hass)))
@@ -209,7 +209,7 @@ def test_snapshot_day_ci_active_false_when_day_disabled():
     _anl_bucket(
         hass2,
         fake_anl_manager(
-            day_enabled=True, day_ci_enabled=True, day_ci_virtual_light=VIRT
+            day_enabled=True, day_ci_lights=["light.a"], day_ci_virtual_light=VIRT
         ),
     )
     resp2 = run(web.AnlSnapshotView().get(FakeRequest(hass2)))
@@ -267,7 +267,7 @@ def test_web_post_release_skipped_when_other_entry_shares_virtual(caplog):
     entry_b = _config_entry(
         entry_id="anl2",
         data={"kind": "anl", "lights": ["light.z"],
-              CONF_DAY_ENABLED: True, CONF_DAY_CI_ENABLED: True,
+              CONF_DAY_ENABLED: True, CONF_DAY_CI_LIGHTS: ["light.a"],
               CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
     )
     hass = _recording_hass()
@@ -284,12 +284,12 @@ def test_web_post_release_skipped_when_other_entry_shares_virtual(caplog):
         resp = run(
             web.AnlConfigView().post(
                 FakeRequest(hass, {"entry_id": "anl1",
-                                   "patch": {"params": {"day_ci_enabled": False}}})
+                                   "patch": {"params": {"day_ci_lights": []}}})
             )
         )
     assert resp.payload["ok"] is True
     assert hass.services.calls == []  # 归还被跨条目检查跳过
-    assert recorded[0][1]["options"]["day_ci_enabled"] is False  # 保存不受影响
+    assert recorded[0][1]["options"]["day_ci_lights"] == []  # 保存不受影响
     assert any(
         "跳过归还" in r.getMessage()
         for r in caplog.records
@@ -303,13 +303,13 @@ def test_remove_entry_release_skipped_when_other_entry_shares_virtual(caplog):
     entry_a = SimpleNamespace(
         entry_id="anl1",
         data={"kind": "anl", "lights": ["light.a"],
-              CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
+              CONF_DAY_CI_LIGHTS: ["light.a"], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
     )
     entry_b = SimpleNamespace(
         entry_id="anl2",
         data={"kind": "anl", "lights": ["light.z"],
-              CONF_DAY_ENABLED: True, CONF_DAY_CI_ENABLED: True,
+              CONF_DAY_ENABLED: True, CONF_DAY_CI_LIGHTS: ["light.a"],
               CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
         title="自动夜灯B",
@@ -340,13 +340,13 @@ def test_options_flow_release_skipped_when_other_entry_shares_virtual():
     entry_a = SimpleNamespace(
         entry_id="anl1",
         data={"kind": "anl", "lights": ["light.a"],
-              CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
+              CONF_DAY_CI_LIGHTS: ["light.a"], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
     )
     entry_b = SimpleNamespace(
         entry_id="anl2",
         data={"kind": "anl", "lights": ["light.z"],
-              CONF_DAY_ENABLED: True, CONF_DAY_CI_ENABLED: True,
+              CONF_DAY_ENABLED: True, CONF_DAY_CI_LIGHTS: ["light.a"],
               CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
         title="自动夜灯B",
@@ -397,7 +397,7 @@ def test_web_post_release_turns_off_when_reference_is_unique():
     resp = run(
         web.AnlConfigView().post(
             FakeRequest(hass, {"entry_id": "anl1",
-                               "patch": {"params": {"day_ci_enabled": False}}})
+                               "patch": {"params": {"day_ci_lights": []}}})
         )
     )
     assert resp.payload["ok"] is True

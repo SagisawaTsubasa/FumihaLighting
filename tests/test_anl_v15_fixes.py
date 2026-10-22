@@ -43,6 +43,7 @@ import custom_components.fumiha_lighting as pkg
 from custom_components.fumiha_lighting import web
 from custom_components.fumiha_lighting.anl.const import (
     CONF_DAY_CI_ENABLED,
+    CONF_DAY_CI_LIGHTS,
     CONF_DAY_CI_VIRTUAL_LIGHT,
     CONF_DAY_ENABLED,
     CONF_EXTRAS,
@@ -103,7 +104,7 @@ def _ci_entry(**extra):
         "kind": "anl",
         "lights": ["light.a"],
         CONF_DAY_ENABLED: True,
-        CONF_DAY_CI_ENABLED: True,
+        CONF_DAY_CI_LIGHTS: ["light.a"],
         CONF_DAY_CI_VIRTUAL_LIGHT: VIRT,
     }
     data.update(extra)
@@ -135,12 +136,12 @@ def test_web_post_ci_disabled_releases_old_virtual():
     resp = run(
         web.AnlConfigView().post(
             FakeRequest(hass, {"entry_id": "anl1",
-                               "patch": {"params": {"day_ci_enabled": False}}})
+                               "patch": {"params": {"day_ci_lights": []}}})
         )
     )
     assert resp.payload["ok"] is True
     assert hass.services.calls == [("light", "turn_off", {"entity_id": VIRT})]
-    assert recorded[0][1]["options"]["day_ci_enabled"] is False
+    assert recorded[0][1]["options"]["day_ci_lights"] == []
 
 
 def test_web_post_unchanged_ci_zero_calls():
@@ -312,7 +313,7 @@ def test_web_post_stored_virtual_resubmit_skips_registry_check():
         web.AnlConfigView().post(
             FakeRequest(hass, {"entry_id": "anl1",
                                "patch": {"params": {
-                                   "day_ci_enabled": True,
+                                   "day_ci_lights": ["light.a"],
                                    "day_ci_virtual_light": VIRT}}})
         )
     )
@@ -428,7 +429,7 @@ def test_extra_start_ci_hands_back_virtual_first():
 def test_extra_start_ci_disabled_zero_virtual_calls():
     """④CI 关 → 零虚拟灯调用（test_day_trigger_ci_disabled 的 extra 面）。"""
     m = make_manager(
-        **{CONF_DAY_CI_ENABLED: False,
+        **{CONF_DAY_CI_LIGHTS: [],
            CONF_DAY_CI_VIRTUAL_LIGHT: "light.virt",
            CONF_EXTRAS: _EXTRA_18}
     )
@@ -515,7 +516,7 @@ def test_web_post_ci_on_empty_virtual_400():
             FakeRequest(hass, {"entry_id": "anl1",
                                "patch": {"params": {
                                    "day_enabled": True,
-                                   "day_ci_enabled": True,
+                                   "day_ci_lights": ["light.a"],
                                    "day_ci_virtual_light": ""}}})
         )
     )
@@ -549,7 +550,7 @@ def test_options_flow_ci_without_virtual_reshows_form_with_error():
 def test_snapshot_day_ci_active_follows_configured():
     """④快照序列化：configured 假（enabled+空灯）→ False；真 → True。"""
     hass = FakeHass()
-    _anl_bucket(hass, fake_anl_manager(day_ci_enabled=True, day_ci_virtual_light=""))
+    _anl_bucket(hass, fake_anl_manager(day_ci_lights=[], day_ci_virtual_light=""))
     resp = run(web.AnlSnapshotView().get(FakeRequest(hass)))
     assert resp.payload["managers"][0]["day_ci_active"] is False
 
@@ -557,7 +558,9 @@ def test_snapshot_day_ci_active_follows_configured():
     _anl_bucket(
         hass2,
         fake_anl_manager(
-            day_enabled=True, day_ci_enabled=True, day_ci_virtual_light="light.virt"
+            day_enabled=True,
+            day_ci_lights=["light.a"],
+            day_ci_virtual_light="light.virt",
         ),
     )
     resp2 = run(web.AnlSnapshotView().get(FakeRequest(hass2)))
@@ -578,7 +581,7 @@ def test_transitions_active_false_when_ci_filters_all_day_side_bands():
 def test_transitions_active_true_without_ci():
     """同配置 CI 关 → True（生效带==原始带，语义不变）。"""
     m = make_manager(
-        **{CONF_DAY_CI_ENABLED: False, CONF_DAY_CI_VIRTUAL_LIGHT: "light.virt"}
+        **{CONF_DAY_CI_LIGHTS: [], CONF_DAY_CI_VIRTUAL_LIGHT: "light.virt"}
     )
     assert m.transitions_active is True
 

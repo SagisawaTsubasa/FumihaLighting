@@ -23,7 +23,7 @@ from .const import (
     CONF_BRIGHTNESS,
     CONF_COLOR_TEMP_KELVIN,
     CONF_DAY_BRIGHTNESS,
-    CONF_DAY_CI_ENABLED,
+    CONF_DAY_CI_LIGHTS,
     CONF_DAY_CI_VIRTUAL_LIGHT,
     CONF_DAY_COLOR_TEMP_KELVIN,
     CONF_DAY_ENABLED,
@@ -111,7 +111,6 @@ PARAMS_NUMERIC: dict[str, tuple] = {
 }
 PARAMS_BOOL = (
     CONF_DAY_ENABLED,
-    CONF_DAY_CI_ENABLED,
     CONF_TURN_ON_LISTEN,
     CONF_ONLY_WHEN_ON,
     CONF_RESPECT_MANUAL,
@@ -157,7 +156,7 @@ CONFIG_KEYS = (
     CONF_COLOR_TEMP_KELVIN,
     CONF_DAY_BRIGHTNESS,
     CONF_DAY_COLOR_TEMP_KELVIN,
-    CONF_DAY_CI_ENABLED,
+    CONF_DAY_CI_LIGHTS,
     CONF_DAY_CI_VIRTUAL_LIGHT,
     CONF_TOLERANCE_BRIGHTNESS,
     CONF_TOLERANCE_KELVIN,
@@ -275,6 +274,39 @@ def _bool_check(payload, key):
     return payload[key], None
 
 
+def _day_ci_lights_check(lights: set):
+    """day_ci_lights 校验器工厂（V1.6.0 单灯化）：形状 + 灯集子集。
+
+    列表 ⊆ 灯集（组内接管灯清单不得引用未选灯具——reconfigure 改灯后由
+    flow 携带侧裁剪，GUI 写入侧硬拒绝）；空列表合法（=CI 关）。重复实体
+    拒绝（F-070 同刻双时段同型：集合键里重复项是配置面错误，不静默去重）。
+    fumiha_lighting 虚拟灯的注册表身份拒绝不在此处——本模块纯逻辑不
+    import HA，注册表校验在 web.py POST 链做（F-058 虚拟灯三验同款语义）。
+    """
+
+    def _check(payload, key):
+        if key not in payload:
+            return None, None
+        value = payload[key]
+        if not isinstance(value, list) or any(
+            not isinstance(e, str) for e in value
+        ):
+            return None, f"{key} 需为实体 ID 字符串列表"
+        cleaned: list[str] = []
+        for raw in value:
+            entity = raw.strip()
+            if not entity:
+                return None, f"{key} 含空实体 ID"
+            if entity not in lights:
+                return None, f"未知灯具: {entity}"
+            if entity in cleaned:
+                return None, f"{key} 含重复实体: {entity}"
+            cleaned.append(entity)
+        return cleaned, None
+
+    return _check
+
+
 def _section(payload, allowed: dict, err_prefix: str):
     """分节校验骨架。allowed: key → 校验器(payload, key) -> (value, error)。"""
     if not isinstance(payload, dict) or not payload:
@@ -301,11 +333,16 @@ def validate_times(payload) -> tuple[dict | None, str | None]:
     return _section(payload, allowed, "times")
 
 
-def validate_params(payload) -> tuple[dict | None, str | None]:
-    """参数分节：亮度/色温（含日间）+ 容差 + 延迟 + 行为开关 + 恒照度虚拟灯。"""
+def validate_params(payload, lights: set) -> tuple[dict | None, str | None]:
+    """参数分节：亮度/色温（含日间）+ 容差 + 延迟 + 行为开关 + 恒照度键。
+
+    lights 必填：day_ci_lights 的灯集子集校验依赖组内灯清单（V1.6.0 单灯
+    化；web 层从条目合并配置取）。day_ci_virtual_light 空串归一语义不变。
+    """
     allowed: dict = {k: _num_check(PARAMS_NUMERIC) for k in PARAMS_NUMERIC}
     allowed.update({k: _bool_check for k in PARAMS_BOOL})
     allowed[CONF_DAY_CI_VIRTUAL_LIGHT] = _day_ci_virtual_light_check
+    allowed[CONF_DAY_CI_LIGHTS] = _day_ci_lights_check(lights)
     return _section(payload, allowed, "params")
 
 

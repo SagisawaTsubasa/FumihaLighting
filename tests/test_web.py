@@ -151,14 +151,14 @@ def fake_anl_manager(entry_id="anl1", title="自动夜灯", **overrides):
         transition_enabled=True,  # 存储派生值（end_transition>0）
         transitions_active=False,  # 生效总闸：day 关 → manager 归零（真实分叉）
         day_enabled=False,
-        day_ci_enabled=False,
+        day_ci_lights=[],  # V1.6.0 单灯化：接管灯清单（组级守卫=非空）
         day_ci_virtual_light=None,
         respect_manual=True,
     )
-    # F-061：序列化读 ci_configured()——默认按真实语义镜像两字段
-    # F-065：镜像 manager._ci_configured 生效判据（含 day_enabled）
+    # F-061：序列化读 ci_configured()——默认按真实语义镜像清单/虚拟灯两字段
+    # F-065 + V1.6.0：镜像 manager._ci_configured 生效判据（含 day_enabled）
     mgr.ci_configured = lambda: bool(
-        mgr.day_enabled and mgr.day_ci_enabled and mgr.day_ci_virtual_light
+        mgr.day_enabled and mgr.day_ci_lights and mgr.day_ci_virtual_light
     )
     mgr._anchor_modes = lambda: [
         (_time(23, 30), "night"),
@@ -2448,17 +2448,17 @@ def test_anl_snapshot_serializes_day_ci_keys():
     hass = FakeHass()
     _anl_bucket(
         hass,
-        fake_anl_manager(day_ci_enabled=True, day_ci_virtual_light="light.virt"),
+        fake_anl_manager(day_ci_lights=["light.a"], day_ci_virtual_light="light.virt"),
     )
     resp = run(web.AnlSnapshotView().get(FakeRequest(hass)))
     m = resp.payload["managers"][0]
-    assert m["day_ci_enabled"] is True
+    assert m["day_ci_lights"] == ["light.a"]
     assert m["day_ci_virtual_light"] == "light.virt"
     # 空串归一为 None（页面判「未配置」）
     hass2 = FakeHass()
     _anl_bucket(
         hass2,
-        fake_anl_manager(day_ci_enabled=False, day_ci_virtual_light=""),
+        fake_anl_manager(day_ci_lights=[], day_ci_virtual_light=""),
     )
     resp2 = run(web.AnlSnapshotView().get(FakeRequest(hass2)))
     assert resp2.payload["managers"][0]["day_ci_virtual_light"] is None
@@ -2501,7 +2501,7 @@ def test_anl_config_post_rejects_non_light_virtual():
 
 
 def test_anl_config_post_empty_virtual_light_saves_empty_string():
-    """CI 关时 GUI 全量键提交空串 → 200 且落盘 ""（不查存在性）。"""
+    """CI 关时 GUI 全量键提交空串/空清单 → 200 且落盘 ""/[]（不查存在性）。"""
     hass = _recording_hass()
     entry = _config_entry(data={"kind": "anl", "lights": ["light.a"]})
     _anl_bucket(hass, _config_manager(entry))
@@ -2509,14 +2509,14 @@ def test_anl_config_post_empty_virtual_light_saves_empty_string():
         web.AnlConfigView().post(
             FakeRequest(hass, {"entry_id": "anl1",
                                "patch": {"params": {
-                                   "day_ci_enabled": False,
+                                   "day_ci_lights": [],
                                    "day_ci_virtual_light": ""}}})
         )
     )
     assert resp.payload["ok"] is True
     options = recorded[0][1]["options"]
     assert options["day_ci_virtual_light"] == ""
-    assert options["day_ci_enabled"] is False
+    assert options["day_ci_lights"] == []
 
 
 def test_anl_config_post_valid_virtual_light_ok():
@@ -2537,11 +2537,11 @@ def test_anl_config_post_valid_virtual_light_ok():
             FakeRequest(hass, {"entry_id": "anl1",
                                "patch": {"params": {
                                    "day_enabled": True,
-                                   "day_ci_enabled": True,
+                                   "day_ci_lights": ["light.a"],
                                    "day_ci_virtual_light": "light.virt"}}})
         )
     )
     assert resp.payload["ok"] is True
     options = recorded[0][1]["options"]
-    assert options["day_ci_enabled"] is True
+    assert options["day_ci_lights"] == ["light.a"]
     assert options["day_ci_virtual_light"] == "light.virt"

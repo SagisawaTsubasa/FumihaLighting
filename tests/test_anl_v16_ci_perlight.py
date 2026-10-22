@@ -396,6 +396,88 @@ def test_remove_entry_legacy_shape_releases_virtual():
     run(pkg.async_remove_entry(hass, anl_entry))
     assert hass.services.calls == [("light", "turn_off", {"entity_id": VIRT})]
 
+
+def _legacy_active_hass_entry(data):
+    """ANL-F-102 钉共用：存量形状条目 + active mode 虚拟灯桩。"""
+    hass = _recording_hass()
+    hass.states = SimpleNamespace(
+        get=lambda eid: SimpleNamespace(state="on", attributes={"mode": "active"})
+        if eid == VIRT
+        else None
+    )
+    _anl_bucket(hass, _config_manager(_config_entry(data=data)))
+    return hass
+
+
+def test_web_get_legacy_shape_mirrors_migration_data():
+    """ANL-F-102：存量 day_ci_enabled=true（data 形状）→ GET 镜像读入
+    迁移返回灯集全集（面板不再把「未回显」当「未接管」提交空清单）。"""
+    hass = FakeHass()
+    entry = _config_entry(
+        data={"kind": "anl", "lights": [LIGHT], CONF_DAY_ENABLED: True,
+              CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT}
+    )
+    _anl_bucket(hass, _config_manager(entry))
+    req = FakeRequest(hass)
+    req.query = {"entry_id": "anl1"}
+    resp = run(web.AnlConfigView().get(req))
+    assert resp.payload["ok"] is True
+    assert resp.payload["config"][CONF_DAY_CI_LIGHTS] == [LIGHT]
+
+
+def test_web_get_legacy_shape_mirrors_migration_options():
+    """同上，旧键在 options 形状（V1.5 全镜像升级路径）。"""
+    hass = FakeHass()
+    entry = _config_entry(
+        data={"kind": "anl", "lights": [LIGHT]},
+        options={CONF_DAY_ENABLED: True, CONF_DAY_CI_ENABLED: True,
+                 CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
+    )
+    _anl_bucket(hass, _config_manager(entry))
+    req = FakeRequest(hass)
+    req.query = {"entry_id": "anl1"}
+    resp = run(web.AnlConfigView().get(req))
+    assert resp.payload["config"][CONF_DAY_CI_LIGHTS] == [LIGHT]
+
+
+def test_web_post_times_only_preserves_legacy_ci():
+    """ANL-F-102：存量条目只改 times → 死键 pop 后按旧生效清单回填
+    day_ci_lights，CI 保留（零归还），不被一次保存静默清零。"""
+    hass = _legacy_active_hass_entry(
+        {"kind": "anl", "lights": [LIGHT], CONF_DAY_ENABLED: True,
+         CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT}
+    )
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"times": {"trigger_time": "22:30"}}})
+        )
+    )
+    assert resp.payload["ok"] is True
+    saved = hass.data[web.DOMAIN]["anl"]["anl1"].entry.options
+    assert saved[CONF_DAY_CI_LIGHTS] == [LIGHT]
+    assert CONF_DAY_CI_ENABLED not in saved  # 旧键死键不固化
+    assert hass.services.calls == []  # CI 保留 → 零归还
+
+
+def test_web_post_explicit_empty_ci_closes_and_releases():
+    """显式提交 day_ci_lights=[] 仍=用户主动关闭：不回填、归还虚拟灯
+    恰一次 turn_off（active mode 桩下真发，防 mode 守卫掩盖）。"""
+    hass = _legacy_active_hass_entry(
+        {"kind": "anl", "lights": [LIGHT], CONF_DAY_ENABLED: True,
+         CONF_DAY_CI_LIGHTS: [LIGHT], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT}
+    )
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"params": {"day_ci_lights": []}}})
+        )
+    )
+    assert resp.payload["ok"] is True
+    saved = hass.data[web.DOMAIN]["anl"]["anl1"].entry.options
+    assert saved[CONF_DAY_CI_LIGHTS] == []
+    assert hass.services.calls == [("light", "turn_off", {"entity_id": VIRT})]
+
 # ---------------------------------------------------------------------------
 # flow：GUI 键携带 + 存量展开（读入迁移的写侧对偶）
 # ---------------------------------------------------------------------------
@@ -408,9 +490,14 @@ def _reconfigure_flow_to_settings(entry, lights, settings):
     flow = _make_flow()
     flow.source = "reconfigure"
     flow._reconfigure_entry = entry
-    flow.hass = SimpleNamespace(
-        states=SimpleNamespace(get=lambda eid: None),
-        config_entries=SimpleNamespace(async_entries=lambda domain: []),
+    # ANL-F-103：桩必须忠实——states.get 返回 mode=active 的虚拟灯、
+    # services 记录调用。旧桩 states.get 恒 None 会让 async_release_virtual_
+    # light 在 mode 守卫早退，错误归还零服务调用、断言仍绿（掩盖面）。
+    flow.hass = FakeHass()
+    flow.hass.states = SimpleNamespace(
+        get=lambda eid: SimpleNamespace(state="on", attributes={"mode": "active"})
+        if eid == VIRT
+        else None
     )
     run(flow.async_step_reconfigure(None))
     run(flow.async_step_anl_reconfigure({"lights": lights}))
@@ -464,6 +551,44 @@ def test_reconfigure_prunes_carried_ci_lights_by_new_light_set():
     assert flow._reconfigure_entry.data[CONF_DAY_CI_LIGHTS] == []
 
 
+def test_reconfigure_ci_retained_does_not_release_virtual():
+    """ANL-F-103：保留 CI 的 reconfigure（改时间/参数）不归还虚拟灯。
+
+    归还判据的「新配置」须含 _carry_gui_keys 的携带键——旧码只传
+    _entry_data()（无 day_ci_lights），守卫恒假，CI 原样保留也会走到
+    async_release_virtual_light。忠实桩（active mode）下断言零服务调用。
+    """
+    entry = SimpleNamespace(
+        entry_id="anl1",
+        data={"kind": "anl", "lights": [LIGHT, SECOND], CONF_DAY_ENABLED: True,
+              CONF_DAY_CI_LIGHTS: [LIGHT], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
+        options={},
+        unique_id="anl:light.bath,light.second",
+    )
+    flow, result = _reconfigure_flow_to_settings(
+        entry, [LIGHT, SECOND], {**_SETTINGS}
+    )
+    assert result["type"] == "abort"
+    assert flow.hass.services.calls == []
+
+
+def test_reconfigure_ci_trimmed_empty_releases_once():
+    """ANL-F-103：CI 接管灯被改灯裁剪为空 → 构成停用，归还恰一次
+    turn_off（active mode 桩下真发，防桩恒 None 掩盖）。"""
+    entry = SimpleNamespace(
+        entry_id="anl1",
+        data={"kind": "anl", "lights": [LIGHT, SECOND], CONF_DAY_ENABLED: True,
+              CONF_DAY_CI_LIGHTS: [LIGHT], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
+        options={},
+        unique_id="anl:light.bath,light.second",
+    )
+    flow, result = _reconfigure_flow_to_settings(entry, [SECOND], {**_SETTINGS})
+    assert result["type"] == "abort"
+    assert flow.hass.services.calls == [
+        ("light", "turn_off", {"entity_id": VIRT})
+    ]
+
+
 def test_reconfigure_legacy_ci_entry_survives_without_silent_reset():
     """存量 day_ci_enabled=true 条目 reconfigure：携带时展开为当时灯集，
     CI 不被向导保存静默清零（读入迁移的写侧对偶）。"""
@@ -481,6 +606,8 @@ def test_reconfigure_legacy_ci_entry_survives_without_silent_reset():
     assert CONF_DAY_CI_ENABLED not in saved
     assert saved[CONF_DAY_CI_LIGHTS] == [LIGHT]
     assert saved[CONF_DAY_CI_VIRTUAL_LIGHT] == VIRT
+    # ANL-F-103：CI 保留 → 归还判据须命中（零服务调用）
+    assert flow.hass.services.calls == []
     # 运行时判据：迁移语义下 CI 仍配置开
     m = NightLightManager(SimpleNamespace(), flow._reconfigure_entry)
     assert m.ci_configured() is True

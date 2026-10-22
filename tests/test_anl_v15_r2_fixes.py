@@ -555,8 +555,11 @@ def test_plan_step_callback_guard_uses_actual_now():
 
 
 def test_day_trigger_ci_dual_lights_single_turn_on():
-    """双灯 day+CI → 虚拟灯 turn_on 恰 1 次（轮级接管），双 machine 归位。"""
-    m = make_ci_manager(**CONF_LIGHTS_DUAL)
+    """双灯 day+CI（两灯都在接管清单）→ 虚拟灯 turn_on 恰 1 次（轮级
+    去重，F-072），双 machine 归位、零真实灯下发。"""
+    m = make_ci_manager(
+        **{**CONF_LIGHTS_DUAL, CONF_DAY_CI_LIGHTS: [LIGHT, "light.second"]}
+    )
     svc = []
     m.hass.services = _RecordingServices(svc)
     m.hass.states.mapping[VIRT] = _FakeState("off")

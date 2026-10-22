@@ -526,18 +526,34 @@ class NightLightManager:
 
     @property
     def transitions_active(self) -> bool:
-        """页面「过渡带开启」chip 判据（ANL-F-041 总闸语义 + F-062 CI 修正）。
+        """页面「过渡带开启」chip 判据（ANL-F-041 总闸语义 + F-062 CI 修正
+        + V1.6.0 单灯化重定义）。
 
         必须读生效总闸而非 transition_enabled 存储派生值（后者在日间关闭时
-        不反映 end_transition 被 manager 归零的事实）；且 CI 配置开时日间侧
-        带被滤掉——仅剩日间侧带时页面不得谎报「过渡中」，总闸按生效带算。
-        CI 关时生效带==原始带，语义不变。_effective_transition_bands 是纯
-        查表+锚点解析，快照视图 5s 轮询成本与 anchor_snapshot 同量级；
-        web 层禁调私有（ANL-F-003 家规）。
+        不反映 end_transition 被 manager 归零的事实）。CI 关时生效带==原始
+        带。V1.6.0：日侧带只对非 CI 灯复活——「存在任一灯的生效带」按
+        「非日侧带存在」或「日侧带存在且存在非 CI 灯」计；全部灯被 CI 接管
+        时仅剩日侧带不得谎报「过渡中」。单次扫描（每带一次 _mode_at），与
+        anchor_snapshot 同量级；web 层禁调私有（ANL-F-003 家规）。
         """
         if not self._has_transitions:
             return False
-        return bool(self._effective_transition_bands())
+        bands = self._transition_bands()
+        if not bands:
+            return False
+        if not self._ci_configured():
+            return True
+        has_non_ci = any(
+            entity_id not in self.day_ci_lights for entity_id in self.machines
+        )
+        for anchor_min, target_mode, dur in bands:
+            from_mode = self._mode_at((anchor_min - dur) % 1440)
+            if target_mode == MODE_DAY or from_mode == MODE_DAY:
+                if has_non_ci:
+                    return True
+            else:
+                return True
+        return False
 
     # ------------------------------------------------------- 日间恒照度联动
 
@@ -563,13 +579,20 @@ class NightLightManager:
     # 序约束落在 _ci_configured 之后）
     ci_configured = _ci_configured
 
-    def _ci_active_for(self, mode: str | None) -> bool:
-        """CI 生效判据（组级，V1.5.0 形态）：守卫开且当前解析时段 == 日间。
+    def _ci_light_set(self) -> set[str]:
+        """本轮 CI 接管灯集合 = day_ci_lights ∩ machines（F-072 轮级去重的
+        操作对象；__init__ 已按 machines 裁剪，交集防御携带残源）。"""
+        return set(self.day_ci_lights) & set(self.machines)
 
-        V1.6.0 步骤 2 将改逐灯判定（_ci_active_for_light）；迁移读入后
-        存量条目清单=灯集全集，本组级形态对它们语义不变。
-        """
-        return self._ci_configured() and mode == MODE_DAY
+    def _ci_active_for_light(self, entity_id: str, mode: str | None) -> bool:
+        """CI 生效判据（逐灯，V1.6.0）：该灯在接管清单内 + 组级守卫开 +
+        当前解析时段 == 日间。消费点：async_trigger / 开灯监听 /
+        _async_run_step（async_trigger 对清单整集判定）。"""
+        return (
+            self._ci_configured()
+            and entity_id in self.day_ci_lights
+            and mode == MODE_DAY
+        )
 
     def _virtual_lux_mode(self) -> str | None:
         """Read the virtual light's lux runtime mode attribute (F-076).
@@ -695,16 +718,18 @@ class NightLightManager:
             exclude_entry_id=self.entry.entry_id,
         )
 
-    def _effective_transition_bands(self) -> list[tuple]:
-        """Transition bands with day-side bands dropped while CI is configured.
+    def _effective_transition_bands(self, entity_id: str) -> list[tuple]:
+        """Transition bands for one light: day-side bands dropped while the
+        light is CI-taken-over (V1.6.0 per-light; 原组级过滤的逐灯化）。
 
-        CI 下日间参数被忽略，趋向日间参数的插值同样忽略——target/from 含
-        MODE_DAY 的带不生成步进（night↔extra 过渡不受影响），带中途时段
-        解析回纯锚点参数。配置重叠告警（_warn_overlapping_bands）仍用原始
-        _transition_bands：它面向配置面，不做 CI 过滤。
+        CI 下该灯的日间参数被忽略，趋向日间参数的插值同样忽略——target/
+        from 含 MODE_DAY 的带对该灯不生成步进（night↔extra 过渡不受影响），
+        带中途时段解析回纯锚点参数。非 CI 灯（含全部日侧带复活）与 CI 关
+        （无过滤）走同一未滤列表。配置重叠告警（_warn_overlapping_bands）
+        仍用原始 _transition_bands：它面向配置面，不做 CI 过滤。
         """
         bands = self._transition_bands()
-        if not self._ci_configured():
+        if not self._ci_configured() or entity_id not in self.day_ci_lights:
             return bands
         filtered: list[tuple] = []
         for anchor_min, target_mode, dur in bands:
@@ -1228,7 +1253,9 @@ class NightLightManager:
         否则返回插值后的 (brightness, kelvin)。
         起点参数取带起点时刻按纯锚点解析的模式快照。
         """
-        for anchor_min, target_mode, dur in self._effective_transition_bands():
+        for anchor_min, target_mode, dur in self._effective_transition_bands(
+            entity_id
+        ):
             band_start = (anchor_min - dur) % 1440
             elapsed = (now_min - band_start) % 1440
             if elapsed >= dur:
@@ -1273,11 +1300,12 @@ class NightLightManager:
         if self._stopped or not self._has_transitions:
             return
         now = dt_util.now()
-        # 全部带窗口（半开 [start, start+dur)），按生效带列表序（CI 开时
-        # 已滤掉日间侧带）。步进是否生成用"窗口包含"判定而非精确时刻
-        # 去重——两条带网格错位时精确去重会漏，导致重叠区交替下发并互相
-        # 重置接管状态 (P2)。
-        effective_bands = self._effective_transition_bands()
+        # 全部带窗口（半开 [start, start+dur)），按原始带列表序（V1.6.0：
+        # 日侧带不再整带滤除——其步进仅对非 CI 灯生成，窗口占位语义不变）。
+        # 步进是否生成用"窗口包含"判定而非精确时刻去重——两条带网格错位时
+        # 精确去重会漏，导致重叠区交替下发并互相重置接管状态 (P2)。
+        effective_bands = self._transition_bands()
+        ci_on = self._ci_configured()
         all_windows = [
             ((anchor_min - dur) % 1440, dur) for anchor_min, _, dur in effective_bands
         ]
@@ -1298,6 +1326,15 @@ class NightLightManager:
                 )
                 scheduled_windows.append((band_start_min, dur))
                 continue
+            # V1.6.0 单灯化：日侧带（target/from 含 MODE_DAY）只对非 CI 灯
+            # 生成步进；CI 灯的日侧步在此跳过（等价于旧组级滤带对该灯的
+            # 效果）。非日侧带对全部灯生效。
+            day_side_band = target_mode == MODE_DAY or from_mode == MODE_DAY
+            band_lights = [
+                entity_id
+                for entity_id in self.lights
+                if not (ci_on and day_side_band and entity_id in self.day_ci_lights)
+            ]
             # F-075：band_key 三元组 (target, date, from_mode)——extra 屏障
             # 守卫消费 [2] 区分「带起点落在既有 extra 内」（照跑）与「带中
             # 途新 extra 介入」（让位）；from_mode 即上方建带时的解析结果
@@ -1321,7 +1358,7 @@ class NightLightManager:
                     continue  # 靠前的带在该时刻胜出（首匹配语义）
                 factor = (step_dt - start).total_seconds() / 60 / dur
                 entrance = step_dt == start
-                for entity_id in self.lights:
+                for entity_id in band_lights:
                     b, k = lerp_params(
                         self.params_for(entity_id, from_mode),
                         self.params_for(entity_id, target_mode),
@@ -1385,10 +1422,11 @@ class NightLightManager:
             mode_now = self._mode_at(when.hour * 60 + when.minute)
         else:
             mode_now = None
-        if ci and mode_now == MODE_DAY:
-            # F-060：CI 下非日侧带的窗口可能跨过日间锚点，落在日间的步进
-            # 不得直控真实灯。被动计划步也不得经 lux 把关着的灯点亮——
-            # 日间接管只归 trigger/listener 路径（此处不做 ensure_virtual）。
+        if self._ci_active_for_light(step.entity_id, mode_now):
+            # F-060（V1.6.0 逐灯化）：CI 下非日侧带的窗口可能跨过日间锚点，
+            # 落在日间的步进不得直控 CI 接管灯。被动计划步也不得经 lux 把
+            # 关着的灯点亮——日间接管只归 trigger/listener 路径（此处不做
+            # ensure_virtual）。非 CI 灯的日侧步照跑（日间参数直控复活）。
             _LOGGER.debug(
                 "%s step at %s lands in CI daytime, skipped", step.entity_id, when
             )
@@ -1520,11 +1558,11 @@ class NightLightManager:
                 "%s not in machine table (stale listener?), skipped", entity_id
             )
             return
-        # 日间恒照度联动（V1.5.0）：dt_util.now() 只取一次算分钟，防两次
-        # 取值不一致
+        # 日间恒照度联动（V1.5.0 引入，V1.6.0 单灯化）：dt_util.now() 只取
+        # 一次算分钟，防两次取值不一致
         now = dt_util.now()
         mode = self._mode_at(now.hour * 60 + now.minute)
-        if self._ci_active_for(mode):
+        if self._ci_active_for_light(entity_id, mode):
             machine.manual_override = False
             machine.mismatch_steps = 0
             machine.expected = None
@@ -1543,10 +1581,12 @@ class NightLightManager:
             # 直控，WARNING 已由 ensure 节流发出）；turn_on_listen 关时由
             # 下方 F-080 门控直接返回（事件路径零直控）。立即触发的逐灯
             # fallback 是 async_trigger 路径，不受本分支影响（F-091）
-        elif self._ci_configured():
-            # 防御性归还：夜间 lux 闭环仍在跑时关掉它避免两闭环抢灯（lux
-            # off=纯放手，对真实灯零下发）。F-086：统一走 async_release_
-            # virtual_light——F-076 lux mode 守卫（判 attributes["mode"] 而非
+        elif mode != MODE_DAY and self._ci_configured():
+            # 防御性归还（夜间/extra）：lux 闭环仍在跑时关掉它避免两闭环
+            # 抢灯（lux off=纯放手，对真实灯零下发）。V1.6.0：本分支不得在
+            # 日间触发——非 CI 灯日间开灯照常直控，且同组 CI 灯的虚拟灯可能
+            # 正被接管（关掉会误杀）。F-086：统一走 async_release_virtual_
+            # light——F-076 lux mode 守卫（判 attributes["mode"] 而非
             # state——state 是真灯镜像，本集成夜间开灯也会命中；idle/
             # calibrating/None 不动，calibrating 时 lux 自己收尾）+ 跨条目
             # 检查单一来源
@@ -1618,34 +1658,43 @@ class NightLightManager:
         # dt_util.now() 只取一次算分钟，防两次取值不一致
         now = dt_util.now()
         mode = self._mode_at(now.hour * 60 + now.minute)
-        if self._ci_active_for(mode):
-            # F-085：only_when_on 准入——组内灯全关时不经 lux 闭环点亮
-            # （夜间同语义=逐灯 SKIPPED_OFF；CI 是组级操作，准入按组判）。
+        skip: set[str] = set()
+        if self._ci_configured() and mode == MODE_DAY:
+            # V1.6.0 单灯化：接管对象=day_ci_lights ∩ machines，一轮对组级
+            # 唯一虚拟灯至多一次 turn_on（F-072 轮级去重保留）。接管成功的
+            # CI 灯跳过下方逐灯下发；非 CI 灯（日间参数直控复活）与 ensure
+            # 失败回落的 CI 灯照常进 gather。
+            ci_lights = self._ci_light_set()
             if self.only_when_on:
-                any_on = False
-                for entity_id in self.lights:
-                    st = self.hass.states.get(entity_id)
-                    if st is not None and st.state == STATE_ON:
-                        any_on = True
-                        break
-                if not any_on:
+                # F-085（逐灯化）：only_when_on 准入按灯判——关着的 CI 灯
+                # 不经 lux 点亮（ensure 开虚拟灯会把 lux 区真灯点亮）；全部
+                # CI 灯关时零 ensure（V1.5.0 组级准入的逐灯等价）。非 CI 灯
+                # 的 only_when_on 由 _async_process_light 逐灯处理，不变。
+                ci_lights = {
+                    entity_id
+                    for entity_id in ci_lights
+                    if (st := self.hass.states.get(entity_id)) is not None
+                    and st.state == STATE_ON
+                }
+                if not ci_lights:
                     _LOGGER.debug(
-                        "CI daytime trigger: all lights off (only_when_on), "
-                        "skip takeover"
+                        "CI daytime trigger: all CI lights off "
+                        "(only_when_on), skip takeover"
                     )
-                    return
-            if await self._async_ensure_virtual_on():
-                # 恒照度闭环接管：真实灯零下发、无验证延迟，全部 machine
+            if ci_lights and await self._async_ensure_virtual_on():
+                # 恒照度闭环接管：CI 灯真实灯零下发、无验证延迟，machine
                 # 归位（虚拟灯整轮只调一次）
-                for machine in self.machines.values():
+                for entity_id in ci_lights:
+                    machine = self.machines[entity_id]
                     machine.state = LightState.IDLE
                     machine.manual_override = False
                     machine.mismatch_steps = 0
                     machine.expected = None
                     machine.applied = None
-                return
-            # ensure 失败（含 F-068 预检）：落到下方逐灯 fallback 直控
-            # （WARNING 已由 ensure 节流发出）
+                    skip.add(entity_id)
+            # ensure 失败（含 F-068 预检/F-084 校准）：CI 灯不 skip，落到
+            # 下方逐灯 fallback 直控（WARNING 已由 ensure 节流发出——节流
+            # 旗标保持组级：虚拟灯只有一盏，逐灯化不改变告警面）
         elif self._ci_configured():
             # 夜间/额外时段：每轮一次幂等归还虚拟灯（lux off=纯放手，对真实
             # 灯零下发），失败不阻断夜间下发（告警已响）；在 gather 之前
@@ -1679,11 +1728,14 @@ class NightLightManager:
                     # 失败不保留播种值 (P2-2)，退回中途入表语义
                     machine.expected = None
 
+        # V1.6.0 单灯化：skip=本轮已被 CI 接管的灯（零直控）；其余灯照常
+        # 锚点归位（含 CI 灯 ensure 失败的日间参数 fallback）
+        targets = [entity_id for entity_id in self.lights if entity_id not in skip]
         results = await asyncio.gather(
-            *(_one(entity_id) for entity_id in self.lights),
+            *(_one(entity_id) for entity_id in targets),
             return_exceptions=True,
         )
-        for entity_id, result in zip(self.lights, results, strict=False):
+        for entity_id, result in zip(targets, results, strict=False):
             if isinstance(result, Exception):
                 _LOGGER.error("%s trigger round failed: %s", entity_id, result)
 

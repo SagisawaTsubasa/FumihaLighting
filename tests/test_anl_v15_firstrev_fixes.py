@@ -396,19 +396,18 @@ def test_f084_listener_day_ci_calibrating_falls_back_to_settle():
 
 
 def test_f085_ci_day_trigger_only_when_on_all_off_skips():
-    """only_when_on + 组内灯全关 + 日间触发 → 不开虚拟灯（防经 lux 点亮
-    全关灯组；夜间同语义=逐灯 SKIPPED_OFF）。"""
+    """only_when_on + CI 灯全关 + 日间触发 → 不开虚拟灯（防经 lux 点亮；
+    逐灯语义 V1.6.0：全关组走真实逐灯路径，SKIPPED_OFF 零下发）。"""
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
     m = make_ci_manager(**{"only_when_on": True})
     svc = []
     m.hass.services = _RecordingServices(svc)
     m.hass.states.mapping[VIRT] = _FakeState("off")
     m.hass.states.mapping[LIGHT] = _FakeState("off")
-    calls = []
-    m._async_process_light = _record(calls)
     run(m.async_trigger("test"))
-    assert svc == []  # 零虚拟灯调用
-    assert calls == []
+    assert svc == []  # 零虚拟灯调用（准入：全部 CI 灯关 → 零 ensure）
+    # 真实 _async_process_light：only_when_on+关 → SKIPPED_OFF（不下发）
+    assert m.machines[LIGHT].state == LightState.SKIPPED_OFF
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
 
 

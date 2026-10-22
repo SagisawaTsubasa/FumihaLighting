@@ -142,7 +142,7 @@ _CI_REFERENCING_ENTRY_STATES = (
 )
 
 
-def _entry_effective_day_ci_lights(merged: dict) -> list[str]:
+def entry_effective_day_ci_lights(merged: dict) -> list[str]:
     """Entry 合并配置的生效 CI 灯清单（V1.6.0 单灯化读入迁移，单一来源）。
 
     生效键 day_ci_lights；存量条目读入合并（零回写，旧键由写入侧死键清理
@@ -159,14 +159,20 @@ def _entry_effective_day_ci_lights(merged: dict) -> list[str]:
     return []
 
 
+# 公开别名（ANL-F-109）：读入迁移是跨四层（manager/web/flow/删除钩子）
+# 契约，web 层禁调私有（ANL-F-003 家规）——ci_configured 同款（F-061）；
+# 私有名保留一版兼容既有外部引用。
+_entry_effective_day_ci_lights = entry_effective_day_ci_lights
+
+
 def _anl_virtual_referenced_elsewhere(
     hass: HomeAssistant, exclude_entry_id: str | None, virtual: str
 ) -> bool:
     """跨条目引用检查（F-067；F-083 自 web.py 挪入 CI 逻辑单一来源处）。
 
-    判据 = 条目 kind 为 anl 且合并 data+options 后 day_enabled 开、
-    生效 CI 灯清单非空（V1.6.0 读入迁移判据，_entry_effective_day_ci_
-    lights 单一来源——含存量 day_ci_enabled=true → 灯集全集）、
+        判据 = 条目 kind 为 anl 且合并 data+options 后 day_enabled 开、
+        生效 CI 灯清单非空（V1.6.0 读入迁移判据，entry_effective_day_ci_
+        lights 单一来源——含存量 day_ci_enabled=true → 灯集全集）、
     day_ci_virtual_light 等于待归还实体（F-077：与
     manager._ci_configured 生效判据同源——「CI 键在但 day_enabled 关」是
     失效配置，其 manager 运行时零虚拟灯调用，不构成生效引用，不得阻塞
@@ -203,7 +209,7 @@ def _anl_virtual_referenced_elsewhere(
         merged = {**entry.data, **entry.options}
         if (
             merged.get(CONF_DAY_ENABLED)
-            and _entry_effective_day_ci_lights(merged)
+            and entry_effective_day_ci_lights(merged)
             and (merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or "") == virtual
         ):
             hits.append(entry)
@@ -476,8 +482,8 @@ class NightLightManager:
         # 归 CI 接管的灯清单（逐灯）；虚拟灯保持组级一盏。日间参数与逐灯
         # 日间覆盖保留存储。虚拟灯只存 entity_id，运行时 hass.states.get
         # 判存在性。存量条目读入迁移：旧 day_ci_enabled=true → 灯集全集
-        # （_entry_effective_day_ci_lights 单一来源，零回写）。
-        self.day_ci_lights: list[str] = _entry_effective_day_ci_lights(data)
+        # （entry_effective_day_ci_lights 单一来源，零回写）。
+        self.day_ci_lights: list[str] = entry_effective_day_ci_lights(data)
         self.day_ci_virtual_light: str = str(
             data.get(CONF_DAY_CI_VIRTUAL_LIGHT, "") or ""
         )
@@ -645,12 +651,12 @@ class NightLightManager:
             if not self._warned_ci:
                 self._warned_ci = True
                 _LOGGER.warning(
-                    "恒照度虚拟灯 %s 不可用，开启 改回落日间参数直控",
+                    "恒照度虚拟灯 %s 不可用，开启失败，改回落日间参数直控",
                     self.day_ci_virtual_light,
                 )
             else:
                 _LOGGER.debug(
-                    "恒照度虚拟灯 %s 仍不可用，开启 改回落日间参数直控",
+                    "恒照度虚拟灯 %s 仍不可用，开启失败，改回落日间参数直控",
                     self.day_ci_virtual_light,
                 )
             return False
@@ -665,13 +671,13 @@ class NightLightManager:
             if not self._warned_ci:
                 self._warned_ci = True
                 _LOGGER.warning(
-                    "恒照度虚拟灯 %s 开启 失败：%s（本组回落日间参数直控）",
+                    "恒照度虚拟灯 %s 开启失败：%s（本组回落日间参数直控）",
                     self.day_ci_virtual_light,
                     err,
                 )
             else:
                 _LOGGER.debug(
-                    "恒照度虚拟灯 %s 开启 仍失败：%s（本组回落日间参数直控）",
+                    "恒照度虚拟灯 %s 开启仍失败：%s（本组回落日间参数直控）",
                     self.day_ci_virtual_light,
                     err,
                 )

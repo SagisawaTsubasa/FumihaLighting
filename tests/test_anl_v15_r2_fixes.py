@@ -145,7 +145,11 @@ def test_extra_start_day_disabled_zero_virtual_calls():
 
 
 def test_web_post_ci_on_day_disabled_400():
-    """POST 时 CI 开而 day_enabled 缺失 → merged 级跨字段 400，零落盘零动灯。"""
+    """POST 显式提交 CI 判据键而 day_enabled 关 → merged 级跨字段 400，
+    零落盘零动灯。ANL-F-106：校验改门控（仅 patch 触碰判据输入或解析组合
+    变化才执行）——未触碰判据输入的保存按存量值放行（见
+    test_anl_v16_ci_perlight 的 F-106 钉）；本钉保「主动提交矛盾组合仍
+    400」的保护面，故 patch 携带 day_ci_lights。"""
     hass = _recording_hass()
     entry = _config_entry(
         data={
@@ -159,7 +163,8 @@ def test_web_post_ci_on_day_disabled_400():
     resp = run(
         web.AnlConfigView().post(
             FakeRequest(hass, {"entry_id": "anl1",
-                               "patch": {"params": {"brightness": 30}}})
+                               "patch": {"params": {"brightness": 30,
+                                                    "day_ci_lights": ["light.a"]}}})
         )
     )
     assert resp.status == 400

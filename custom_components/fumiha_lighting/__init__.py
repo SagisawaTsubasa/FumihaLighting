@@ -29,7 +29,7 @@ from .anl.const import (
     SERVICE_TRIGGER_NOW,
 )
 from .anl.manager import (
-    _entry_effective_day_ci_lights,
+    entry_effective_day_ci_lights,
     async_release_virtual_light,
 )
 from .const import CONF_KIND, DOMAIN, KIND_ANL, KIND_LUX
@@ -111,7 +111,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     virtual = merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
     # V1.6.0 单灯化：引用判据=生效 CI 灯清单非空（读入迁移单一来源，含存量
     # day_ci_enabled=true → 灯集全集）——与 web/flow 归还挂点同判据
-    if not (_entry_effective_day_ci_lights(merged) and virtual):
+    if not (entry_effective_day_ci_lights(merged) and virtual):
         return
     # F-083：归还统一走 async_release_virtual_light（lux mode 守卫 + 跨条
     # 目检查——删除本条目不应关掉别组的日间闭环——+ best-effort turn_off，

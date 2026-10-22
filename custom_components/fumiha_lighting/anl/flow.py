@@ -85,7 +85,7 @@ from .const import (
     DOMAIN,
 )
 from .manager import (
-    _entry_effective_day_ci_lights,
+    entry_effective_day_ci_lights,
     async_release_virtual_light,
 )
 
@@ -334,7 +334,7 @@ class _FlowMixin:
         的 _finish）；新建流没有旧条目，不调。reload/卸载路径不归还——正常
         reload 会把 CI 关掉、日间闭环还在，归还只属于「配置真的放弃该灯」
         的边界。
-        V1.6.0：旧侧引用判据走读入迁移生效清单（_entry_effective_day_ci_
+        V1.6.0：旧侧引用判据走读入迁移生效清单（entry_effective_day_ci_
         lights 单一来源，存量 day_ci_enabled=true 形状同样构成引用）；新侧
         「仍引用」=day_enabled 开 + 清单非空 + 虚拟灯同——day_enabled 关的
         失效配置不构成引用（F-077 同源），关日间模式的向导保存也会归还。
@@ -349,7 +349,7 @@ class _FlowMixin:
         归还（F-081「忘了传」形状，防线不得止步于 helper）。
         """
         old_virtual = old.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
-        if not (_entry_effective_day_ci_lights(old) and old_virtual):
+        if not (entry_effective_day_ci_lights(old) and old_virtual):
             return
         if (
             new.get(CONF_DAY_ENABLED)
@@ -373,7 +373,7 @@ class _FlowMixin:
         （reconfigure 改灯场景）；options 流没有灯具步，须显式传条目现有
         灯集。V1.6.0 写侧迁移对偶：存量条目 day_ci_lights 缺失而旧
         day_ci_enabled=true → 携带时展开为当时灯集（与 manager 读入迁移
-        _entry_effective_day_ci_lights 同语义）——否则 reconfigure/options
+        entry_effective_day_ci_lights 同语义）——否则 reconfigure/options
         保存的新 data 不含旧键，CI 会被静默清零。
         """
         carry = {k: current[k] for k in _GUI_MANAGED_KEYS if k in current}

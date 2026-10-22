@@ -62,7 +62,7 @@ from .anl.const import (
 )
 from .anl.const import DOMAIN as _  # noqa: F401 — 子包自证
 from .anl.manager import (
-    _entry_effective_day_ci_lights,
+    entry_effective_day_ci_lights,
     async_release_virtual_light,
 )
 from .const import (
@@ -460,9 +460,9 @@ class AnlConfigView(HomeAssistantView):
         # GET 镜像读入迁移（ANL-F-102）：存量条目只有 day_ci_enabled=true
         # （两 CI 新键都缺，CONFIG_KEYS 也不含旧键）时白名单过滤后两键皆无
         # ——面板以 config 为唯一来源，全量提交空清单 → 保存一次静默清零
-        # CI 并归还虚拟灯。按生效判据（_entry_effective_day_ci_lights 单一
+        # CI 并归还虚拟灯。按生效判据（entry_effective_day_ci_lights 单一
         # 来源）展开灯集全集，与 manager 读入迁移同语义。
-        config[CONF_DAY_CI_LIGHTS] = _entry_effective_day_ci_lights(merged)
+        config[CONF_DAY_CI_LIGHTS] = entry_effective_day_ci_lights(merged)
         # time 对象防御性字符串化：TimeSelector 提交后进程内是 datetime.time
         # （HA 重启回读存储才变字符串），直接 json_response 会 500（ANL-F-015）
         for key in (CONF_TRIGGER_TIME, CONF_END_TIME):
@@ -506,10 +506,12 @@ class AnlConfigView(HomeAssistantView):
         lights = set(merged.get(CONF_LIGHTS, []))
         # 旧 CI 配置快照（F-057/F-058）：归还判据与「存量值放行」都以改动
         # 前的合并值为准；400 路径必须发生在归还之前（校验失败绝不动灯）。
-        # V1.6.0 单灯化：生效清单走读入迁移判据（_entry_effective_day_ci_
+        # V1.6.0 单灯化：生效清单走读入迁移判据（entry_effective_day_ci_
         # lights 单一来源）——存量 day_ci_enabled=true 的条目同样构成引用
-        old_ci_lights = _entry_effective_day_ci_lights(merged)
+        old_ci_lights = entry_effective_day_ci_lights(merged)
         old_virtual = merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
+        # ANL-F-106：跨字段校验门控的存量第三输入（day_enabled 改前值）。
+        old_day_enabled = bool(merged.get(CONF_DAY_ENABLED))
 
         if "times" in patch:
             clean, err = validate_times(patch["times"])
@@ -639,22 +641,51 @@ class AnlConfigView(HomeAssistantView):
             merged.pop(dead, None)
         # CI 跨字段校验（F-065/F-061 + V1.6.0，merged 级连续两查）：CI 是
         # 日间子功能，接管清单非空而 day_enabled 关、或清单非空而虚拟灯为
-        # 空，都是「页面谎报已接管」的配置——入口就 400，绝不静默落盘
-        if merged.get(CONF_DAY_CI_LIGHTS) and not merged.get(CONF_DAY_ENABLED):
+        # 空，都是「页面谎报已接管」的配置——入口就 400，绝不静默落盘。
+        # ANL-F-106：校验只打本次改动面——仅当 patch 触碰判据输入（三键
+        # 唯一入口是 params 分节，_section 按提交键透传）、或解析后组合≠
+        # 存量组合时执行（存量值放行，F-058 虚拟灯身份同纪律）：flow 携带
+        # 侧不看 day_enabled（_carry_gui_keys），day_ci_lights≠[] +
+        # day_enabled=False 的失效组合（F-077 失效配置语义）可合法存量，
+        # 未触碰判据输入的保存（逐灯弹窗只发 overrides）不得被无关 400
+        # 阻塞；组合变化（主动关日间/清虚拟灯）或显式提交判据键仍 400。
+        ci_inputs_touched = "params" in patch and any(
+            k in patch["params"]
+            for k in (
+                CONF_DAY_ENABLED,
+                CONF_DAY_CI_LIGHTS,
+                CONF_DAY_CI_VIRTUAL_LIGHT,
+            )
+        )
+        ci_combo_changed = (
+            bool(merged.get(CONF_DAY_CI_LIGHTS)),
+            bool(merged.get(CONF_DAY_ENABLED)),
+            bool(merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""),
+        ) != (bool(old_ci_lights), old_day_enabled, bool(old_virtual))
+        if (
+            (ci_inputs_touched or ci_combo_changed)
+            and merged.get(CONF_DAY_CI_LIGHTS)
+            and not merged.get(CONF_DAY_ENABLED)
+        ):
             return _error(400, "day_ci_lights 需要先启用日间模式（day_enabled）")
-        if merged.get(CONF_DAY_CI_LIGHTS) and not (
-            merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
+        if (
+            (ci_inputs_touched or ci_combo_changed)
+            and merged.get(CONF_DAY_CI_LIGHTS)
+            and not (merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or "")
         ):
             return _error(400, "day_ci_lights 已配置但 day_ci_virtual_light 为空")
         # 存量迁移回填（ANL-F-102）：patch 未携带 day_ci_lights（旧前端或
-        # 非 UI 调用只改时间/参数）且旧生效清单非空、日间仍开 → 按旧清单
+        # 非 UI 调用只改时间/参数）且旧生效清单非空、日间仍开、存量虚拟灯
+        # 已配置（ANL-F-107：与上方校验/归还判据同口径——回填放校验后不
+        # 是摘出射程的通行证，「清单非空+虚拟灯空」绝不落盘）→ 按旧清单
         # 回填，防死键 pop 把存量 CI 静默清零。显式提交空列表（新 UI 主动
-        # 关闭）不在回填之列，用户语义优先。放跨字段校验之后：回填值是
-        # 存量已生效配置，按「存量值放行」惯例不再加卡。
+        # 关闭）不在回填之列，用户语义优先。回填值是存量已生效配置，按
+        # 「存量值放行」惯例不再加卡。
         if (
             CONF_DAY_CI_LIGHTS not in merged
             and old_ci_lights
             and merged.get(CONF_DAY_ENABLED)
+            and (merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or "")
         ):
             merged[CONF_DAY_CI_LIGHTS] = old_ci_lights
         # CI 停用或改指 → 归还旧虚拟灯（F-057）：best-effort turn_off

@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -19,7 +18,6 @@ from test_anl_transitions import (
     _FakeState,
     _RecordingServices,
     make_ci_manager,
-    make_entry,
     make_manager,
 )
 from test_web import (
@@ -397,3 +395,108 @@ def test_remove_entry_legacy_shape_releases_virtual():
     )
     run(pkg.async_remove_entry(hass, anl_entry))
     assert hass.services.calls == [("light", "turn_off", {"entity_id": VIRT})]
+
+# ---------------------------------------------------------------------------
+# flow：GUI 键携带 + 存量展开（读入迁移的写侧对偶）
+# ---------------------------------------------------------------------------
+
+
+def _reconfigure_flow_to_settings(entry, lights, settings):
+    """驱动 reconfigure 流到 settings 步（返回 flow，_finish 交给用例）。"""
+    from test_web import _make_flow
+
+    flow = _make_flow()
+    flow.source = "reconfigure"
+    flow._reconfigure_entry = entry
+    flow.hass = SimpleNamespace(
+        states=SimpleNamespace(get=lambda eid: None),
+        config_entries=SimpleNamespace(async_entries=lambda domain: []),
+    )
+    run(flow.async_step_reconfigure(None))
+    run(flow.async_step_anl_reconfigure({"lights": lights}))
+    run(flow.async_step_time_details({
+        "start_mode": "fixed", "end_mode": "fixed",
+        "trigger_time": "22:00", "end_time": "06:00",
+        "start_offset": 0, "end_offset": 0, "sun_entity": "sun.sun",
+        "start_transition": 0, "end_transition": 0, "transition_interval": 5,
+    }))
+    result = run(flow.async_step_settings(settings))
+    return flow, result
+
+
+_SETTINGS = {
+    "day_enabled": True, "brightness": 25, "color_temp_kelvin": 2200,
+    "day_brightness": 100, "day_color_temp_kelvin": 4000,
+    "tolerance_brightness": 4, "tolerance_kelvin": 150,
+    "verify_delay": 5, "settle_delay": 1,
+    "turn_on_listen": True, "only_when_on": False, "respect_manual": True,
+}
+
+
+def test_reconfigure_carries_day_ci_lights_new_shape():
+    """新形状条目 reconfigure → day_ci_lights 携带（改灯时按灯集裁剪）。"""
+    entry = SimpleNamespace(
+        entry_id="anl1",
+        data={"kind": "anl", "lights": [LIGHT, SECOND], CONF_DAY_ENABLED: True,
+              CONF_DAY_CI_LIGHTS: [LIGHT], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
+        options={},
+        unique_id="anl:light.bath,light.second",
+    )
+    flow, result = _reconfigure_flow_to_settings(
+        entry, [LIGHT, SECOND], {**_SETTINGS}
+    )
+    assert result["type"] == "abort"
+    assert flow._reconfigure_entry.data[CONF_DAY_CI_LIGHTS] == [LIGHT]
+    assert flow._reconfigure_entry.data[CONF_DAY_CI_VIRTUAL_LIGHT] == VIRT
+
+
+def test_reconfigure_prunes_carried_ci_lights_by_new_light_set():
+    """改灯撤掉 CI 接管灯 → 携带时裁剪（清单永远 ⊆ 灯集）。"""
+    entry = SimpleNamespace(
+        entry_id="anl1",
+        data={"kind": "anl", "lights": [LIGHT, SECOND], CONF_DAY_ENABLED: True,
+              CONF_DAY_CI_LIGHTS: [LIGHT], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
+        options={},
+        unique_id="anl:light.bath,light.second",
+    )
+    flow, result = _reconfigure_flow_to_settings(entry, [SECOND], {**_SETTINGS})
+    assert result["type"] == "abort"
+    assert flow._reconfigure_entry.data[CONF_DAY_CI_LIGHTS] == []
+
+
+def test_reconfigure_legacy_ci_entry_survives_without_silent_reset():
+    """存量 day_ci_enabled=true 条目 reconfigure：携带时展开为当时灯集，
+    CI 不被向导保存静默清零（读入迁移的写侧对偶）。"""
+    entry = SimpleNamespace(
+        entry_id="anl1",
+        data={"kind": "anl", "lights": [LIGHT], CONF_DAY_ENABLED: True,
+              CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
+        options={},
+        unique_id="anl:light.bath",
+    )
+    flow, result = _reconfigure_flow_to_settings(entry, [LIGHT], {**_SETTINGS})
+    assert result["type"] == "abort"
+    saved = flow._reconfigure_entry.data
+    # 旧键不固化（死键），新键以展开形态落盘
+    assert CONF_DAY_CI_ENABLED not in saved
+    assert saved[CONF_DAY_CI_LIGHTS] == [LIGHT]
+    assert saved[CONF_DAY_CI_VIRTUAL_LIGHT] == VIRT
+    # 运行时判据：迁移语义下 CI 仍配置开
+    m = NightLightManager(SimpleNamespace(), flow._reconfigure_entry)
+    assert m.ci_configured() is True
+
+
+def test_reconfigure_legacy_ci_disabled_stays_off():
+    """存量 day_ci_enabled=false 条目 reconfigure → 不携带清单键（CI 关）。"""
+    entry = SimpleNamespace(
+        entry_id="anl1",
+        data={"kind": "anl", "lights": [LIGHT], CONF_DAY_ENABLED: True,
+              CONF_DAY_CI_ENABLED: False, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
+        options={},
+        unique_id="anl:light.bath",
+    )
+    flow, result = _reconfigure_flow_to_settings(entry, [LIGHT], {**_SETTINGS})
+    assert result["type"] == "abort"
+    saved = flow._reconfigure_entry.data
+    assert CONF_DAY_CI_LIGHTS not in saved
+    assert CONF_DAY_CI_ENABLED not in saved  # 旧键死键不固化

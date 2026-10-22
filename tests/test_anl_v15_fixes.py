@@ -73,8 +73,6 @@ _SETTINGS = {
     "color_temp_kelvin": 2200,
     "day_brightness": 100,
     "day_color_temp_kelvin": 4000,
-    "day_ci_enabled": False,
-    "day_ci_virtual_light": None,
     "tolerance_brightness": 4,
     "tolerance_kelvin": 150,
     "verify_delay": 5,
@@ -227,11 +225,7 @@ def test_options_flow_releases_before_entry_update():
     opts.async_create_entry = _recording_create
     run(opts.async_step_init(None))
     run(opts.async_step_anl_init(_TIMES))
-    final = run(opts.async_step_settings({
-        **_SETTINGS,
-        "day_ci_enabled": False,
-        "day_ci_virtual_light": VIRT,
-    }))
+    final = run(opts.async_step_settings({**_SETTINGS}))
     assert final["type"] == "create_entry"
     assert events == [("svc", "turn_off", VIRT), ("entry",)]
 
@@ -265,11 +259,7 @@ def test_reconfigure_flow_releases_old_virtual_on_ci_off():
     run(flow.async_step_reconfigure(None))
     run(flow.async_step_anl_reconfigure({"lights": ["light.a"]}))
     run(flow.async_step_time_details(_TIMES))
-    result = run(flow.async_step_settings({
-        **_SETTINGS,
-        "day_ci_enabled": False,
-        "day_ci_virtual_light": VIRT,
-    }))
+    result = run(flow.async_step_settings({**_SETTINGS}))
     assert result["type"] == "abort"
     assert result["reason"] == "reconfigure_successful"
     assert events == [("svc", "turn_off", VIRT)]
@@ -524,27 +514,6 @@ def test_web_post_ci_on_empty_virtual_400():
     assert "day_ci_virtual_light" in resp.payload["error"]
     assert recorded == []
     assert hass.services.calls == []
-
-
-def test_options_flow_ci_without_virtual_reshows_form_with_error():
-    """③options 流 CI on+实体留空 → 表单重显含 error base，不 create entry。"""
-    opts = AnlGroupOptionsFlow()
-    opts.config_entry = SimpleNamespace(
-        data={"kind": "anl", "lights": ["light.a"],
-              CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
-        options={},
-    )
-    opts.hass = SimpleNamespace(states=SimpleNamespace(get=lambda eid: None))
-    run(opts.async_step_init(None))
-    run(opts.async_step_anl_init(_TIMES))
-    result = run(opts.async_step_settings({
-        **_SETTINGS,
-        "day_enabled": True,  # F-065：day 关会先命中 day_ci_needs_day_enabled
-        "day_ci_enabled": True,
-        "day_ci_virtual_light": None,
-    }))
-    assert result["type"] == "form"
-    assert result["errors"] == {"base": "day_ci_needs_virtual_light"}
 
 
 def test_snapshot_day_ci_active_follows_configured():

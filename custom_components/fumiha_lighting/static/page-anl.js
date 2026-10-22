@@ -17,8 +17,9 @@
  * lights/times/params; extras+overrides are GUI-managed).
  * V1.5.0: settings-dialog rows are conditionally visible (row registry +
  * single sync function, event delegation), and a day constant-illumination
- * mode (day_ci_enabled + virtual light) hands the day segment over to the
- * lux-side closed loop instead of direct real-light control.
+ * mode hands the day segment over to the lux-side closed loop instead of
+ * direct real-light control. V1.6.0: the takeover list is per-light
+ * (day_ci_lights checkbox row) while the virtual light stays group-level.
  * ========================================================================== */
 
 const SELF_VER = new URL(import.meta.url).search;
@@ -549,6 +550,38 @@ class AnlPage extends HTMLElement {
       return rows[key];
     };
 
+    /* 日间恒照度接管清单（V1.6.0 单灯化）：组内灯逐灯勾选 → day_ci_lights。
+     * 勾选集合经 bind 注册为 inputs.day_ci_lights（read=选中实体数组）；
+     * 行容器 data-anl-row 供测试/排查定位。 */
+    const ciLightCbs = (config.lights || []).map((eid) => {
+      const cb = kit.el("input", { type: "checkbox", "data-ci-light": eid });
+      if ((config.day_ci_lights || []).includes(eid)) cb.checked = true;
+      return cb;
+    });
+    const ciSelection = () =>
+      ciLightCbs.filter((cb) => cb.checked).map((cb) => cb.getAttribute("data-ci-light"));
+    const lightLabel = (eid) => {
+      const st = this._hass && this._hass.states && this._hass.states[eid];
+      return (st && st.attributes && st.attributes.friendly_name) || eid;
+    };
+    const buildCiLightsRow = () => {
+      const box = kit.el(
+        "div",
+        { style: { display: "flex", flexWrap: "wrap", gap: "10px" } },
+        ciLightCbs.map((cb) =>
+          kit.el(
+            "label",
+            { style: { display: "flex", alignItems: "center", gap: "4px" } },
+            cb,
+            kit.el("span", { text: lightLabel(cb.getAttribute("data-ci-light")) })
+          )
+        )
+      );
+      bind("day_ci_lights", box, ciSelection, "日间恒照度灯");
+      rows.day_ci_lights = dlgRow("日间恒照度灯（恒照度接管）", box);
+      return [rows.day_ci_lights];
+    };
+
     /* 额外时段动态行 */
     const extrasRows = [];
     const extrasBox = kit.el("div");
@@ -645,9 +678,10 @@ class AnlPage extends HTMLElement {
       ]),
       dlgSection("时段参数", [
         checkInput("day_enabled", !!config.day_enabled, "启用日间模式"),
-        // 日间恒照度（V1.5.0）：开时日间段由 lux 恒照度闭环接管，日间
-        // 亮度/色温行隐藏（值保留），改显虚拟恒照度灯行
-        checkInput("day_ci_enabled", !!config.day_ci_enabled, "日间恒照度模式"),
+        // 日间恒照度（V1.6.0 单灯化）：接管清单=逐灯勾选（day_ci_lights），
+        // 任一灯勾选即显示组级虚拟恒照度灯行；日间亮度/色温行在清单非空时
+        // 隐藏（值保留，非 CI 灯日间照常）
+        ...buildCiLightsRow(),
         numField("params", "brightness", config.brightness, "夜间亮度"),
         numField("params", "color_temp_kelvin", config.color_temp_kelvin, "夜间色温"),
         numField("params", "day_brightness", config.day_brightness, "日间亮度"),
@@ -696,23 +730,25 @@ class AnlPage extends HTMLElement {
       const sm = inputs.start_mode.el.value;
       const em = inputs.end_mode.el.value;
       const dayOn = inputs.day_enabled.el.checked;
-      // F-065：CI 是日间子功能——日间模式关闭时自动取消勾选 CI 复选框
-      //（行本就隐藏；取消勾选让全量键提交自洽，不触服务端
-      // day_ci_enabled×day_enabled 400）。必须在读 ciOn 之前执行，
+      // F-065（V1.6.0 逐灯版）：CI 是日间子功能——日间模式关闭时自动清空
+      // 接管清单勾选（行本就隐藏；清空让全量键提交自洽，不触服务端
+      // day_ci_lights×day_enabled 400）。必须在读 ciAny 之前执行，
       // 显隐与提交值同源。
-      if (!dayOn && inputs.day_ci_enabled.el.checked) {
-        inputs.day_ci_enabled.el.checked = false;
+      if (!dayOn) {
+        ciLightCbs.forEach((cb) => {
+          cb.checked = false;
+        });
       }
-      const ciOn = inputs.day_ci_enabled.el.checked;
+      const ciAny = ciSelection().length > 0;
       show("trigger_time", sm === "fixed");
       show("start_offset", sm !== "fixed");
       show("end_time", em === "fixed");
       show("end_offset", em !== "fixed");
       show("sun_entity", sm !== "fixed" || em !== "fixed");
-      show("day_ci_enabled", dayOn);
-      show("day_brightness", dayOn && !ciOn);
-      show("day_color_temp_kelvin", dayOn && !ciOn);
-      show("day_ci_virtual_light", dayOn && ciOn);
+      show("day_ci_lights", dayOn);
+      show("day_brightness", dayOn && !ciAny);
+      show("day_color_temp_kelvin", dayOn && !ciAny);
+      show("day_ci_virtual_light", dayOn && ciAny);
       const extraTrans = extrasRows.some((r) => {
         if (!r.live || !r.transEl) return false;
         const v = parseFloat(r.transEl.value);
@@ -728,11 +764,11 @@ class AnlPage extends HTMLElement {
       // 时的 end_transition 归零——输入框跟随 day_enabled 置灰（V1.4.0 的
       // syncEndTransition 并入此处统一同步），不留静默无操作
       const gated = !dayOn;
-      // F-062（V1.5.0）：CI 开时日侧过渡带被跳过——两个过渡输入挂悬停提示，
-      // 值不禁用（存储保留，CI 关后恢复生效）；天亮过渡的置灰提示优先
-      //（日间模式关时 CI 行已隐藏，无从谈起）
-      const ciTransNote = "日间恒照度开启时，日侧过渡带被跳过，此值暂不生效";
-      const ciNoteOn = ciOn && dayOn;
+      // F-062（V1.5.0）：CI 开时日侧过渡带对该灯被跳过——两个过渡输入挂
+      // 悬停提示，值不禁用（存储保留，CI 关后恢复生效）；天亮过渡的置灰
+      // 提示优先（日间模式关时 CI 行已隐藏，无从谈起）
+      const ciTransNote = "日间恒照度开启时，日侧过渡带对被接管的灯跳过，此值暂不生效";
+      const ciNoteOn = ciAny && dayOn;
       inputs.start_transition.el.title = ciNoteOn ? ciTransNote : "";
       const endTransInp = inputs.end_transition.el;
       endTransInp.disabled = gated;
@@ -793,11 +829,12 @@ class AnlPage extends HTMLElement {
           "only_when_on",
           "respect_manual",
         ].forEach((k) => pick(params, k));
-        // 日间恒照度（V1.5.0）：CI 关时虚拟灯空串合法——不走 pick()（会把
-        // 空串当空值报错），单独读取；CI 开而灯空 → 显式拦保存报错
-        params.day_ci_enabled = inputs.day_ci_enabled.read();
+        // 日间恒照度（V1.6.0 单灯化）：接管清单=逐灯勾选，空清单=CI 关
+        // （合法，不走 pick()）；清单非空而虚拟灯空 → 显式拦保存报错
+        //（与后端 400 同判据前端前置）
+        params.day_ci_lights = ciSelection();
         const ciVirtualLight = inputs.day_ci_virtual_light.read();
-        if (params.day_ci_enabled && !ciVirtualLight) {
+        if (params.day_ci_lights.length && !ciVirtualLight) {
           throw new Error("日间恒照度需填写虚拟恒照度灯实体");
         }
         params.day_ci_virtual_light = ciVirtualLight;
@@ -839,11 +876,12 @@ class AnlPage extends HTMLElement {
     const gid = lt.entity_id;
     const ovr = (config.overrides || {})[gid] || null;
     const dayOn = !!config.day_enabled;
-    // 日间恒照度（V1.5.0）：CI 接管日间段时逐灯日间覆盖不生效——日间段
-    // 不渲染，保存走保留分支（存储保留，关 CI 后恢复生效）。F-061：取快照
-    // 生效值而非 config 存储值——存储可能开着但未配灯，生效值才决定日间段
+    // 日间恒照度（V1.5.0 引入，V1.6.0 逐灯化）：本灯在接管清单且组级生效
+    // 时，日间段不渲染——日间段不渲染时保存走保留分支（存储保留，退出
+    // 清单后恢复生效）。F-061：取快照生效值而非 config 存储值——存储可能
+    // 配置着但组级守卫未生效（虚拟灯未配/日间关），生效值才决定日间段
     // 是否真被恒照度接管（设置弹窗编辑面仍读存储值，不改）
-    const ciOn = !!m.day_ci_active;
+    const ciOn = !!m.day_ci_active && (m.day_ci_lights || []).includes(gid);
     const dayVisible = dayOn && !ciOn;
     const extras = config.extras || [];
     const controls = [];

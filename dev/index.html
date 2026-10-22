@@ -57,8 +57,9 @@
   }
   function anlManagers() {
     // ?ci=1 → 日间恒照度开启态（V1.5.0 manager 摘要 tag 的夹具）
-    // ?cibroken=1 → 谎报形状（F-061）：存储开但未配灯——day_ci_enabled=true
-    // 而 day_ci_active=false，chip/逐灯弹窗只认生效值，不得显示恒照度接管
+    // ?cibroken=1 → 谎报形状（F-061）：清单配置着但虚拟灯未配——
+    // day_ci_lights 非空而 day_ci_active=false，chip/逐灯弹窗只认生效值，
+    // 不得显示恒照度接管
     var q = new URLSearchParams(location.search);
     var ci = q.get("ci") === "1";
     var ciBroken = q.get("cibroken") === "1";
@@ -78,12 +79,13 @@
       // 而 transitions_active=false（日间关闭 → manager 归零），chip 只能读后者
       transition_enabled: true, transitions_active: false,
       day_enabled: true, respect_manual: true,
-      // web._serialize_anl_manager 契约（V1.5.0）：三键随快照下发——
-      // day_ci_enabled 存储值、day_ci_active 生效值（_ci_configured()，可与
-      // 存储值分叉）、day_ci_virtual_light（字符串或 null）
-      day_ci_enabled: ciStorage,
+      // web._serialize_anl_manager 契约（V1.6.0 单灯化）：三键随快照下发——
+      // day_ci_lights 接管清单、day_ci_active 生效值（_ci_configured()，可与
+      // 配置分叉）、day_ci_virtual_light（字符串或 null）
+      day_ci_lights: ciStorage ? ["light.bedroom"] : [],
       day_ci_active: ci,
-      day_ci_virtual_light: ciStorage ? "light.bedroom_heng_zhao_du_deng" : null,
+      // cibroken：清单配置着但虚拟灯未配（null）→ 生效值 false 的分叉源
+      day_ci_virtual_light: ci ? "light.bedroom_heng_zhao_du_deng" : null,
     }];
   }
   function anlConfig() {
@@ -104,8 +106,9 @@
         transition_enabled: false, start_transition: 0, end_transition: 0,
         transition_interval: 5,
         day_enabled: true, brightness: 25, color_temp_kelvin: 2200,
-        // V1.5.0 契约：config 白名单两新键（默认关；?ci=1 开启并预填虚拟灯）
-        day_ci_enabled: ci,
+        // V1.6.0 契约：config 白名单键换 day_ci_lights（默认空清单；?ci=1
+        // 预勾 bedroom 并预填虚拟灯；?cibroken=1 清单开着但虚拟灯空）
+        day_ci_lights: ci ? ["light.bedroom"] : [],
         day_ci_virtual_light: ci ? "light.bedroom_heng_zhao_du_deng" : "",
         day_brightness: 100, day_color_temp_kelvin: 4000,
         tolerance_brightness: 4, tolerance_kelvin: 150,

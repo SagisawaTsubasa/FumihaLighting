@@ -627,3 +627,175 @@ def test_reconfigure_legacy_ci_disabled_stays_off():
     saved = flow._reconfigure_entry.data
     assert CONF_DAY_CI_LIGHTS not in saved
     assert CONF_DAY_CI_ENABLED not in saved  # 旧键死键不固化
+
+
+# ---------------------------------------------------------------------------
+# R2 修复轮回归钉（ANL-F-106~109）
+# ---------------------------------------------------------------------------
+
+
+def test_web_post_overrides_only_survives_stale_day_off_ci_combo():
+    """ANL-F-106：flow 携带留下的失效组合（day_ci_lights≠[] + day_enabled=
+    False）不阻塞未触碰判据输入的保存——逐灯弹窗只发 overrides → 200 落盘
+    （判据键未提交 + 组合未变 → 存量值放行，F-058 同纪律）。"""
+    hass = _recording_hass()
+    hass.states = SimpleNamespace(
+        get=lambda eid: SimpleNamespace(state="on", attributes={"mode": "active"})
+        if eid == VIRT
+        else None
+    )
+    entry = _config_entry(
+        data={"kind": "anl", "lights": [LIGHT, SECOND],
+              CONF_DAY_ENABLED: False,
+              CONF_DAY_CI_LIGHTS: [LIGHT], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT}
+    )
+    _anl_bucket(hass, _config_manager(entry))
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"overrides": {
+                                   SECOND: {"brightness": 50}}}})
+        )
+    )
+    assert resp.payload["ok"] is True
+    saved = hass.data[web.DOMAIN]["anl"]["anl1"].entry.options
+    assert saved[CONF_DAY_CI_LIGHTS] == [LIGHT]  # 清单原样保留，不被 400 拒写
+    # day 关的失效配置不构成引用 → 保存侧归还旧虚拟灯（F-077 同语义）
+    assert hass.services.calls == [("light", "turn_off", {"entity_id": VIRT})]
+
+
+def test_web_post_params_partial_save_survives_stale_combo():
+    """ANL-F-106：params 分节只改亮度（判据键未提交）+ 组合未变 → 同样放行
+    （门控第二支「解析后组合≠存量组合」为假）。"""
+    hass = _recording_hass()
+    hass.states = SimpleNamespace(
+        get=lambda eid: SimpleNamespace(state="on", attributes={"mode": "active"})
+        if eid == VIRT
+        else None
+    )
+    entry = _config_entry(
+        data={"kind": "anl", "lights": [LIGHT], CONF_DAY_ENABLED: False,
+              CONF_DAY_CI_LIGHTS: [LIGHT], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT}
+    )
+    _anl_bucket(hass, _config_manager(entry))
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"params": {"brightness": 50}}})
+        )
+    )
+    assert resp.payload["ok"] is True
+    saved = hass.data[web.DOMAIN]["anl"]["anl1"].entry.options
+    assert saved[CONF_DAY_CI_LIGHTS] == [LIGHT]
+    # 失效配置不构成引用 → 放行的保存照常归还（F-077 同语义，非 400 阻塞）
+    assert hass.services.calls == [("light", "turn_off", {"entity_id": VIRT})]
+
+
+def test_web_post_explicit_stale_day_off_ci_combo_still_400():
+    """ANL-F-106 反向钉：判据键被显式提交（params 分节）→ 跨字段校验照常
+    执行，失效组合（清单非空 + day_enabled 关）仍 400、绝不落盘。"""
+    hass = _recording_hass()
+    entry = _config_entry(
+        data={"kind": "anl", "lights": [LIGHT], CONF_DAY_ENABLED: False,
+              CONF_DAY_CI_LIGHTS: [LIGHT], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT}
+    )
+    _anl_bucket(hass, _config_manager(entry))
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"params": {
+                                   "day_ci_lights": [LIGHT]}}})
+        )
+    )
+    assert resp.status == 400 and "day_enabled" in resp.payload["error"]
+    assert recorded == []  # 校验失败绝不落盘
+
+
+def test_web_post_times_only_no_backfill_without_virtual():
+    """ANL-F-107 负向钉：存量 day_ci_enabled=true + 虚拟灯空 + times-only
+    保存 → 回填缺虚拟灯前提不成立 → day_ci_lights 不落盘（「清单非空+
+    虚拟灯空」组合绝不静默写入；无虚拟灯可归还 → 零服务调用）。"""
+    hass = _recording_hass()
+    entry = _config_entry(
+        data={"kind": "anl", "lights": [LIGHT], CONF_DAY_ENABLED: True,
+              CONF_DAY_CI_ENABLED: True}
+    )
+    _anl_bucket(hass, _config_manager(entry))
+    resp = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"times": {"trigger_time": "22:30"}}})
+        )
+    )
+    assert resp.payload["ok"] is True
+    saved = hass.data[web.DOMAIN]["anl"]["anl1"].entry.options
+    assert CONF_DAY_CI_LIGHTS not in saved  # 不回填
+    assert CONF_DAY_CI_ENABLED not in saved  # 死键照常清理
+    assert hass.services.calls == []  # 虚拟灯未配置 → 无归还对象
+
+
+def test_ensure_virtual_on_failure_log_messages_readable(caplog):
+    """ANL-F-108：虚拟灯不可用/开启失败的四条诊断文案读得通（_warned_ci
+    每实例只响一次，文案是唯一排障入口——首响 WARNING 与节流 DEBUG 两态
+    都钉；破损形「开启 改回落」「开启 失败」不含「开启失败」连续串必红）。"""
+    import logging
+
+    manager_logger = "custom_components.fumiha_lighting.anl.manager"
+    m = make_ci_manager()
+    # 预检失败路径（F-068）：unavailable →「开启失败，改回落日间参数直控」
+    m.hass.states.mapping[VIRT] = _FakeState("unavailable")
+    with caplog.at_level(logging.DEBUG, logger=manager_logger):
+        assert run(m._async_ensure_virtual_on()) is False
+    assert any(
+        "开启失败，改回落日间参数直控" in r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+    )
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger=manager_logger):
+        assert run(m._async_ensure_virtual_on()) is False  # 节流第二响 DEBUG
+    assert any(
+        "开启失败，改回落日间参数直控" in r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.DEBUG
+    )
+    # 服务失败路径：「开启失败：」/「开启仍失败：」
+    m2 = make_ci_manager()
+    m2.hass.states.mapping[VIRT] = _FakeState("off")
+    m2.hass.services = _RecordingServices([], fail=True)
+    with caplog.at_level(logging.DEBUG, logger=manager_logger):
+        assert run(m2._async_ensure_virtual_on()) is False
+    assert any(
+        "开启失败：" in r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+    )
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger=manager_logger):
+        assert run(m2._async_ensure_virtual_on()) is False
+    assert any(
+        "开启仍失败：" in r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.DEBUG
+    )
+
+
+def test_entry_effective_day_ci_lights_public_alias():
+    """ANL-F-109：读入迁移单一来源改公开名（ANL-F-003 家规「web 层禁调
+    私有」，ci_configured 同款 F-061）——公开名跨四层可导入、兼容别名同
+    对象、新旧两形态行为不变。"""
+    from custom_components.fumiha_lighting.anl.manager import (
+        _entry_effective_day_ci_lights,
+        entry_effective_day_ci_lights,
+    )
+    from custom_components.fumiha_lighting.anl import flow
+
+    assert entry_effective_day_ci_lights is _entry_effective_day_ci_lights
+    assert web.entry_effective_day_ci_lights is entry_effective_day_ci_lights
+    assert flow.entry_effective_day_ci_lights is entry_effective_day_ci_lights
+    assert pkg.entry_effective_day_ci_lights is entry_effective_day_ci_lights
+    # 行为抽查：新形状键直读 / 存量 day_ci_enabled=true 展开
+    assert entry_effective_day_ci_lights({CONF_DAY_CI_LIGHTS: [LIGHT]}) == [LIGHT]
+    assert entry_effective_day_ci_lights(
+        {CONF_DAY_CI_ENABLED: True, CONF_LIGHTS: [LIGHT]}
+    ) == [LIGHT]

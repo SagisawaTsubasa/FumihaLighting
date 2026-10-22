@@ -54,7 +54,7 @@ def test_normalize_time_rejects_garbage():
 
 def test_validate_params_ok_and_rounding():
     clean, err = validate_params({"brightness": 25.4, "settle_delay": 1.5,
-                                  "day_enabled": True})
+                                  "day_enabled": True}, LIGHTS)
     assert err is None
     assert clean["brightness"] == 25  # int round
     assert clean["settle_delay"] == 1.5  # float 保留
@@ -62,22 +62,22 @@ def test_validate_params_ok_and_rounding():
 
 
 def test_validate_params_rejects_bool_as_number():
-    clean, err = validate_params({"brightness": True})
+    clean, err = validate_params({"brightness": True}, LIGHTS)
     assert clean is None and "数字" in err
 
 
 def test_validate_params_rejects_non_finite():
     for bad in (float("nan"), float("inf"), float("-inf")):
-        clean, err = validate_params({"brightness": bad})
+        clean, err = validate_params({"brightness": bad}, LIGHTS)
         assert clean is None and "有限" in err
-        clean2, err2 = validate_params({"settle_delay": bad})
+        clean2, err2 = validate_params({"settle_delay": bad}, LIGHTS)
         assert clean2 is None and "有限" in err2  # float 字段同样拒绝（ANL-F-019）
 
 
 def test_validate_params_rejects_out_of_range_and_unknown():
-    assert validate_params({"brightness": 0})[1] is not None
-    assert validate_params({"brightness": 101})[1] is not None
-    assert "hax" in validate_params({"hax": 1})[1]
+    assert validate_params({"brightness": 0}, LIGHTS)[1] is not None
+    assert validate_params({"brightness": 101}, LIGHTS)[1] is not None
+    assert "hax" in validate_params({"hax": 1}, LIGHTS)[1]
 
 
 # ---- validate_times -------------------------------------------------------
@@ -178,35 +178,65 @@ def test_limits_payload_covers_all_specs():
 # ---- day CI keys (V1.5.0) --------------------------------------------------
 
 
-def test_validate_params_rejects_non_bool_day_ci_enabled():
-    clean, err = validate_params({"day_ci_enabled": "yes"})
-    assert clean is None and "布尔" in err
+def test_validate_params_rejects_dead_key_day_ci_enabled():
+    """V1.6.0 单灯化：day_ci_enabled 转死键，params 分节按未知字段拒绝。"""
+    clean, err = validate_params({"day_ci_enabled": True}, LIGHTS)
+    assert clean is None and "未知字段" in err and "day_ci_enabled" in err
+
+
+def test_validate_params_day_ci_lights_ok_and_subset():
+    clean, err = validate_params({"day_ci_lights": ["light.a"]}, LIGHTS)
+    assert err is None and clean["day_ci_lights"] == ["light.a"]
+    # 空列表合法（=CI 关，GUI 全量键提交形态）
+    clean, err = validate_params({"day_ci_lights": []}, LIGHTS)
+    assert err is None and clean["day_ci_lights"] == []
+
+
+def test_validate_params_day_ci_lights_rejects_bad_shapes():
+    # 非列表 / 非字符串元素
+    clean, err = validate_params({"day_ci_lights": "light.a"}, LIGHTS)
+    assert clean is None and "day_ci_lights" in err
+    clean, err = validate_params({"day_ci_lights": [5]}, LIGHTS)
+    assert clean is None and "day_ci_lights" in err
+    # 空实体 ID / 纯空白
+    clean, err = validate_params({"day_ci_lights": ["  "]}, LIGHTS)
+    assert clean is None and "空实体 ID" in err
+
+
+def test_validate_params_day_ci_lights_rejects_unknown_and_duplicate():
+    # 灯集子集：未选灯具拒绝
+    clean, err = validate_params({"day_ci_lights": ["light.z"]}, LIGHTS)
+    assert clean is None and "未知灯具" in err
+    # 重复实体拒绝（F-070 同型：不静默去重）
+    clean, err = validate_params({"day_ci_lights": ["light.a", "light.a"]}, LIGHTS)
+    assert clean is None and "重复" in err
+
 
 
 def test_validate_params_day_ci_virtual_light_empty_normalized():
     """CI 关时 GUI 全量键提交发空串/None = 未配置，放行并归一 ""。"""
-    clean, err = validate_params({"day_ci_virtual_light": ""})
+    clean, err = validate_params({"day_ci_virtual_light": ""}, LIGHTS)
     assert err is None and clean["day_ci_virtual_light"] == ""
-    clean, err = validate_params({"day_ci_virtual_light": None})
+    clean, err = validate_params({"day_ci_virtual_light": None}, LIGHTS)
     assert err is None and clean["day_ci_virtual_light"] == ""
 
 
 def test_validate_params_day_ci_virtual_light_entity_ok():
-    clean, err = validate_params({"day_ci_virtual_light": " light.virt "})
+    clean, err = validate_params({"day_ci_virtual_light": " light.virt "}, LIGHTS)
     assert err is None and clean["day_ci_virtual_light"] == "light.virt"
 
 
 def test_validate_params_day_ci_virtual_light_rejects_bad_values():
-    clean, err = validate_params({"day_ci_virtual_light": 5})
+    clean, err = validate_params({"day_ci_virtual_light": 5}, LIGHTS)
     assert clean is None and "day_ci_virtual_light" in err
     # 纯空白串走 _entity_check 同逻辑 → 拒绝
-    clean, err = validate_params({"day_ci_virtual_light": "   "})
+    clean, err = validate_params({"day_ci_virtual_light": "   "}, LIGHTS)
     assert clean is None and "非空实体 ID" in err
 
 
 def test_validate_params_day_ci_keys_absent_skipped():
     """patch 语义：缺省键跳过，clean 不含两键。"""
-    clean, err = validate_params({"brightness": 30})
+    clean, err = validate_params({"brightness": 30}, LIGHTS)
     assert err is None
-    assert "day_ci_enabled" not in clean
+    assert "day_ci_lights" not in clean
     assert "day_ci_virtual_light" not in clean

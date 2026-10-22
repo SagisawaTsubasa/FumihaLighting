@@ -53,6 +53,7 @@ from .const import (
     CONF_COLOR_TEMP_KELVIN,
     CONF_DAY_BRIGHTNESS,
     CONF_DAY_CI_ENABLED,
+    CONF_DAY_CI_LIGHTS,
     CONF_DAY_CI_VIRTUAL_LIGHT,
     CONF_DAY_COLOR_TEMP_KELVIN,
     CONF_DAY_ENABLED,
@@ -141,13 +142,32 @@ _CI_REFERENCING_ENTRY_STATES = (
 )
 
 
+def _entry_effective_day_ci_lights(merged: dict) -> list[str]:
+    """Entry 合并配置的生效 CI 灯清单（V1.6.0 单灯化读入迁移，单一来源）。
+
+    生效键 day_ci_lights；存量条目读入合并（零回写，旧键由写入侧死键清理
+    pop）：day_ci_lights 缺失且旧 day_ci_enabled=true → 灯集全集，false/
+    缺省 → []。manager 运行时与归还注册表判据（_anl_virtual_referenced_
+    elsewhere）必须共用本函数——注册表读的是未迁移的原始配置，若按裸
+    day_ci_lights 判「非空」会把已加载、闭环真在跑的存量条目判成「无引用」，
+    他条目归还时误关其日间闭环（F-086 同形状）。
+    """
+    if CONF_DAY_CI_LIGHTS in merged:
+        return [str(e) for e in (merged.get(CONF_DAY_CI_LIGHTS) or [])]
+    if merged.get(CONF_DAY_CI_ENABLED):
+        return [str(e) for e in (merged.get(CONF_LIGHTS, []) or [])]
+    return []
+
+
 def _anl_virtual_referenced_elsewhere(
     hass: HomeAssistant, exclude_entry_id: str | None, virtual: str
 ) -> bool:
     """跨条目引用检查（F-067；F-083 自 web.py 挪入 CI 逻辑单一来源处）。
 
     判据 = 条目 kind 为 anl 且合并 data+options 后 day_enabled 开、
-    day_ci_enabled 开、day_ci_virtual_light 等于待归还实体（F-077：与
+    生效 CI 灯清单非空（V1.6.0 读入迁移判据，_entry_effective_day_ci_
+    lights 单一来源——含存量 day_ci_enabled=true → 灯集全集）、
+    day_ci_virtual_light 等于待归还实体（F-077：与
     manager._ci_configured 生效判据同源——「CI 键在但 day_enabled 关」是
     失效配置，其 manager 运行时零虚拟灯调用，不构成生效引用，不得阻塞
     他条目归还）。走 config_entries 注册表而非 hass.data 运行时桶：删除
@@ -183,7 +203,7 @@ def _anl_virtual_referenced_elsewhere(
         merged = {**entry.data, **entry.options}
         if (
             merged.get(CONF_DAY_ENABLED)
-            and merged.get(CONF_DAY_CI_ENABLED)
+            and _entry_effective_day_ci_lights(merged)
             and (merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or "") == virtual
         ):
             hits.append(entry)
@@ -452,10 +472,12 @@ class NightLightManager:
         self.day_kelvin: int = data.get(
             CONF_DAY_COLOR_TEMP_KELVIN, DEFAULT_DAY_COLOR_TEMP_KELVIN
         )
-        # 日间恒照度联动（V1.5.0）：CI 开时日间段不直控真实灯，改为驱动
-        # 恒照度虚拟灯（lux 闭环接管）；日间参数与逐灯日间覆盖保留存储、
-        # 不再消费。虚拟灯只存 entity_id，运行时 hass.states.get 判存在性。
-        self.day_ci_enabled: bool = bool(data.get(CONF_DAY_CI_ENABLED, False))
+        # 日间恒照度联动（V1.5.0 引入，V1.6.0 单灯化）：day_ci_lights = 组内
+        # 归 CI 接管的灯清单（逐灯）；虚拟灯保持组级一盏。日间参数与逐灯
+        # 日间覆盖保留存储。虚拟灯只存 entity_id，运行时 hass.states.get
+        # 判存在性。存量条目读入迁移：旧 day_ci_enabled=true → 灯集全集
+        # （_entry_effective_day_ci_lights 单一来源，零回写）。
+        self.day_ci_lights: list[str] = _entry_effective_day_ci_lights(data)
         self.day_ci_virtual_light: str = str(
             data.get(CONF_DAY_CI_VIRTUAL_LIGHT, "") or ""
         )
@@ -474,6 +496,10 @@ class NightLightManager:
         self.machines: dict[str, LightMachine] = {
             light: LightMachine(entity_id=light) for light in self.lights
         }
+        # 迁移/携带残源自愈：灯集裁剪后残留的 CI 灯引用不再生效（与
+        # overrides extras 残留索引清理同型——regardless of 来源，生效清单
+        # 永远 ⊆ machines）
+        self.day_ci_lights = [e for e in self.day_ci_lights if e in self.machines]
         self._unsub_time = None
         self._unsub_state = None
         self._unsub_sun = None
@@ -516,16 +542,19 @@ class NightLightManager:
     # ------------------------------------------------------- 日间恒照度联动
 
     def _ci_configured(self) -> bool:
-        """CI 配置面判据：日间模式开 + CI 开关开 + 虚拟灯已配置。
+        """CI 组级守卫：日间模式开 + CI 灯清单非空 + 虚拟灯已配置。
 
         F-065：CI 是日间子功能——day_enabled 关闭时日间段根本不存在
         （_anchor_modes 不产生 MODE_DAY），运行时零虚拟灯调用（夜间/extra
         归还分支与 _async_extra_start 同判据，不会误关用户手开的虚拟灯）；
         本判据须与之一致，web 快照 day_ci_active 同源（不再谎报接管）。
+        V1.6.0 单灯化：day_ci_enabled 布尔键废除，接管面按灯判定
+        （_ci_active_for_light），组级守卫=清单非空——消费面保留组级：
+        监听注册守卫、夜间防御性归还、归还注册表判据、startup 对账。
         """
         return bool(
             self.day_enabled
-            and self.day_ci_enabled
+            and self.day_ci_lights
             and self.day_ci_virtual_light
         )
 
@@ -535,7 +564,11 @@ class NightLightManager:
     ci_configured = _ci_configured
 
     def _ci_active_for(self, mode: str | None) -> bool:
-        """CI 生效判据：配置开（含日间模式，F-065）且 当前解析时段 == 日间。"""
+        """CI 生效判据（组级，V1.5.0 形态）：守卫开且当前解析时段 == 日间。
+
+        V1.6.0 步骤 2 将改逐灯判定（_ci_active_for_light）；迁移读入后
+        存量条目清单=灯集全集，本组级形态对它们语义不变。
+        """
         return self._ci_configured() and mode == MODE_DAY
 
     def _virtual_lux_mode(self) -> str | None:

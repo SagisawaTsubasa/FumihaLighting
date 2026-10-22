@@ -42,8 +42,8 @@ from test_web import (
 )
 
 import custom_components.fumiha_lighting.anl as anl_pkg
-from custom_components.fumiha_lighting.anl import manager as anl_manager
 from custom_components.fumiha_lighting import web
+from custom_components.fumiha_lighting.anl import manager as anl_manager
 from custom_components.fumiha_lighting.anl.const import (
     CONF_DAY_CI_ENABLED,
     CONF_DAY_CI_VIRTUAL_LIGHT,
@@ -272,11 +272,11 @@ def test_f083_web_post_release_skipped_when_calibrating():
     )))
     resp = run(web.AnlConfigView().post(
         FakeRequest(hass, {"entry_id": "anl1",
-                           "patch": {"params": {"day_ci_enabled": False}}})
+                           "patch": {"params": {"day_ci_lights": []}}})
     ))
     assert resp.payload["ok"] is True
     assert hass.services.calls == []
-    assert recorded[0][1]["options"]["day_ci_enabled"] is False
+    assert recorded[0][1]["options"]["day_ci_lights"] == []
 
 
 def test_f083_options_flow_release_skipped_when_calibrating():
@@ -572,7 +572,7 @@ def _calib_entry(entry_id="anl1"):
 def _post_disable_ci(hass):
     return run(web.AnlConfigView().post(
         FakeRequest(hass, {"entry_id": "anl1",
-                           "patch": {"params": {"day_ci_enabled": False}}})
+                           "patch": {"params": {"day_ci_lights": []}}})
     ))
 
 

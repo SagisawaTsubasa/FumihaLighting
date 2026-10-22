@@ -10,7 +10,7 @@ import conftest as stubs
 
 from custom_components.fumiha_lighting.anl.const import (
     ANCHOR_FIXED,
-    CONF_DAY_CI_ENABLED,
+    CONF_DAY_CI_LIGHTS,
     CONF_DAY_CI_VIRTUAL_LIGHT,
     CONF_DAY_ENABLED,
     CONF_END_MODE,
@@ -460,7 +460,7 @@ class _RecordingServices:
 
 def make_ci_manager(**extra_overrides):
     overrides = {
-        CONF_DAY_CI_ENABLED: True,
+        CONF_DAY_CI_LIGHTS: [LIGHT],
         CONF_DAY_CI_VIRTUAL_LIGHT: VIRT,
     }
     overrides.update(extra_overrides)
@@ -572,7 +572,7 @@ def test_rebuild_day_plan_ci_drops_day_side_bands():
 
     # 回归钉：CI 关（键仍在）→ 恢复原有两带步进
     stubs.POINT_IN_TIME_CALLS.clear()
-    m3 = make_manager(**{CONF_DAY_CI_ENABLED: False, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT})
+    m3 = make_manager(**{CONF_DAY_CI_LIGHTS: [], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT})
     m3._rebuild_day_plan()
     whens = sorted(w for w, _ in stubs.POINT_IN_TIME_CALLS)
     assert datetime(2026, 10, 2, 21, 0) in whens  # 夜间开始带（今日 21:00–22:00）
@@ -634,7 +634,7 @@ def test_listener_night_ci_returns_left_on_virtual_light():
 
 def test_day_trigger_ci_disabled_direct_control():
     """CI 关（键在但 enabled=False）→ day trigger 走既有直控，零虚拟灯调用。"""
-    m = make_manager(**{CONF_DAY_CI_ENABLED: False, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT})
+    m = make_manager(**{CONF_DAY_CI_LIGHTS: [], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT})
     svc = []
     m.hass.services = _RecordingServices(svc)
     calls = []

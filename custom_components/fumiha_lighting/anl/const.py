@@ -23,6 +23,10 @@ CONF_COLOR_TEMP_KELVIN = "color_temp_kelvin"
 CONF_DAY_ENABLED = "day_enabled"
 CONF_DAY_BRIGHTNESS = "day_brightness"
 CONF_DAY_COLOR_TEMP_KELVIN = "day_color_temp_kelvin"
+# 日间恒照度（V1.6.0 单灯化）：生效键改为 day_ci_lights（组内 CI 接管灯
+# 清单，逐灯）；day_ci_enabled 降级为死键——仅存量迁移读入（V1.5.0 条目
+# true→灯集全集）与写入侧死键清理消费，不再作为配置键出现。
+CONF_DAY_CI_LIGHTS = "day_ci_lights"
 CONF_DAY_CI_ENABLED = "day_ci_enabled"
 CONF_DAY_CI_VIRTUAL_LIGHT = "day_ci_virtual_light"
 CONF_TOLERANCE_BRIGHTNESS = "tolerance_brightness"

@@ -179,7 +179,7 @@
     },
     "trigger_now": {
       "name": "Trigger now",
-      "description": "Re-anchor every night-light group now: clear manual overrides and re-apply the current band's parameters. For groups with daytime constant-illuminance coupling enabled, a daytime trigger ensures the virtual lux light is on instead of direct control (skipped when every light in the group is off and only-when-on is set)."
+      "description": "Re-anchor every night-light group now: clear manual overrides and re-apply the current band's parameters. Lights taken over by daytime constant-illuminance get the virtual lux light ensured on, with no daytime parameters sent to those lights; other lights in the same group keep being directly controlled by daytime parameters (skipped when every taken-over light is off and only-when-on is set)."
     }
   },
   "entity": {

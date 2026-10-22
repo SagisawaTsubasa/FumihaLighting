@@ -457,6 +457,12 @@ class AnlConfigView(HomeAssistantView):
             return _error(404, "未知条目")
         merged = {**mgr.entry.data, **mgr.entry.options}
         config = {key: merged[key] for key in CONFIG_KEYS if key in merged}
+        # GET 镜像读入迁移（ANL-F-102）：存量条目只有 day_ci_enabled=true
+        # （两 CI 新键都缺，CONFIG_KEYS 也不含旧键）时白名单过滤后两键皆无
+        # ——面板以 config 为唯一来源，全量提交空清单 → 保存一次静默清零
+        # CI 并归还虚拟灯。按生效判据（_entry_effective_day_ci_lights 单一
+        # 来源）展开灯集全集，与 manager 读入迁移同语义。
+        config[CONF_DAY_CI_LIGHTS] = _entry_effective_day_ci_lights(merged)
         # time 对象防御性字符串化：TimeSelector 提交后进程内是 datetime.time
         # （HA 重启回读存储才变字符串），直接 json_response 会 500（ANL-F-015）
         for key in (CONF_TRIGGER_TIME, CONF_END_TIME):
@@ -640,6 +646,17 @@ class AnlConfigView(HomeAssistantView):
             merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
         ):
             return _error(400, "day_ci_lights 已配置但 day_ci_virtual_light 为空")
+        # 存量迁移回填（ANL-F-102）：patch 未携带 day_ci_lights（旧前端或
+        # 非 UI 调用只改时间/参数）且旧生效清单非空、日间仍开 → 按旧清单
+        # 回填，防死键 pop 把存量 CI 静默清零。显式提交空列表（新 UI 主动
+        # 关闭）不在回填之列，用户语义优先。放跨字段校验之后：回填值是
+        # 存量已生效配置，按「存量值放行」惯例不再加卡。
+        if (
+            CONF_DAY_CI_LIGHTS not in merged
+            and old_ci_lights
+            and merged.get(CONF_DAY_ENABLED)
+        ):
+            merged[CONF_DAY_CI_LIGHTS] = old_ci_lights
         # CI 停用或改指 → 归还旧虚拟灯（F-057）：best-effort turn_off
         # （lux off=纯放手），失败 WARNING 不阻断保存；全部校验通过后才
         # 动灯，且 reload 场景（CI 保持开启、灯未变）零调用。F-067：其他

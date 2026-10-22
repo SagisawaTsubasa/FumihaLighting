@@ -429,10 +429,17 @@ class AnlGroupFlowMixin(_FlowMixin):
             if entry.unique_id != self.unique_id:
                 self._abort_if_unique_id_configured(error="anl_unique_id_mismatch")
             # F-057：改指/停用 CI 时归还旧虚拟灯——abort 路径之后才动灯；
-            # F-067：排除自身条目做跨条目引用检查（F-095：关键字必填）
+            # F-067：排除自身条目做跨条目引用检查（F-095：关键字必填）。
+            # ANL-F-103：归还判据的「新配置」须含 GUI 携带键——_entry_data()
+            # 只产出 times/params/settings（V1.6.0 已把 CI 两键剥出向导），
+            # 直接传它则 day_ci_lights 守卫恒假，保留 CI 的 reconfigure
+            # （改时间/参数）也会误归还日间正在跑的虚拟灯。carried 先算
+            # 一次，归还判据与落盘 data 同源同值（与 options 流传 new_data
+            # 的对偶一致）。
+            carried = self._carry_gui_keys(current)
             await self._async_release_stale_virtual(
                 current,
-                self._entry_data(),
+                {**self._entry_data(), **carried},
                 exclude_entry_id=entry.entry_id,
             )
             # options 清空 + GUI 管理键并入 data：全量收敛进 data，GUI 改动不丢
@@ -441,7 +448,7 @@ class AnlGroupFlowMixin(_FlowMixin):
                 data={
                     CONF_KIND: KIND_ANL,
                     **self._entry_data(),
-                    **self._carry_gui_keys(current),
+                    **carried,
                 },
                 options={},
                 unique_id=self.unique_id,

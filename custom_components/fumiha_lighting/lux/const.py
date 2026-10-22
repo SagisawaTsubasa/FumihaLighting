@@ -61,6 +61,9 @@ CAL_MIN_STEP_PCT = 2
 # 照度数据可信窗口：state.last_changed 超过该时距视为陈旧（心跳型 BLE 传感器
 # 数十分钟才上报一次，闭环与开灯首帧不得再当新鲜数据使用，FL-UX-01）。
 LUX_STALE_AFTER_S = 30 * 60
+# 照度不可信 WARNING 的时间窗节流（V1.6.0 P3，R11 报告发现 3）：坏值期内/
+# NaN↔有效交替读数下至多每 5 分钟一条 WARNING。
+LUX_STALE_WARN_INTERVAL_S = 300
 CAL_MIN_USEFUL_LUX = 5.0  # calibrated curve below this is treated as no response
 
 DECISION_RING_SIZE = 50

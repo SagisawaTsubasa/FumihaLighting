@@ -62,6 +62,7 @@ from .const import (
     DECISION_RING_SIZE,
     DOMAIN,
     LUX_STALE_AFTER_S,
+    LUX_STALE_WARN_INTERVAL_S,
     MODE_ACTIVE,
     MODE_CALIBRATING,
     MODE_IDLE,
@@ -166,7 +167,11 @@ class ZoneRuntime:
         self._eval_task: asyncio.Task | None = None
         self._apply_lock = asyncio.Lock()
         self._off_streak = 0
-        self._stale_warned = False
+        # 照度不可信 WARNING 的时间窗节流（V1.6.0 P3，R11 报告发现 3）：
+        # 旧「一次 WARNING」布尔旗标被每个有效样本复位，NaN↔有效交替读数
+        # 的抖动传感器每两事件一条 WARNING 刷屏——改 LUX_STALE_WARN_INTERVAL_S
+        # 时间窗，与「恢复」解耦（恢复只清窗+复位 lux_stale，不动本时间戳）。
+        self._stale_warn_ts: datetime | None = None
         self._eval_busy = False
         self._eval_pending = False
         self._cal_was_on = False
@@ -284,16 +289,16 @@ class ZoneRuntime:
             return
         lux_now = _parse_lux_state(new_state)
         if lux_now is None:
-            # F-104：非数字/非有限读数按数据不可信处理（一次 WARNING 节流、
-            # 清滤波窗口）；不排评估——闭环在 _async_compute_decision 同判据
-            # 处保持当前亮度
+            # F-104：非数字/非有限读数按数据不可信处理（WARNING 时间窗节流、
+            # 清滤波窗口，V1.6.0 P3）；不排评估——闭环在 _async_compute_
+            # decision 同判据处保持当前亮度
             self._mark_lux_stale("照度读数非数字或非有限值")
             return
-        if self._stale_warned:
-            # 恢复：清窗防断档前后读数混算（F-104）
+        if self.lux_stale:
+            # 恢复：清窗防断档前后读数混算（F-104）；只复位数据可信态，
+            # 不复位 WARNING 节流（交替抖动下每事件重来=刷屏，R11 发现 3）
             self._lux_window.clear()
         self.lux_stale = False
-        self._stale_warned = False
         self._lux_window.append(lux_now)
         self._schedule_evaluate("lux")
 
@@ -353,15 +358,31 @@ class ZoneRuntime:
                     )
 
     def _mark_lux_stale(self, reason: str) -> None:
-        """照度数据不可信的统一收口（F-104）：一次 WARNING 节流（_stale_
-        warned）、置 lux_stale 供页面显示、清空滤波窗口——坏值与断档前的
-        旧读数不得再进中值（V1.2.2 滤波只服务可信数据）。"""
+        """照度数据不可信的统一收口（F-104）：置 lux_stale 供页面显示、清空
+        滤波窗口——坏值与断档前的旧读数不得再进中值（V1.2.2 滤波只服务
+        可信数据）。WARNING 按时间窗节流（LUX_STALE_WARN_INTERVAL_S，V1.6.0
+        P3）：坏值期内至多一条，NaN↔有效交替读数同样至多 5 分钟一条（旧
+        「一次」布尔节流被每个有效样本复位，交替抖动每两事件刷屏——R11
+        报告发现 3）；节流窗口内的重复坏值落 DEBUG 可追。恢复（下一有效
+        读数）只复位数据可信态，不动节流时间戳。"""
         self._lux_window.clear()
-        if not self._stale_warned:
-            self._stale_warned = True
-            self.lux_stale = True
-            _LOGGER.warning(
-                "%s: 照度数据不可信（%s），保持当前亮度", self.zone_name, reason
+        now = dt_util.utcnow()
+        due = (
+            self._stale_warn_ts is None
+            or (now - self._stale_warn_ts).total_seconds()
+            >= LUX_STALE_WARN_INTERVAL_S
+        )
+        was = self.lux_stale
+        self.lux_stale = True
+        if due:
+            self._stale_warn_ts = now
+        if due or not was:
+            # due=节流窗口到期（响 WARNING）；not was=坏值期重入（状态从
+            # 可信→不可信，页面须刷新）——两者之外零 notify（交替抖动不打
+            # 满信号面）
+            _LOGGER.log(
+                logging.WARNING if due else logging.DEBUG,
+                "%s: 照度数据不可信（%s），保持当前亮度", self.zone_name, reason,
             )
             self.notify()
 
@@ -378,11 +399,11 @@ class ZoneRuntime:
             # F-104：非数字/非有限值与 stale 同路——闭环不得拿坏数据调灯
             self._mark_lux_stale("照度读数非数字或非有限值")
             return None, 0.0
-        if self._stale_warned:
-            # 恢复：清窗防断档前后读数混算（F-104）
+        if self.lux_stale:
+            # 恢复：清窗防断档前后读数混算（F-104）；只复位数据可信态，
+            # 不复位 WARNING 节流（与 _on_lux_event 恢复分支同语义）
             self._lux_window.clear()
         self.lux_stale = False
-        self._stale_warned = False
         # V1.2.2 读数滤波：瞬时值含量化噪声，中值窗口压平抖动
         self._lux_window.append(lux_now)
         lux_now = statistics.median(self._lux_window)
@@ -902,7 +923,17 @@ class ZoneRuntime:
         started = dt_util.utcnow()
         async with self._apply_lock:
             if pct is None:
-                await self._async_call_light("turn_off", {})
+                if not await self._async_call_light("turn_off", {}):
+                    # V1.6.0 P3（R11 报告发现 5）：基线关灯失败不得照常采样
+                    # ——灯物理仍亮（BLE 瞬断/服务失败）时基线=亮灯读数，
+                    # subtract_baseline 对所有档位统一减去偏高基线，产出偏低
+                    # 曲线让闭环长期过驱。与 turn_on 失败「本档作弃点」不同：
+                    # 基线没有弃点语义，唯一响亮出路是中止校准（页面显示
+                    # 「上次校准未能完成」，_async_run_calibration 的 except
+                    # CalibrationError 收口）。
+                    raise CalibrationError(
+                        "基线阶段无法关闭灯具（灯不可用或服务失败），已中止校准"
+                    )
                 self.commanded_pct = None
             else:
                 ok = await self._async_call_light("turn_on", {ATTR_BRIGHTNESS_PCT: pct})

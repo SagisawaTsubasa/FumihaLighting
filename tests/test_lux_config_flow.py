@@ -186,7 +186,13 @@ def test_options_chain_without_target_lux():
         )
     )
     assert second["type"] == "form" and second["step_id"] == "lux_advanced"
-    assert _schema_keys(second) == {"calibrate_step_pct", "manual_slope"}
+    assert _schema_keys(second) == {
+        "calibrate_step_pct",
+        "manual_slope",
+        "link_group",
+        "cross_fade",
+        "max_step_pct",
+    }
 
     final = run(
         flow.async_step_lux_advanced(

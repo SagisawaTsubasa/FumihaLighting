@@ -184,7 +184,7 @@ class ZoneRuntime:
         self._cross_fade: float = float(self.opts[CONF_CROSS_FADE])
         self._max_step_pct: float = float(self.opts[CONF_MAX_STEP_PCT])
         # 组内其他灯 → 本传感器的贡献曲线（校准协同采样产出），键=对方灯实体
-        self._cross_curves: dict[str, Any] = {}
+        self._cross_curves: dict[str, Curve] = {}
         # 传感器读数滑动窗口（V1.2.2）：评估用中值而非瞬时值——变化触发
         # 上报的量化噪声（±10 lx 级抖动）直通闭环会造成亮度狩猎。
         self._lux_window: deque[float] = deque(maxlen=5)
@@ -207,6 +207,8 @@ class ZoneRuntime:
             slope = float(self.opts[CONF_MANUAL_SLOPE])
             if slope > 0:
                 self.curve = curve_from_manual(slope)
+        # V1.3.0 联动组：组内其他灯对本传感器的交叉贡献曲线
+        self._cross_curves = await self.storage.async_load_cross_curves()
 
     @callback
     def start(self) -> None:
@@ -232,6 +234,18 @@ class ZoneRuntime:
         # module must not silently become a compensation target. The loop
         # resumes when the virtual light is switched on again (automation or
         # manual).
+        # V1.3.0 联动组: 组内其他灯的开关/调光影响本区 ambient——状态变化
+        # 触发本区重评估（仅评估，不接管对方的灯）。
+        if self.link_group:
+            for other in self.hass.data.get(DOMAIN, {}).get("lux", {}).values():
+                if other is self:
+                    continue
+                if other.link_group == self.link_group:
+                    self._unsubs.append(
+                        async_track_state_change_event(
+                            self.hass, [other.light_entity], self._on_linked_event
+                        )
+                    )
 
     async def async_stop(self) -> None:
         """Detach listeners and cancel/await in-flight tasks.
@@ -281,6 +295,12 @@ class ZoneRuntime:
         # (night-light module, manual) never revives compensation here, or
         # the two modules would fight over the same fixture.
         self.notify()
+
+    @callback
+    def _on_linked_event(self, event: Event[EventStateChangedData]) -> None:
+        """联动组内其他灯的状态变化——本区 ACTIVE 时重评估 ambient。"""
+        if self.mode == MODE_ACTIVE:
+            self._schedule_evaluate("linked")
 
     @callback
     def _on_lux_event(self, event: Event[EventStateChangedData]) -> None:
@@ -386,6 +406,43 @@ class ZoneRuntime:
             )
             self.notify()
 
+    def _linked_runtimes(self) -> list[ZoneRuntime]:
+        """同联动组的其他 runtime（V1.3.0）；未设标签返回空。"""
+        if not self.link_group:
+            return []
+        return [
+            other
+            for other in self.hass.data.get(DOMAIN, {}).get("lux", {}).values()
+            if other is not self and other.link_group == self.link_group
+        ]
+
+    def _external_contribution(self) -> float:
+        """组内其他灯对本传感器的当前照度贡献（FL-IMP 联动组）。
+
+        交叉曲线优先（校准协同采样产出，键=对方灯实体）；无交叉曲线时
+        近似 = 对方主曲线 × cross_fade。灯灭/读不到按 0。
+        """
+        total = 0.0
+        for other in self._linked_runtimes():
+            state = self.hass.states.get(other.light_entity)
+            if state is None or state.state != STATE_ON:
+                continue
+            brightness = state.attributes.get(ATTR_BRIGHTNESS)
+            if isinstance(brightness, (int, float)) and brightness > 0:
+                other_pct = min(100.0, brightness / 255.0 * 100)
+            elif other.commanded_pct is not None:
+                other_pct = other.commanded_pct
+            else:
+                continue
+            if other_pct <= 0:
+                continue
+            cross = self._cross_curves.get(other.light_entity)
+            if cross is not None:
+                total += cross.lux_at(other_pct)
+            elif other.curve is not None:
+                total += other.curve.lux_at(other_pct) * self._cross_fade
+        return total
+
     async def _async_compute_decision(
         self,
     ) -> tuple[Decision | None, float]:
@@ -407,6 +464,10 @@ class ZoneRuntime:
         # V1.2.2 读数滤波：瞬时值含量化噪声，中值窗口压平抖动
         self._lux_window.append(lux_now)
         lux_now = statistics.median(self._lux_window)
+        # V1.3.0 联动组: 扣除组内其他灯的贡献——否则对方的补偿会被本区
+        # 当成环境扰动，多灯同房间时互相拉锯（震荡根因）。先中值滤波压平
+        # 本传感器噪声，再扣外部贡献（对方灯状态属性无量化抖动问题）。
+        lux_now = max(0.0, lux_now - self._external_contribution())
 
         curve = self.curve
         if curve is None:

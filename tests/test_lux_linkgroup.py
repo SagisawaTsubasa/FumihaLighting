@@ -26,11 +26,12 @@ from custom_components.fumiha_lighting.lux.const import (
     CONF_DEADBAND_PCT,
     CONF_MIN_BRIGHTNESS_PCT,
 )
-from custom_components.fumiha_lighting.lux.logic import curve_from_manual
+from custom_components.fumiha_lighting.lux.logic import Decision, curve_from_manual
 from custom_components.fumiha_lighting.lux.runtime import (
     CalibrationError,
     ZoneRuntime,
 )
+from homeassistant.components.light import ATTR_BRIGHTNESS_PCT
 
 run = asyncio.run
 LOGGER = "custom_components.fumiha_lighting.lux.runtime"
@@ -454,3 +455,66 @@ def test_natural_completion_publishes_from_samples():
     _, cross = store.cross_saved[0]
     assert cross.source == "cross"
     assert b._cross_curves["light.a"] is cross
+
+
+# ---------------------------------------------------------------------------
+# 亮度缓变（WP4）
+# ---------------------------------------------------------------------------
+
+
+def _active_rt_with_light(hass_states, **extra):
+    hass = _make_hass(hass_states)
+    a = _rt(hass, "a", "light.a", "sensor.a", link="卫", mode="active", **extra)
+    a.decisions = []
+    a.last_decision = None
+    a.last_adjustment = None
+    calls = []
+
+    async def _call(service, data):
+        calls.append((service, data))
+        # 缓变后灯亮度跟随（模拟灯接受指令）——分步逼近的 current 演进
+        if service == "turn_on" and ATTR_BRIGHTNESS_PCT in data:
+            hass_states["light.a"] = _state(
+                brightness=round(data[ATTR_BRIGHTNESS_PCT] * 2.55)
+            )
+        return True
+
+    a._async_call_light = _call
+    return a, calls, hass_states
+
+
+def test_apply_ramps_stepwise_and_marks_reason():
+    """超距 set 单步限幅 + reason 追加「缓变」；后续评估分步逼近。"""
+    hass_states = {"light.a": _state(brightness=26)}  # current ≈10.2%
+    a, calls, hass_states = _active_rt_with_light(hass_states, _max_step_pct=20.0)
+
+    # 目标 100%，距 current 89.8 > 20 → 限到 30.2（reason 标缓变）
+    run(a._apply("lux", 100.0, Decision("set", 100.0, 30.0, 70.0, "compensation")))
+    assert calls == [("turn_on", {ATTR_BRIGHTNESS_PCT: 30})]
+    assert a.commanded_pct == pytest.approx(30.2, rel=0.001)
+    assert "缓变" in a.last_decision.reason
+
+    # 第二轮评估（目标仍 100%）：current 30.2 → 限到 50.2（继续逼近）
+    run(a._apply("lux", 100.0, Decision("set", 100.0, 30.0, 70.0, "compensation")))
+    assert calls[-1] == ("turn_on", {ATTR_BRIGHTNESS_PCT: 50})
+
+    # 逼近到位后（current 50.2 → 目标 65）：差 14.8 < 20 → 不变形不标记
+    run(a._apply("lux", 100.0, Decision("set", 65.0, 30.0, 35.0, "compensation")))
+    assert calls[-1] == ("turn_on", {ATTR_BRIGHTNESS_PCT: 65})
+    assert "缓变" not in a.last_decision.reason
+    assert a.last_decision.pct == pytest.approx(65.0)
+
+
+def test_apply_off_decision_not_ramped():
+    """off 决策不受缓变限制：直接 turn_off，不经限幅分支。"""
+    hass_states = {"light.a": _state(brightness=26)}
+    a, calls, _ = _active_rt_with_light(hass_states, _max_step_pct=20.0)
+    run(
+        a._apply(
+            "lux",
+            300.0,
+            Decision("off", None, 200.0, -50.0, "ambient at or above target"),
+        )
+    )
+    assert calls == [("turn_off", {})]
+    assert a.mode == "idle"

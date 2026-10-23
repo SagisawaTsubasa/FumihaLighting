@@ -533,6 +533,25 @@ class ZoneRuntime:
             if self.mode != MODE_ACTIVE or self._stopped:
                 return  # state moved on / runtime stopping while in flight
             if decision.action == "set":
+                # V1.3.0 亮度缓变（WP4）：单次决策斜率限制——目标亮度距当前
+                # 超过 max_step_pct 时只走一步（reason 追加「缓变」，pct 修正
+                # 为限幅后值），下轮评估继续逼近；off 决策不受缓变限制（关灯
+                # 不经本分支）。限幅边界复用既有机制：下界 min_brightness_pct、
+                # 上界 100%，不新增配置。
+                current = self._current_pct()
+                step = self._max_step_pct
+                ramped = min(decision.pct, current + step)
+                ramped = max(ramped, current - step)
+                target_pct = min(
+                    100.0,
+                    max(float(self.opts[CONF_MIN_BRIGHTNESS_PCT]), ramped),
+                )
+                if abs(decision.pct - current) > step:
+                    decision = replace(
+                        decision,
+                        pct=target_pct,
+                        reason=f"{decision.reason}（缓变）",
+                    )
                 ok = await self._async_call_light(
                     "turn_on", {ATTR_BRIGHTNESS_PCT: round(decision.pct)}
                 )

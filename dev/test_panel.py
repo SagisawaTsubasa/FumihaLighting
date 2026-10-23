@@ -690,7 +690,8 @@ def run_checks(browser, base: str) -> None:
         str(vis4),
     )
 
-    # 日间恒照度清单（V1.6.0 逐灯）：勾任意灯 → 日间亮度/色温行藏、虚拟灯行现
+    # 日间恒照度清单（V1.6.0 逐灯）：勾任意灯 → 虚拟灯行现；日间亮度/色温行
+    # 恒显（F-104 终裁：日间参数与 CI 解耦——非 CI 灯消费全局日间参数）
     page.evaluate(
         """() => {
           const d = window.__anlSettingsDialog;
@@ -702,10 +703,11 @@ def run_checks(browser, base: str) -> None:
     )
     vis5 = page.evaluate("() => window.__anlRowState()")
     check(
-        "anl visibility: CI list non-empty hides day rows, shows virtual light row",
-        bool(vis5) and not vis5["day_brightness"]
-        and not vis5["day_color_temp_kelvin"] and vis5["day_ci_virtual_light"]
-        and vis5["day_ci_virtual_light_display"] == "flex",
+        "anl visibility: CI list non-empty keeps day rows (F-104 decoupled), shows virtual light row",
+        bool(vis5) and vis5["day_brightness"]
+        and vis5["day_color_temp_kelvin"] and vis5["day_ci_virtual_light"]
+        and vis5["day_ci_virtual_light_display"] == "flex"
+        and vis5["day_brightness_display"] == "flex",
         str(vis5),
     )
 
@@ -720,7 +722,7 @@ def run_checks(browser, base: str) -> None:
     )
     vis6 = page.evaluate("() => window.__anlRowState()")
     check(
-        "anl visibility: CI list emptied restores day rows, hides virtual light row",
+        "anl visibility: CI list emptied keeps day rows (F-104 decoupled), hides virtual light row",
         bool(vis6) and vis6["day_brightness"] and vis6["day_color_temp_kelvin"]
         and not vis6["day_ci_virtual_light"]
         and vis6["day_brightness_display"] == "flex",

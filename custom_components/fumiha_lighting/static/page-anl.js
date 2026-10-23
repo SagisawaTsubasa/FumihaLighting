@@ -746,8 +746,11 @@ class AnlPage extends HTMLElement {
       show("end_offset", em !== "fixed");
       show("sun_entity", sm !== "fixed" || em !== "fixed");
       show("day_ci_lights", dayOn);
-      show("day_brightness", dayOn && !ciAny);
-      show("day_color_temp_kelvin", dayOn && !ciAny);
+      // F-104 终裁（用户拍板 2026-10-23）：全局日间参数行与 CI 完全解耦——
+      // 非 CI 灯消费全局日间参数，混合组/全 CI 组都恒显（只随 day_enabled）；
+      // 亮度恒定本身是逐灯开关（day_ci_lights），不在全局层表达
+      show("day_brightness", dayOn);
+      show("day_color_temp_kelvin", dayOn);
       show("day_ci_virtual_light", dayOn && ciAny);
       const extraTrans = extrasRows.some((r) => {
         if (!r.live || !r.transEl) return false;

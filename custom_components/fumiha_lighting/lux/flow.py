@@ -21,11 +21,14 @@ from ..const import CONF_KIND, KIND_LUX
 from .const import (
     CONF_AUTO_TURN_OFF,
     CONF_CAL_STEP_PCT,
+    CONF_CROSS_FADE,
     CONF_DEADBAND_LUX,
     CONF_DEADBAND_PCT,
     CONF_LIGHT_ENTITY,
+    CONF_LINK_GROUP,
     CONF_LUX_ENTITY,
     CONF_MANUAL_SLOPE,
+    CONF_MAX_STEP_PCT,
     CONF_MIN_BRIGHTNESS_PCT,
     CONF_SCAN_INTERVAL_S,
     CONF_TARGET_LUX,
@@ -225,6 +228,21 @@ class LuxZoneOptionsFlow(config_entries.OptionsFlow):
                         step=0.1,
                         unit_of_measurement="lx/%",
                         mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                # V1.3.0 联动组：同标签条目互认，ambient 扣除组内其他灯贡献
+                vol.Optional(CONF_LINK_GROUP): selector.TextSelector(),
+                vol.Required(CONF_CROSS_FADE): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0.1,
+                        max=1.0,
+                        step=0.05,
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                vol.Required(CONF_MAX_STEP_PCT): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=5, max=50, step=5, unit_of_measurement="%"
                     )
                 ),
             }

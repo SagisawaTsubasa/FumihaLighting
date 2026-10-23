@@ -175,7 +175,7 @@ def _serialize_curve(curve) -> dict | None:
     }
 
 
-def _serialize_lux_zone(runtime) -> dict:
+def _serialize_lux_zone(runtime, runtimes=None) -> dict:
     """One zone snapshot; sync reads only, safe in a handler."""
     last = runtime.last_decision
     last_adjustment = (
@@ -183,6 +183,19 @@ def _serialize_lux_zone(runtime) -> dict:
         if runtime.last_adjustment
         else None
     )
+    # V1.3.0 联动组：组标签+同组成员名单（zone_name）。成员在 web 层按
+    # 公开属性 link_group 自算（不直调 runtime 私有方法，ANL-F-003 教训）；
+    # 未设组两键为 None，页面不渲染联动组 chip。
+    link_group = getattr(runtime, "link_group", "") or None
+    link_peers = None
+    if link_group and runtimes:
+        peers = [
+            other.zone_name
+            for other in runtimes.values()
+            if other is not runtime
+            and getattr(other, "link_group", "") == link_group
+        ]
+        link_peers = peers or None
     return {
         "entry_id": runtime.entry_id,
         "zone_name": runtime.zone_name,
@@ -210,6 +223,8 @@ def _serialize_lux_zone(runtime) -> dict:
         "last_adjustment": last_adjustment,
         "light_entity": runtime.light_entity,
         "lux_entity": runtime.lux_entity,
+        "link_group": link_group,
+        "link_peers": link_peers,
     }
 
 
@@ -223,7 +238,8 @@ class LuxOverviewView(HomeAssistantView):
     @require_admin
     async def get(self, request: web.Request) -> web.Response:
         hass = request.app["hass"]
-        zones = [_serialize_lux_zone(rt) for rt in _lux_runtimes(hass).values()]
+        runtimes = _lux_runtimes(hass)
+        zones = [_serialize_lux_zone(rt, runtimes) for rt in runtimes.values()]
         zones.sort(key=lambda z: z["zone_name"])
         return web.json_response({"zones": zones})
 

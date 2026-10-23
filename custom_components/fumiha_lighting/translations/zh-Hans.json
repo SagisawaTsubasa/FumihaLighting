@@ -126,11 +126,17 @@
         "description": "校准与回退参数。",
         "data": {
           "calibrate_step_pct": "校准步长（%）",
-          "manual_slope": "手动曲线（lux / 1%）"
+          "manual_slope": "手动曲线（lux / 1%）",
+          "link_group": "联动组标签",
+          "cross_fade": "交叉贡献近似系数",
+          "max_step_pct": "单步最大亮度变化（%）"
         },
         "data_description": {
           "calibrate_step_pct": "校准扫描步长（5=细扫，10=粗扫；连续超时自动升为 10）。",
-          "manual_slope": "未校准时的回退线性曲线（每 1% 亮度增加的 lux）；0 为禁用。"
+          "manual_slope": "未校准时的回退线性曲线（每 1% 亮度增加的 lux）；0 为禁用。",
+          "link_group": "同标签的条目互认为同一照明空间：环境光估计会扣除组内其他灯的贡献（有交叉校准曲线时用曲线，否则按近似系数）；留空停用。",
+          "cross_fade": "无交叉曲线时按对方主曲线贡献的该比例近似（0.1~1.0）。",
+          "max_step_pct": "闭环单次决策的亮度变化上限，大幅修正分多步逼近；关灯决策不受限。"
         }
       },
       "settings": {

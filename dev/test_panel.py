@@ -211,6 +211,12 @@ def run_checks(browser, base: str) -> None:
     )
     check("lux: decisions render", "22:41:03" in lux, "")
     check("lux: target metric", "150 lx" in lux, "")
+    # V1.3.0 联动组 chip：组标签+成员名单（page-lux.js _zoneCard）
+    check(
+        "lux: link group chip renders label and peers",
+        "联动组「卫生间」" in lux and "与 干区 交叉扣除" in lux,
+        lux[:200],
+    )
 
     # target REST write
     page.evaluate(

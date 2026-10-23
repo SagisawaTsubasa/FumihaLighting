@@ -126,11 +126,17 @@
         "description": "Fallback and calibration tuning.",
         "data": {
           "calibrate_step_pct": "Calibration step (%)",
-          "manual_slope": "Manual curve (lux per 1%)"
+          "manual_slope": "Manual curve (lux per 1%)",
+          "link_group": "Link group label",
+          "cross_fade": "Cross contribution factor",
+          "max_step_pct": "Max brightness change per step (%)"
         },
         "data_description": {
           "calibrate_step_pct": "Sweep step during calibration (5 = fine, 10 = coarse; auto-upgrades to 10 after repeated timeouts).",
-          "manual_slope": "Fallback linear curve (added lux per 1% brightness) when no calibration has been run; 0 disables."
+          "manual_slope": "Fallback linear curve (added lux per 1% brightness) when no calibration has been run; 0 disables.",
+          "link_group": "Zones sharing the same label act as one lighting space: ambient estimates deduct the other lights' contribution (cross curves from calibration when available, otherwise approximated). Leave empty to disable.",
+          "cross_fade": "Share of the other light's calibrated contribution counted for this sensor when no cross curve exists (0.1 to 1.0).",
+          "max_step_pct": "Cap on brightness change per closed-loop decision; large corrections approach the target in steps. Off decisions are not limited."
         }
       },
       "settings": {

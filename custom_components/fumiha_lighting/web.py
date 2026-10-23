@@ -62,8 +62,8 @@ from .anl.const import (
 )
 from .anl.const import DOMAIN as _  # noqa: F401 — 子包自证
 from .anl.manager import (
-    entry_effective_day_ci_lights,
     async_release_virtual_light,
+    entry_effective_day_ci_lights,
 )
 from .const import (
     API_BASE,

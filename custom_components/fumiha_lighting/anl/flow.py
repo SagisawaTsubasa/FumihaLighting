@@ -85,8 +85,8 @@ from .const import (
     DOMAIN,
 )
 from .manager import (
-    entry_effective_day_ci_lights,
     async_release_virtual_light,
+    entry_effective_day_ci_lights,
 )
 
 _LOGGER = logging.getLogger(__name__)

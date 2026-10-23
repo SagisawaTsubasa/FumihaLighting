@@ -784,11 +784,11 @@ def test_entry_effective_day_ci_lights_public_alias():
     """ANL-F-109：读入迁移单一来源改公开名（ANL-F-003 家规「web 层禁调
     私有」，ci_configured 同款 F-061）——公开名跨四层可导入、兼容别名同
     对象、新旧两形态行为不变。"""
+    from custom_components.fumiha_lighting.anl import flow
     from custom_components.fumiha_lighting.anl.manager import (
         _entry_effective_day_ci_lights,
         entry_effective_day_ci_lights,
     )
-    from custom_components.fumiha_lighting.anl import flow
 
     assert entry_effective_day_ci_lights is _entry_effective_day_ci_lights
     assert web.entry_effective_day_ci_lights is entry_effective_day_ci_lights

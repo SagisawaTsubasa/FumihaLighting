@@ -29,8 +29,8 @@ from .anl.const import (
     SERVICE_TRIGGER_NOW,
 )
 from .anl.manager import (
-    entry_effective_day_ci_lights,
     async_release_virtual_light,
+    entry_effective_day_ci_lights,
 )
 from .const import CONF_KIND, DOMAIN, KIND_ANL, KIND_LUX
 from .lux.const import SERVICE_CALIBRATE

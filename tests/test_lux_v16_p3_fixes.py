@@ -41,6 +41,11 @@ def _bare_runtime(**attrs) -> ZoneRuntime:
     rt._lux_window = deque(maxlen=5)
     rt.notify = lambda: None
     rt._schedule_evaluate = lambda _trigger: None
+    # 联动组（V1.3.0）默认无组：_linked_runtimes 空返回，协同采样零行为；
+    # 两个暂存与生产 __init__ 同构（F-102 走 _async_cal_step 会触碰）。
+    rt.link_group = ""
+    rt._cal_cross_samples = {}
+    rt._cal_cross_last_lc = {}
     for k, v in attrs.items():
         setattr(rt, k, v)
     return rt

@@ -2239,6 +2239,9 @@ def test_calibrate_natural_completion_exits_calibrating():
             "lux_stale": False,
             "signal": "fumiha_lighting_lux1_update",
             "notify": lambda: None,
+            "link_group": "",  # 无组：_linked_runtimes 空返回（协同采样零行为）
+            "_cal_cross_samples": {},
+            "_cal_cross_last_lc": {},
             "storage": _Store(),
             "_async_sweep": lambda step: _async_return(sweep_result),
             "_async_restore_light": fake_restore,

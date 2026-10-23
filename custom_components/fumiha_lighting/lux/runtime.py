@@ -185,6 +185,15 @@ class ZoneRuntime:
         self._max_step_pct: float = float(self.opts[CONF_MAX_STEP_PCT])
         # 组内其他灯 → 本传感器的贡献曲线（校准协同采样产出），键=对方灯实体
         self._cross_curves: dict[str, Curve] = {}
+        # 联动组协同采样暂存（WP3.1，仅校准期存活）：本校准区为 X 时，顺带
+        # 记录同组 Y 区传感器读数。键=Y 区灯实体（=交叉曲线存储键，与
+        # _cross_curves/async_save_cross_curve 对齐），值={档位→样本列表}
+        # （None=基线档）；_cal_cross_last_lc 记各 Y 传感器上次已记读数的
+        # last_changed，防同一条读数在轮询中重复入样。填充=_async_cal_step、
+        # 消费=_async_publish_cross_curves、废弃=_async_run_calibration
+        # finally（失败/取消一并废弃，不产出半截曲线）。
+        self._cal_cross_samples: dict[str, dict[float | None, list[float]]] = {}
+        self._cal_cross_last_lc: dict[str, datetime | None] = {}
         # 传感器读数滑动窗口（V1.2.2）：评估用中值而非瞬时值——变化触发
         # 上报的量化噪声（±10 lx 级抖动）直通闭环会造成亮度狩猎。
         self._lux_window: deque[float] = deque(maxlen=5)
@@ -833,6 +842,10 @@ class ZoneRuntime:
             self.curve = new_curve
             self._cal_committed = True  # 曲线已采纳，此后取消视同完成
             await self.storage.async_save_curve(self.curve)
+            # V1.3.0 联动组（WP3.2）：主曲线采纳后产出交叉曲线——失败边界
+            # （WP3.4）由调用位置保证：主曲线失败走不到这里，暂存在 finally
+            # 一并废弃，不产出半截曲线。
+            await self._async_publish_cross_curves()
             _LOGGER.info(
                 "%s: 校准完成，最大增量 %.0f lx，20-80%% 平均斜率 %.2f lx/%%",
                 self.zone_name,
@@ -851,6 +864,11 @@ class ZoneRuntime:
             # Sync first (cannot be interrupted), then best-effort restore.
             # A pending turn-off skips the restore: no point flashing the
             # original level just to switch it off again.
+            # V1.3.0 联动组（WP3.4）：协同采样暂存随本次校准废弃——产出已在
+            # 主曲线采纳后完成；失败/取消路径丢弃半截数据（错误必须响，由
+            # 各失败分支的 WARNING 承担）。
+            self._cal_cross_samples = {}
+            self._cal_cross_last_lc = {}
             self._finish_calibration()
             if captured and not self._cal_pending_off:
                 # Best-effort: cancellation landing on this await abandons it.
@@ -1030,6 +1048,25 @@ class ZoneRuntime:
                         samples.append(value)
                         last_lc = lc
                         quiet_deadline = now + timedelta(seconds=CAL_QUIET_PERIOD_S)
+            # V1.3.0 联动组协同采样（WP3.1）：同组 Y 区传感器在同一时间窗内
+            # 的新读数顺带入样（同一 started 判据与防重 last_changed）。Y 已
+            # 被 start_calibration 挂起为 IDLE（不调灯不评估），本窗内其读数
+            # 只反映 X 的调光——互斥保证无污染。
+            for other in self._linked_runtimes():
+                o_state = self.hass.states.get(other.lux_entity)
+                if o_state is None:
+                    continue
+                o_lc = o_state.last_changed
+                if o_lc < started or (
+                    o_lc == self._cal_cross_last_lc.get(other.light_entity)
+                ):
+                    continue
+                o_value = _parse_lux_state(o_state)
+                if o_value is not None:
+                    self._cal_cross_last_lc[other.light_entity] = o_lc
+                    self._cal_cross_samples.setdefault(
+                        other.light_entity, {}
+                    ).setdefault(pct, []).append(o_value)
             if now >= hard_deadline:
                 _LOGGER.warning(
                     "%s: 校准 %s 档静默期超时（连续上报不停），按已采样本收口",
@@ -1058,6 +1095,77 @@ class ZoneRuntime:
             else:
                 await self._async_call_light("turn_off", {})
                 self.commanded_pct = None
+
+    async def _async_publish_cross_curves(self) -> None:
+        """把协同采样数据产出为各 Y 区的交叉曲线（计划书 §WP3.2）。
+
+        管线与主曲线同型：combine（per-pct 单遍中值）/subtract/smooth3/
+        monotonic/build_curve(source="cross")。单 Y 失败只 WARNING+跳过
+        （运行时按近似系数兜底），不影响其他 Y、不污染主曲线成功态；质量
+        门与主曲线同款（CAL_MIN_USEFUL_LUX），不达门不产出半截曲线。
+        """
+        for other in self._linked_runtimes():
+            try:
+                per_pct = self._cal_cross_samples.get(other.light_entity)
+                baseline_raw = per_pct.get(None) if per_pct else None
+                if not baseline_raw:
+                    _LOGGER.warning(
+                        "%s: 联动组交叉采样缺 %s 的基线档读数，跳过其交叉曲线"
+                        "（运行时按近似系数兜底）",
+                        self.zone_name,
+                        other.zone_name,
+                    )
+                    continue
+                medians = {
+                    pct: statistics.median(samples)
+                    for pct, samples in per_pct.items()
+                    if pct is not None and samples
+                }
+                if not medians:
+                    _LOGGER.warning(
+                        "%s: 联动组交叉采样无 %s 的有效档位读数，跳过其交叉曲线"
+                        "（运行时按近似系数兜底）",
+                        self.zone_name,
+                        other.zone_name,
+                    )
+                    continue
+                points = enforce_monotonic(
+                    smooth3(
+                        subtract_baseline(
+                            combine_passes(medians, {}),
+                            statistics.median(baseline_raw),
+                        )
+                    )
+                )
+                max_gain = max(v for _, v in points) if points else 0.0
+                if len(points) < 2 or max_gain < CAL_MIN_USEFUL_LUX:
+                    _LOGGER.warning(
+                        "%s: %s 的交叉曲线采样点不足或贡献过低"
+                        "（最大增量 %.1f lx），不产出（运行时按近似系数兜底）",
+                        self.zone_name,
+                        other.zone_name,
+                        max_gain,
+                    )
+                    continue
+                cross_curve = build_curve(points, source="cross")
+                await other.storage.async_save_cross_curve(
+                    self.light_entity, cross_curve
+                )
+                other._cross_curves[self.light_entity] = cross_curve
+                other.notify()
+                _LOGGER.info(
+                    "%s: 联动组交叉曲线已产出（%s 侧，最大增量 %.0f lx）",
+                    self.zone_name,
+                    other.zone_name,
+                    cross_curve.max_lux,
+                )
+            except Exception as err:  # noqa: BLE001 — 单 Y 失败不得污染主曲线成功态
+                _LOGGER.exception(
+                    "%s: 联动组交叉曲线产出失败（%s 侧，跳过）：%s",
+                    self.zone_name,
+                    other.zone_name,
+                    err,
+                )
 
     def _attr_pct(self, state) -> float | None:
         brightness = state.attributes.get(ATTR_BRIGHTNESS) if state else None

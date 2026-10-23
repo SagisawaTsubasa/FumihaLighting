@@ -19,7 +19,9 @@
  * single sync function, event delegation), and a day constant-illumination
  * mode hands the day segment over to the lux-side closed loop instead of
  * direct real-light control. V1.6.0: the takeover list is per-light
- * (day_ci_lights checkbox row) while the virtual light stays group-level.
+ * (day_ci_lights). V1.6.1: the toggle moved into the per-light dialog;
+ * the group dialog only keeps the group-level virtual light row (always
+ * visible while day mode is on).
  * ========================================================================== */
 
 const SELF_VER = new URL(import.meta.url).search;
@@ -550,38 +552,6 @@ class AnlPage extends HTMLElement {
       return rows[key];
     };
 
-    /* 日间恒照度接管清单（V1.6.0 单灯化）：组内灯逐灯勾选 → day_ci_lights。
-     * 勾选集合经 bind 注册为 inputs.day_ci_lights（read=选中实体数组）；
-     * 行容器 data-anl-row 供测试/排查定位。 */
-    const ciLightCbs = (config.lights || []).map((eid) => {
-      const cb = kit.el("input", { type: "checkbox", "data-ci-light": eid });
-      if ((config.day_ci_lights || []).includes(eid)) cb.checked = true;
-      return cb;
-    });
-    const ciSelection = () =>
-      ciLightCbs.filter((cb) => cb.checked).map((cb) => cb.getAttribute("data-ci-light"));
-    const lightLabel = (eid) => {
-      const st = this._hass && this._hass.states && this._hass.states[eid];
-      return (st && st.attributes && st.attributes.friendly_name) || eid;
-    };
-    const buildCiLightsRow = () => {
-      const box = kit.el(
-        "div",
-        { style: { display: "flex", flexWrap: "wrap", gap: "10px" } },
-        ciLightCbs.map((cb) =>
-          kit.el(
-            "label",
-            { style: { display: "flex", alignItems: "center", gap: "4px" } },
-            cb,
-            kit.el("span", { text: lightLabel(cb.getAttribute("data-ci-light")) })
-          )
-        )
-      );
-      bind("day_ci_lights", box, ciSelection, "日间恒照度灯");
-      rows.day_ci_lights = dlgRow("日间恒照度灯（恒照度接管）", box);
-      return [rows.day_ci_lights];
-    };
-
     /* 额外时段动态行 */
     const extrasRows = [];
     const extrasBox = kit.el("div");
@@ -678,10 +648,6 @@ class AnlPage extends HTMLElement {
       ]),
       dlgSection("时段参数", [
         checkInput("day_enabled", !!config.day_enabled, "启用日间模式"),
-        // 日间恒照度（V1.6.0 单灯化）：接管清单=逐灯勾选（day_ci_lights），
-        // 任一灯勾选即显示组级虚拟恒照度灯行；日间亮度/色温行在清单非空时
-        // 隐藏（值保留，非 CI 灯日间照常）
-        ...buildCiLightsRow(),
         numField("params", "brightness", config.brightness, "夜间亮度"),
         numField("params", "color_temp_kelvin", config.color_temp_kelvin, "夜间色温"),
         numField("params", "day_brightness", config.day_brightness, "日间亮度"),
@@ -721,6 +687,9 @@ class AnlPage extends HTMLElement {
       // 内联 flex，整行退化为 block 布局；必须显式写回 "flex"
       if (rows[key]) rows[key].style.display = visible ? "flex" : "none";
     };
+    // V1.6.1：清单编辑面移入逐灯弹窗——只读存量清单作判据（虚拟灯行显隐、
+    // 过渡提示与保存守卫共用；弹窗生命周期内恒定）
+    const ciAny = (config.day_ci_lights || []).length > 0;
     const rawNum = (key) => {
       const field = inputs[key];
       const v = field ? parseFloat(field.el.value) : NaN;
@@ -730,28 +699,19 @@ class AnlPage extends HTMLElement {
       const sm = inputs.start_mode.el.value;
       const em = inputs.end_mode.el.value;
       const dayOn = inputs.day_enabled.el.checked;
-      // F-065（V1.6.0 逐灯版）：CI 是日间子功能——日间模式关闭时自动清空
-      // 接管清单勾选（行本就隐藏；清空让全量键提交自洽，不触服务端
-      // day_ci_lights×day_enabled 400）。必须在读 ciAny 之前执行，
-      // 显隐与提交值同源。
-      if (!dayOn) {
-        ciLightCbs.forEach((cb) => {
-          cb.checked = false;
-        });
-      }
-      const ciAny = ciSelection().length > 0;
       show("trigger_time", sm === "fixed");
       show("start_offset", sm !== "fixed");
       show("end_time", em === "fixed");
       show("end_offset", em !== "fixed");
       show("sun_entity", sm !== "fixed" || em !== "fixed");
-      show("day_ci_lights", dayOn);
       // F-104 终裁（用户拍板 2026-10-23）：全局日间参数行与 CI 完全解耦——
       // 非 CI 灯消费全局日间参数，混合组/全 CI 组都恒显（只随 day_enabled）；
       // 亮度恒定本身是逐灯开关（day_ci_lights），不在全局层表达
       show("day_brightness", dayOn);
       show("day_color_temp_kelvin", dayOn);
-      show("day_ci_virtual_light", dayOn && ciAny);
+      // 虚拟灯行恒随日间模式：清单入口在逐灯弹窗——若此处按 ciAny 藏，
+      // 「先逐灯勾接管→被拦缺虚拟灯→全局无入口补配」会构成死锁
+      show("day_ci_virtual_light", dayOn);
       const extraTrans = extrasRows.some((r) => {
         if (!r.live || !r.transEl) return false;
         const v = parseFloat(r.transEl.value);
@@ -832,13 +792,14 @@ class AnlPage extends HTMLElement {
           "only_when_on",
           "respect_manual",
         ].forEach((k) => pick(params, k));
-        // 日间恒照度（V1.6.0 单灯化）：接管清单=逐灯勾选，空清单=CI 关
-        // （合法，不走 pick()）；清单非空而虚拟灯空 → 显式拦保存报错
-        //（与后端 400 同判据前端前置）
-        params.day_ci_lights = ciSelection();
+        // V1.6.1：清单编辑面在逐灯弹窗——全局保存缺省 day_ci_lights 键
+        //（patch 语义不动存量值）；但存量清单非空时虚拟灯仍是必需
+        //（F-107 同判据：不许「清单非空+虚拟灯空」组合落盘）
         const ciVirtualLight = inputs.day_ci_virtual_light.read();
-        if (params.day_ci_lights.length && !ciVirtualLight) {
-          throw new Error("日间恒照度需填写虚拟恒照度灯实体");
+        if (ciAny && !ciVirtualLight) {
+          throw new Error(
+            "日间恒照度需填写虚拟恒照度灯实体（或先在逐灯设置取消全部接管）"
+          );
         }
         params.day_ci_virtual_light = ciVirtualLight;
         const extras = extrasRows.filter((r) => r.live).map((r) => r.read());
@@ -900,8 +861,20 @@ class AnlPage extends HTMLElement {
     // 日间键在后端可选，缺失时回落全局而不是留空阻断保存
     const pick = (key) => (ovr && ovr[key] != null ? ovr[key] : config[key]);
 
+    // 日间恒照度接管（V1.6.1 逐灯开关）：勾选态读存储值 day_ci_lights
+    //（编辑面与数据同源；生效值 ciOn 只决定日间段显隐与接管说明）
+    const ciList = (config.day_ci_lights || []).slice();
+    const ciListOriginal = ciList.includes(gid);
+    const ciCb = kit.el("input", {
+      type: "checkbox",
+      "data-anl-ci-toggle": "1",
+      ...(ciListOriginal ? { checked: true } : {}),
+    });
+    const ciRow = dlgRow("日间恒照度接管", ciCb);
+
     const followCb = kit.el("input", {
       type: "checkbox",
+      "data-anl-follow-toggle": "1",
       ...(ovr ? {} : { checked: true }),
     });
     const followRow = dlgRow("跟随全局设置", followCb);
@@ -956,6 +929,7 @@ class AnlPage extends HTMLElement {
     syncDisabled();
 
     const body = [
+      ciRow,
       followRow,
       dlgSection("夜间参数", nightRowEls),
       ...(dayVisible ? [dlgSection("日间参数", dayRowEls)] : []),
@@ -979,54 +953,69 @@ class AnlPage extends HTMLElement {
       (this._hass?.states?.[gid]?.attributes?.friendly_name || gid) + " — 逐灯设置",
       body,
       async () => {
+        // V1.6.1：恒照度接管开关（逐灯）——读存量清单增/删本灯后整表提交；
+        // 与 overrides 修复/恢复合并为一次多分节 POST（patch 缺省分节=不改）
+        const patch = {};
+        const wantCi = ciCb.checked;
+        if (wantCi !== ciListOriginal) {
+          if (wantCi && !dayOn) {
+            throw new Error("日间恒照度需先在全局设置启用日间模式");
+          }
+          if (wantCi && !(config.day_ci_virtual_light || "")) {
+            throw new Error("日间恒照度需先在全局设置填写虚拟恒照度灯实体");
+          }
+          const nextList = wantCi
+            ? ciList.concat([gid])
+            : ciList.filter((e) => e !== gid);
+          patch.params = { day_ci_lights: nextList };
+        }
         if (followCb.checked) {
-          await kit.api(this._hass).post(CONFIG_URL, {
-            entry_id: m.entry_id,
-            patch: { overrides_remove: [gid] },
-          });
-          kit.ack(this.shadowRoot, { ok: true, label: "已恢复跟随全局" });
-          return;
-        }
-        const override = {};
-        // 夜间对同判据（ANL-F-040）：值=全局不写覆盖——只为真正改动的键建
-        // 覆盖，全局再改夜间参数时本灯继续跟随
-        for (const k of ["brightness", "color_temp_kelvin"]) {
-          const v = readNum(refs[k], k === "brightness" ? "夜间亮度" : "夜间色温");
-          if (v !== config[k]) override[k] = v;
-        }
-        if (dayVisible) {
-          // 与 extras 同判据（ANL-F-033）：值=全局就不写覆盖——预填值就是
-          // 全局值，无条件写会把当时的全局日间参数钉死成覆盖，之后全局
-          // 改日间参数对该灯永久失效
-          for (const k of ["day_brightness", "day_color_temp_kelvin"]) {
-            const v = readNum(refs[k], k === "day_brightness" ? "日间亮度" : "日间色温");
+          patch.overrides_remove = [gid];
+        } else {
+          const override = {};
+          // 夜间对同判据（ANL-F-040）：值=全局不写覆盖——只为真正改动的键建
+          // 覆盖，全局再改夜间参数时本灯继续跟随
+          for (const k of ["brightness", "color_temp_kelvin"]) {
+            const v = readNum(refs[k], k === "brightness" ? "夜间亮度" : "夜间色温");
             if (v !== config[k]) override[k] = v;
           }
-        } else if (ovr) {
-          // 未渲染字段不因本次保存丢失（ANL-F-027 静默丢弃面）：日间已关
-          // 或日间恒照度接管（V1.5.0）时都不渲染日间段——保留该灯既有的
-          // 日间覆盖键，恢复跟随条件后仍然生效
-          if (ovr.day_brightness != null) {
-            override.day_brightness = ovr.day_brightness;
-          }
-          if (ovr.day_color_temp_kelvin != null) {
-            override.day_color_temp_kelvin = ovr.day_color_temp_kelvin;
-          }
-        }
-        if (extras.length) {
-          // 只提交与全局不同的行（ANL-F-027 固化面）：值=全局的行不写覆盖
-          // ——整灯替换语义下旧覆盖随之消失，等效「该时段恢复跟随全局」
-          const ovrExtras = {};
-          extras.forEach((extra, i) => {
-            const b = readNum(extraRefs[i].b, "额外时段亮度");
-            const k = readNum(extraRefs[i].k, "额外时段色温");
-            if (b !== extra.brightness || k !== extra.color_temp_kelvin) {
-              ovrExtras[String(i)] = { brightness: b, color_temp_kelvin: k };
+          if (dayVisible) {
+            // 与 extras 同判据（ANL-F-033）：值=全局就不写覆盖——预填值就是
+            // 全局值，无条件写会把当时的全局日间参数钉死成覆盖，之后全局
+            // 改日间参数对该灯永久失效
+            for (const k of ["day_brightness", "day_color_temp_kelvin"]) {
+              const v = readNum(refs[k], k === "day_brightness" ? "日间亮度" : "日间色温");
+              if (v !== config[k]) override[k] = v;
             }
-          });
-          if (Object.keys(ovrExtras).length) override.extras = ovrExtras;
+          } else if (ovr) {
+            // 未渲染字段不因本次保存丢失（ANL-F-027 静默丢弃面）：日间已关
+            // 或日间恒照度接管时都不渲染日间段——保留该灯既有的日间覆盖键，
+            // 恢复跟随条件后仍然生效
+            if (ovr.day_brightness != null) {
+              override.day_brightness = ovr.day_brightness;
+            }
+            if (ovr.day_color_temp_kelvin != null) {
+              override.day_color_temp_kelvin = ovr.day_color_temp_kelvin;
+            }
+          }
+          if (extras.length) {
+            // 只提交与全局不同的行（ANL-F-027 固化面）：值=全局的行不写覆盖
+            // ——整灯替换语义下旧覆盖随之消失，等效「该时段恢复跟随全局」
+            const ovrExtras = {};
+            extras.forEach((extra, i) => {
+              const b = readNum(extraRefs[i].b, "额外时段亮度");
+              const k = readNum(extraRefs[i].k, "额外时段色温");
+              if (b !== extra.brightness || k !== extra.color_temp_kelvin) {
+                ovrExtras[String(i)] = { brightness: b, color_temp_kelvin: k };
+              }
+            });
+            if (Object.keys(ovrExtras).length) override.extras = ovrExtras;
+          }
+          if (Object.keys(override).length) {
+            patch.overrides = { [gid]: override };
+          }
         }
-        if (!Object.keys(override).length) {
+        if (!patch.params && !patch.overrides && !patch.overrides_remove) {
           // 后端拒绝空覆盖（ANL-F-040）；这里提前给出可读提示
           throw new Error(
             "没有改任何值（全部与全局一致）。如需恢复跟随全局，请保持勾选「跟随全局设置」"
@@ -1034,7 +1023,7 @@ class AnlPage extends HTMLElement {
         }
         await kit.api(this._hass).post(CONFIG_URL, {
           entry_id: m.entry_id,
-          patch: { overrides: { [gid]: override } },
+          patch,
         });
         kit.ack(this.shadowRoot, { ok: true, label: "逐灯设置已保存，正在应用" });
       },

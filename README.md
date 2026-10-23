@@ -43,7 +43,7 @@ HA 原生「配置」（options 流）与向导同字段同存储，同样不含
 - 虚拟灯服务失败 → WARNING（每夜灯组节流一次）+ 该灯回落日间参数直控，错误必响但保可用；
 - 一轮触发对虚拟灯至多一次 turn_on/turn_off（轮级去重）；「仅调整已开启的灯」按灯准入——全部 CI 接管灯关着时不开虚拟灯。
 
-CI 的编辑入口在夜灯助手页面设置弹窗（逐灯勾选接管清单 + 虚拟灯选择），向导不配 CI；跨字段校验（清单非空需 day_enabled 与虚拟灯）由 REST 侧 400 承担。
+CI 的编辑入口（V1.6.1 起）在夜灯助手页面的**逐灯设置弹窗**（「日间恒照度接管」开关），全局设置弹窗只保留组级虚拟灯选择（日间模式开启时常显）；向导不配 CI。跨字段校验（清单非空需 day_enabled 与虚拟灯）前端前置拦截 + REST 侧 400 兜底。
 
 ## 开发
 
@@ -57,6 +57,7 @@ python dev/test_panel.py  # Playwright 冒烟
 
 ## 版本历史
 
+- **V1.6.1（2026-10-23）**：恒照度接管开关移入逐灯设置弹窗（「日间恒照度接管」勾选，读写 `day_ci_lights`，与覆盖修复合并为一次多分节保存）；全局设置弹窗移除接管清单行，虚拟灯行改为日间模式开启时常显（消除「先勾接管被拦缺虚拟灯、全局又无入口补配」死锁）；manifest 版本戳随之 bump 保前端缓存刷新。
 - **V1.6.0（2026-10-22）**：日间恒照度单灯化——①新键 `day_ci_lights`（组内 CI 接管灯清单）取代全局 `day_ci_enabled`；存量条目读入迁移（旧键 true → 灯集全集 / false → []，零回写，旧键落盘侧 pop）；②虚拟灯保持组级一盏；③生效语义逐灯化：`_ci_active_for_light` 四消费点（触发/监听/计划步/清单整集）、非 CI 灯日间照常（日侧过渡带、日间参数、逐灯日间覆盖复活）、轮级对虚拟灯至多一次 turn_on/turn_off（F-072 保留）、only_when_on 按灯准入、ensure 失败该灯回落日间参数直控；④`transitions_active` 重定义为「存在任一灯的生效带」（全 CI 组仅剩日侧带不谎报）；⑤web：day_ci_lights 灯集子集校验 + 本集成虚拟灯注册表拒绝、跨字段 400（清单非空需 day_enabled 与虚拟灯）、归还判据改「新配置不再引用同一虚拟灯」；⑥向导剥 CI 两键，`day_ci_lights`/`day_ci_virtual_light` 移入 GUI 携带键（存量条目携带时展开为当时灯集，reconfigure 不再静默清 CI）；⑦V1.5.0 批 R11 存量 P3 六项随批清偿（R10-6 文案残留两处含 5% 最坏口径算术、F-102/F-104 回归钉、NaN↔有效交替读数 WARNING 时间窗节流、lux setup 失败回滚、基线步 turn_off 失败响亮终止、calibrate 服务 schema 改 `cv.entity_ids`）
 - **V1.5.0（2026-10-19）**：夜灯日间恒照度模式 + 设置弹窗条件显隐——①夜灯组新增 `day_ci_enabled`/`day_ci_virtual_light`：日间段不直控真实灯，改为驱动恒照度虚拟灯（事件驱动：白天开灯/触发落日间 → 开虚拟灯交 lux 闭环；夜间开始锚点/触发落夜间 → 关虚拟灯归还后按夜灯参数直控；联动开灯绝不带亮度，防落 lux passthrough）；②CI 下日间参数与逐灯日间覆盖保留存储不生效，过渡带含日间侧的不生成步进；③虚拟灯服务失败 WARNING 节流 + 回落日间参数直控；④`POST anl/config` 校验虚拟灯存在性与 light domain；⑤设置弹窗条件显隐（勾 CI 才显虚拟灯选择、隐藏日间参数行，前端半批）；⑥向导参数步平铺补两字段（en/zh 翻译同步）；⑦首审修复批——额外时段起点定时器（无过渡带 `transition=0` 的时段亦按时生效，修复历史缺口）、CI 下跨入日间窗口的过渡步进跳过（transitions_active 按生效带计）、CI 停用/改指/删条目自动归还旧虚拟灯（web/config_flow/删除钩子三挂点）、虚拟灯身份校验改实体注册表（本集成 platform+light 域）、CI 开而虚拟灯为空在向导与 REST 双侧 400/表单拦截、灯组拒绝本集成虚拟灯；⑧R2 复验修复——CI 生效判据含日间模式（day_enabled 关时 CI 完全不生效且快照不谎报）、extra 起点与过渡带互让（带内计划步让位于 extra 时段，transition=0 重叠告警）、跨条目归还检查、虚拟灯可用性预检、重复 start 校验、；⑨R3 复验修复——启动/重载归还对账（重启跨过夜间锚点后不再整夜残留双闭环互纠）、归还守卫单一入口（`async_release_virtual_light`：lux mode 白名单+跨条目检查+有界重试）、开灯监听 `_stopped` 守卫补全、`only_when_on` 在 CI 日间触发生效、`trigger_now` 文档校准、CI 关闭时跳过冗余天文计算；⑩R4~R11 循环——归还挂点全量关键字化（跨条目守卫防绕过）、校准期一次性归还 60s 有界重试（上限 180 分钟覆盖最慢校准）、`ConfigEntryState` 改枚举成员比较（2026.1 起非字符串，裸字符串守卫恒 False 的实证修正）、校准单步硬上限、照度 NaN/非有限值按 stale 处理、`deadband_lux` 翻译补齐、回归钉扩至 18+5+6 项
 - **V1.4.0（2026-10-19）**：夜灯配置体验重构——①原生向导 8+ 步瘦身为 3 步（灯具→时间锚点→全局参数），额外时段与逐灯覆盖移出向导；②夜灯助手页面新增设置弹窗（全局设置 + 逐灯覆盖，额外时段增删改），走新 REST `GET|POST /api/fumiha_lighting/anl/config` 写入条目 options 自动重载生效，与向导共用字段校验规格（`anl/config_schema.py`）；③修复原生 options 流两处真机 bug（缺 `async_step_init` 入口打开即 UnknownStep；`LuxZoneOptionsFlow` 向无 `__init__` 的基类传参 TypeError——均被测试桩掩盖，V1.0.0 合并时引入）；④reconfigure 保存收敛 data 时原样携带 GUI 管理键（extras/overrides 防丢）；⑤conftest 桩修正 + 新增测试（配置端点/向导链/options 入口回归钉）+ Playwright 弹窗用例

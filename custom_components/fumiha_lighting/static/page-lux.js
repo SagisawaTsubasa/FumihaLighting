@@ -297,6 +297,19 @@ class LuxBalancePage extends HTMLElement {
     if (z.curve && z.curve.source === "manual") {
       chips.push(kit.el("span", { class: "cx-tag", text: "手动系数曲线" }));
     }
+    if (z.link_group) {
+      // V1.3.0 联动组：组标签+组内成员名单（ambient 已扣除对方贡献）
+      chips.push(
+        kit.el("span", {
+          class: "cx-tag",
+          text:
+            "联动组「" + z.link_group + "」" +
+            (z.link_peers && z.link_peers.length
+              ? "：与 " + z.link_peers.join("、") + " 交叉扣除"
+              : "（暂无同组成员）"),
+        })
+      );
+    }
     if (z.ambient_lux_est != null) {
       chips.push(
         kit.el("span", {

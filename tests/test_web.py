@@ -221,6 +221,29 @@ def test_lux_overview_empty():
     assert resp.payload == {"zones": []}
 
 
+def test_lux_overview_link_group_fields():
+    """V1.3.0 联动组：组标签+同组成员名单随载荷下发；未设组两键 None。
+
+    成员在 web 层按公开属性 link_group 自算（ANL-F-003 教训：不直调
+    runtime 私有方法），页面 chip 据此渲染组标签+名单。
+    """
+    hass = FakeHass()
+    wet = fake_lux_runtime("lux1", "湿区")
+    dry = fake_lux_runtime("lux2", "干区")
+    wet.link_group = "卫"
+    dry.link_group = "卫"
+    solo = fake_lux_runtime("lux3", "书房")
+    _lux_bucket(hass, wet, dry, solo)
+    resp = run(web.LuxOverviewView().get(FakeRequest(hass)))
+    payload = json.loads(json.dumps(resp.payload, allow_nan=False))
+    zones = {z["zone_name"]: z for z in payload["zones"]}
+    assert zones["湿区"]["link_group"] == "卫"
+    assert zones["湿区"]["link_peers"] == ["干区"]
+    assert zones["干区"]["link_peers"] == ["湿区"]
+    assert zones["书房"]["link_group"] is None
+    assert zones["书房"]["link_peers"] is None
+
+
 # ---------------------------------------------------------------------------
 # REST write endpoints (GUI → runtime, no entity detour)
 # ---------------------------------------------------------------------------

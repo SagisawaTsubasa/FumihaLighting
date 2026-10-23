@@ -53,6 +53,8 @@
       ambient_lux_est: 42.5, needed_lux: 107.5,
       last_adjustment: "2026-10-13T12:00:00+08:00",
       light_entity: "light.bath", lux_entity: "sensor.bath_lux",
+      // V1.3.0 联动组（web._serialize_lux_zone 契约）：组标签+同组成员名单
+      link_group: "卫生间", link_peers: ["干区"],
     }];
   }
   function anlManagers() {

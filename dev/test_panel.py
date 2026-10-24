@@ -144,8 +144,12 @@ READ_LINK_DIALOG_JS = """() => {
         fade: val('交叉系数'),
         step: val('缓变步幅（%）'),
         // ANL-F-148 计算样式钉：Hub 壳路径链接的是 FumihaHub 仓的
-        // tokens.css——计算样式断言真实校验跨仓同步，防两仓再漂移
+        // tokens.css——计算样式断言真实校验跨仓同步，防两仓再漂移。
+        // ANL-F-157 矩阵补全：基础 note 四项（fs/radius/无 accent 竖条/
+        // 遮罩）一次读齐，warn 11.5px 由 ?cal=1 分支补第 5 项
         noteFs: getComputedStyle(note).fontSize,
+        noteRadius: getComputedStyle(note).borderRadius,
+        noteBorderLeftW: getComputedStyle(note).borderLeftWidth,
         backdrop: getComputedStyle(d, '::backdrop').backgroundColor,
         footnote: d.textContent.includes('仅显示已加载区域'),
       };
@@ -285,10 +289,15 @@ def run_checks(browser, base: str) -> None:
     )
     # ANL-F-148 计算样式钉（Hub 壳路径）+ 名单脚注（裁定②）：10px 基础
     # 注记与 0.25 遮罩必须来自跨仓同步后的 FumihaHub tokens.css，断言防
-    # 两仓再漂移（dev harness 走 Hub 路径，断言会真实校验跨仓同步生效）
+    # 两仓再漂移（dev harness 走 Hub 路径，断言会真实校验跨仓同步生效）。
+    # ANL-F-157 矩阵：基础 note 半径 8px + accent 竖条缺席（borderLeftWidth
+    # 0px）——F-148 五项同步属性此前只钉 2 项，漂移可静默
     check(
-        "lux V1.7.1: hub-path computed styles (note 10px / backdrop 0.25) + footnote",
+        "lux V1.7.1: hub-path computed styles (note 10px / radius 8px / no accent"
+        " bar / backdrop 0.25) + footnote",
         bool(link_dlg) and link_dlg["noteFs"] == "10px"
+        and link_dlg["noteRadius"] == "8px"
+        and link_dlg["noteBorderLeftW"] == "0px"
         and link_dlg["backdrop"] == "rgba(0, 0, 0, 0.25)"
         and link_dlg["footnote"] is True,
         str(link_dlg),
@@ -467,7 +476,8 @@ def run_checks(browser, base: str) -> None:
     check("lux calibrate cancel POSTs to own REST", True)
 
     # ANL-F-149：?cal=1 下打开联动组弹窗必须有「保存会中止校准」警示行
-    # （软提示路线：校准中保存经 reload 取消 _cal_task 且新 runtime 无痕）
+    # （软提示路线：校准中保存经 reload 取消 _cal_task 且新 runtime 无痕）。
+    # ANL-F-157 矩阵第 5 项（Hub 路径）：warn 变体 11.5px 不随基础 10px 缩小
     page.evaluate(LUX_CHIP_CLICK_JS)
     page.wait_for_function(WAIT_LINK_DIALOG_JS, timeout=4000)
     cal_warn = page.evaluate(
@@ -476,14 +486,27 @@ def run_checks(browser, base: str) -> None:
           for (const el of p.shadowRoot.querySelectorAll('*')) {
             const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
             if (d && d.querySelector('[data-lux-link-members]')) {
-              return d.textContent.includes(
-                '校准进行中：保存会重载条目并中止本次校准，已采集数据弃用');
+              const warn = d.querySelector('.cx-note.warn');
+              return {
+                text: d.textContent.includes(
+                  '校准进行中：保存会重载条目并中止本次校准，已采集数据弃用'),
+                warnFs: warn ? getComputedStyle(warn).fontSize : null,
+              };
             }
           }
-          return false;
+          return null;
         }"""
     )
-    check("lux ?cal=1: link dialog warns saving aborts calibration", cal_warn)
+    check(
+        "lux ?cal=1: link dialog warns saving aborts calibration",
+        bool(cal_warn) and cal_warn["text"],
+        str(cal_warn),
+    )
+    check(
+        "lux ?cal=1: hub-path warn note 11.5px (style matrix, ANL-F-157)",
+        bool(cal_warn) and cal_warn["warnFs"] == "11.5px",
+        str(cal_warn),
+    )
     page.evaluate(CANCEL_DIALOG_JS)
     page.wait_for_function(NO_DIALOG_JS, timeout=4000)
 
@@ -1512,18 +1535,31 @@ def run_checks(browser, base: str) -> None:
         }""",
         timeout=4000,
     )
-    page8.wait_for_timeout(400)
-    no_flash = page8.evaluate(
+    page8.wait_for_timeout(5500)
+    # ANL-F-155：等待跨过一次 5s 轮询（夹具空窗 7s，断言确定性落在窗内）。
+    # 旧钉 400ms 在轮询发生前就收口，空分支从未被消费=只证明「无立即 GET」；
+    # 现断言卡片仍在、chip 仍为新组——grace 落地前此断言红（正是 reload
+    # 窗口残留的证明），落地后转绿
+    reloadgap_ok = page8.evaluate(
         """() => {
           const p = document.getElementById('hub');
           for (const el of p.shadowRoot.querySelectorAll('*')) {
-            if (el.shadowRoot && el.shadowRoot.querySelector('[data-zone="lux1"]')
-                && !el.shadowRoot.textContent.includes('尚无区域')) return true;
+            const card = el.shadowRoot
+              && el.shadowRoot.querySelector('[data-zone="lux1"]');
+            if (card) {
+              const chip = card.querySelector('[data-action="link-group"]');
+              return !el.shadowRoot.textContent.includes('尚无区域')
+                && !!chip
+                && chip.textContent === '联动组「卫生间3」（暂无同组成员）';
+            }
           }
           return false;
         }"""
     )
-    check("lux reloadgap: no empty flash, chip optimistic after save", no_flash)
+    check(
+        "lux reloadgap: card+chip survive poll inside reload window (grace)",
+        reloadgap_ok,
+    )
     page8.close()
 
     # ---- standalone fallback (pages boot without the shell) ------------------
@@ -1576,6 +1612,55 @@ def run_checks(browser, base: str) -> None:
         bool(warn_style) and warn_style["fs"] == "11.5px"
         and warn_style["radius"] == "8px/8px",
         str(warn_style),
+    )
+    # ANL-F-157 矩阵（standalone 路径补全）：基础 .cx-note 10px + accent
+    # 竖条缺席（borderLeftWidth 0px）+ 基础半径 8px + 遮罩 0.25——基础面
+    # 此前零断言（Hub 半边的同项见 page1 弹窗读）。cal 态卡片只有 warn
+    # 变体，基础 note 载体=联动组弹窗 membersNote
+    page3.evaluate(
+        """() => {
+          const l = document.getElementById('luxpage');
+          const chip = l.shadowRoot.querySelector(
+            '[data-zone] [data-action="link-group"]');
+          if (chip) chip.click();
+        }"""
+    )
+    page3.wait_for_function(
+        """() => {
+          const l = document.getElementById('luxpage');
+          return !!(l && l.shadowRoot
+            && l.shadowRoot.querySelector('dialog.fx-dialog [data-lux-link-members]'));
+        }""",
+        timeout=4000,
+    )
+    base_style = page3.evaluate(
+        """() => {
+          const l = document.getElementById('luxpage');
+          const d = l.shadowRoot.querySelector('dialog.fx-dialog');
+          const note = d.querySelector('[data-lux-link-members]');
+          const cs = getComputedStyle(note);
+          return {
+            fs: cs.fontSize,
+            blw: cs.borderLeftWidth,
+            radius: cs.borderRadius,
+            backdrop: getComputedStyle(d, '::backdrop').backgroundColor,
+          };
+        }"""
+    )
+    check(
+        "standalone tokens: base note 10px + no accent bar + backdrop 0.25"
+        " (style matrix, ANL-F-157)",
+        bool(base_style) and base_style["fs"] == "10px"
+        and base_style["blw"] == "0px" and base_style["radius"] == "8px"
+        and base_style["backdrop"] == "rgba(0, 0, 0, 0.25)",
+        str(base_style),
+    )
+    page3.evaluate(
+        """() => {
+          const l = document.getElementById('luxpage');
+          const dlg = l.shadowRoot.querySelector('dialog.fx-dialog');
+          if (dlg) dlg.close();
+        }"""
     )
     page3.close()
 

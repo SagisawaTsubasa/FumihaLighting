@@ -17,7 +17,7 @@
 ## 架构
 
 - 页面（文羽面板壳内 `luxbalance.main` / `anl.main` 两个页签；壳缺席时各自回落独立侧边栏面板）
-- REST：`GET /api/fumiha_lighting/lux/overview`、`GET /api/fumiha_lighting/anl/snapshot`；写：`POST /api/fumiha_lighting/lux/target|calibrate|calibrate/cancel`、`POST /api/fumiha_lighting/anl/trigger`、`GET|POST /api/fumiha_lighting/anl/config`（夜灯设置读写，V1.4.0）
+- REST：`GET /api/fumiha_lighting/lux/overview`、`GET /api/fumiha_lighting/anl/snapshot`；写：`POST /api/fumiha_lighting/lux/target|calibrate|calibrate/cancel`、`GET|POST /api/fumiha_lighting/lux/link_group`（联动组面板内编辑，V1.7.1）、`POST /api/fumiha_lighting/anl/trigger`、`GET|POST /api/fumiha_lighting/anl/config`（夜灯设置读写，V1.4.0）
 - 服务（自动化面）：`fumiha_lighting.calibrate`（目标未命中/互斥跳过时抛错）、`fumiha_lighting.trigger_now`
 - `static/kit.js`、`static/tokens.css` 为 FumihaHub vendored 副本（锁步更新）
 

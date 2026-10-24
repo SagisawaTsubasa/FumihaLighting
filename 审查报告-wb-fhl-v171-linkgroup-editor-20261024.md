@@ -52,3 +52,13 @@
 
 - 批次名 `fhl-v171-linkgroup-editor-20261024`；task_type=code-review；mode=首审；known_findings=无（新功能小批）。
 - （待回填：job id / 发现清单 / 台账 ANL-F-148 起续编 / 复验循环记录。）
+
+## 6. R1/R2 修复回写（ANL-F-159）
+
+R1 修复批（commit a481272，ANL-F-148~154）已使本报告三处描述失效——原文保留在上文供对照，以本节为准；今后修复批把「报告与代码同 commit 对齐」列入出门项。
+
+1. **「保存后 `_refresh()`」已删除**（§2 前端 / §4.3，ANL-F-150）：保存后**不再**立即 `_refresh()`——POST 只落 options、entry reload 是随后调度的异步任务，立即 GET 会撞旧 runtime（载荷不变→渲染门不重绘=旧 chip）或 unload 窗口（区出桶=空态闪最长 5s）。现行契约：保存响应直接乐观更新 chip（`_linkChipText` 单一来源），5s 轮询是唯一真相；reload 出桶窗口由 grace 兜住（ANL-F-155，`page-lux.js` `_lastSavedEntryId`+15s 窗，窗口内轮询缺刚保存条目不渲染空态）。
+2. **POST 响应契约补记**（偏离①，R1 裁定可接受）：`POST /api/fumiha_lighting/lux/link_group` 响应为 `{ok, link_group, cross_fade, max_step_pct, link_peers}`——`link_peers` 按**新 group** 现查桶内其他区（排除自身，与 overview 同算法），供前端乐观更新不把有组员的组闪成「暂无同组成员」；单测 `test_link_group_post_returns_new_group_peers`（`tests/test_web.py`）。
+3. **「`float(True)` 可过、未新增防线」已失效**（§4.5，ANL-F-153）：`LuxLinkGroupView.post` 现显式拒 bool/非 int-float、`OverflowError` 归入 400，`tests/test_web.py` 有 `True`/`10**400` 钉；R2 起同族口径统一走 `_finite_number`（`anl/config_schema.py`，LuxTargetView / `_finite_or_none` / `_clean_num` 三处消费，ANL-F-156）。
+
+R2 复验新增发现 ANL-F-155~160（F-150 reload 窗口残留 / 数值同族 / 钉矩阵 / 缺键语义 / 本条 / 原生流警示）随第二轮修复 commit 收口，台账续编。

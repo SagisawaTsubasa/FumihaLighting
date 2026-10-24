@@ -867,7 +867,16 @@ class AnlPage extends HTMLElement {
         ? "由恒照度区域「" + ciZone + "」接管"
         : "属于恒照度区域「" + ciZone + "」，勾选后由该区闭环接管")
       : "此灯不属于任何恒照度区域";
-    const ciRow = dlgRow("日间恒照度接管", ciCb, ciHint);
+    const ciRow = dlgRow("日间恒照度接管", ciCb);
+    // V1.7.1 用户反馈：三态说明不再走 dlgRow 第三参数位（与开关同级并排）
+    // ——改挂行下块级 cx-note（说明是开关一行的补充文案，非同级控件）；
+    // data-anl-ci-hint 供 L2 结构钉定位
+    const ciHintEl = kit.el("div", {
+      class: "cx-note",
+      "data-anl-ci-hint": "1",
+      style: { margin: "2px 0 5px" },
+      text: ciHint,
+    });
 
     const followCb = kit.el("input", {
       type: "checkbox",
@@ -927,6 +936,7 @@ class AnlPage extends HTMLElement {
 
     const body = [
       ciRow,
+      ciHintEl,
       followRow,
       dlgSection("夜间参数", nightRowEls),
       ...(dayVisible ? [dlgSection("日间参数", dayRowEls)] : []),

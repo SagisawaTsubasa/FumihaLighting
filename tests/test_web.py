@@ -315,6 +315,166 @@ def test_calibrate_write_started_false_with_reason():
 
 
 # ---------------------------------------------------------------------------
+# lux link group editor (V1.7.1 GUI 编辑入口，anl/config 先例)
+# ---------------------------------------------------------------------------
+
+
+def test_link_group_get_returns_values_and_members():
+    """GET 下发三键现值（merged_options 回填默认）+ link_members 完整组员
+    名单（含本区、排序稳定）；未设组两键空。名单只含已加载区——与
+    overview chip 的 link_peers（排除自身）键名分工不同。"""
+    hass = FakeHass()
+    wet = fake_lux_runtime("lux1", "湿区")
+    wet.link_group = "卫"
+    wet.entry = _config_entry("lux1", data={"kind": "lux"}, options={"link_group": "卫"})
+    dry = fake_lux_runtime("lux2", "干区")
+    dry.link_group = "卫"
+    dry.entry = _config_entry(
+        "lux2",
+        data={"kind": "lux"},
+        options={"link_group": "卫", "cross_fade": 0.8, "max_step_pct": 30},
+    )
+    # solo 不带 link_group 属性——getattr 兜底容忍（缺属性按未设组）
+    solo = fake_lux_runtime("lux3", "书房")
+    solo.entry = _config_entry("lux3", data={"kind": "lux"})
+    _lux_bucket(hass, wet, dry, solo)
+    req = FakeRequest(hass)
+    req.query = {"entry_id": "lux1"}
+    resp = run(web.LuxLinkGroupView().get(req))
+    payload = json.loads(json.dumps(resp.payload, allow_nan=False))
+    assert payload["ok"] is True
+    assert payload["zone_name"] == "湿区"
+    assert payload["link_group"] == "卫"
+    # 缺省键由 merged_options 回填默认（单一来源）
+    assert payload["cross_fade"] == 0.5
+    assert payload["max_step_pct"] == 20.0
+    # 完整组员名单：含本区、排序稳定（overview 的 link_peers 排除本区）
+    assert payload["link_members"] == ["干区", "湿区"]
+    req2 = FakeRequest(hass)
+    req2.query = {"entry_id": "lux3"}
+    payload2 = run(web.LuxLinkGroupView().get(req2)).payload
+    assert payload2["link_group"] is None
+    assert payload2["link_members"] is None
+
+
+def test_link_group_get_unknown_entry():
+    hass = FakeHass()
+    req = FakeRequest(hass)
+    req.query = {"entry_id": "nope"}
+    assert run(web.LuxLinkGroupView().get(req)).status == 404
+
+
+def test_link_group_post_writes_mirror_options_and_strips():
+    """POST 合法：三键落 options、镜像保留其余 options 键（options 流是
+    全镜像写，漏带会把扫描间隔等静默打回默认）、link_group strip 归一。"""
+    hass = _recording_hass()
+    entry = _config_entry(
+        "lux1",
+        data={"kind": "lux"},
+        options={"scan_interval_s": 30, "link_group": "旧组"},
+    )
+    rt = fake_lux_runtime("lux1")
+    rt.entry = entry
+    _lux_bucket(hass, rt)
+    resp = run(
+        web.LuxLinkGroupView().post(
+            FakeRequest(
+                hass,
+                {
+                    "entry_id": "lux1",
+                    "link_group": " 卫生间 ",
+                    "cross_fade": 0.8,
+                    "max_step_pct": 30,
+                },
+            )
+        )
+    )
+    assert resp.payload["ok"] is True
+    assert resp.payload["link_group"] == "卫生间"
+    options = recorded[0][1]["options"]
+    # strip 归一（lux/flow.py 写入侧同语义：尾空格静默不同组的根治）
+    assert options["link_group"] == "卫生间"
+    assert options["cross_fade"] == 0.8
+    assert options["max_step_pct"] == 30
+    assert options["scan_interval_s"] == 30  # 镜像保留（只替换三键）
+
+
+def test_link_group_post_empty_group_disables():
+    """空串=停用（flow 同语义）：落盘空串、响应报 None。"""
+    hass = _recording_hass()
+    entry = _config_entry("lux1", data={"kind": "lux"}, options={"link_group": "卫"})
+    rt = fake_lux_runtime("lux1")
+    rt.entry = entry
+    rt.link_group = "卫"
+    _lux_bucket(hass, rt)
+    resp = run(
+        web.LuxLinkGroupView().post(
+            FakeRequest(
+                hass,
+                {"entry_id": "lux1", "link_group": "",
+                 "cross_fade": 0.5, "max_step_pct": 20},
+            )
+        )
+    )
+    assert resp.payload["ok"] is True and resp.payload["link_group"] is None
+    assert recorded[0][1]["options"]["link_group"] == ""
+
+
+def test_link_group_post_rejects_invalid_values():
+    """非法值 400 且零写入：范围与 options flow selector 同源（0.1~1.0 /
+    5~50）/ 非数字 / 非字符串标签 / 非对象 body（ANL-F-020 同款防线）。"""
+    hass = _recording_hass()
+    entry = _config_entry("lux1", data={"kind": "lux"})
+    rt = fake_lux_runtime("lux1")
+    rt.entry = entry
+    _lux_bucket(hass, rt)
+    base = {
+        "entry_id": "lux1",
+        "link_group": "卫",
+        "cross_fade": 0.5,
+        "max_step_pct": 20,
+    }
+    for bad in (
+        {**base, "cross_fade": 0.05},
+        {**base, "cross_fade": 1.5},
+        {**base, "cross_fade": float("nan")},
+        {**base, "cross_fade": "abc"},
+        {**base, "cross_fade": None},
+        {**base, "max_step_pct": 4},
+        {**base, "max_step_pct": 55},
+        {**base, "max_step_pct": float("inf")},
+        {**base, "max_step_pct": None},
+        {**base, "link_group": 42},
+    ):
+        resp = run(web.LuxLinkGroupView().post(FakeRequest(hass, bad)))
+        assert resp.status == 400, bad
+    for bad_body in ([], None, "x"):
+        resp = run(web.LuxLinkGroupView().post(FakeRequest(hass, bad_body)))
+        assert resp.status == 400, bad_body
+    resp = run(  # entry_id 非字符串 → 400（unhashable 防线）
+        web.LuxLinkGroupView().post(
+            FakeRequest(hass, {**base, "entry_id": ["x"]})
+        )
+    )
+    assert resp.status == 400
+    assert recorded == []  # 校验失败绝不写条目
+
+
+def test_link_group_post_unknown_entry():
+    hass = FakeHass()
+    resp = run(
+        web.LuxLinkGroupView().post(
+            FakeRequest(
+                hass,
+                {"entry_id": "nope", "link_group": "卫",
+                 "cross_fade": 0.5, "max_step_pct": 20},
+            )
+        )
+    )
+    assert resp.status == 404
+
+
+# ---------------------------------------------------------------------------
 # anl snapshot + trigger
 # ---------------------------------------------------------------------------
 
@@ -1231,7 +1391,7 @@ def test_setup_web_idempotent():
     hass = FakeHass()
     run(web.async_setup_web(hass))
     run(web.async_setup_web(hass))
-    assert len(hass.http.views) == 7
+    assert len(hass.http.views) == 8
     assert len(hass.http.static) == 1
     assert hass.http.static[0].url_path == web.URL_BASE
 

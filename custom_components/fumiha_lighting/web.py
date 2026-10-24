@@ -89,10 +89,14 @@ from .const import (
 )
 from .light_registry import build_light_zone_index
 from .lux.const import (
+    CONF_CROSS_FADE,
+    CONF_LINK_GROUP,
+    CONF_MAX_STEP_PCT,
     LUX_STALE_AFTER_S,
     TARGET_MAX_LUX,
     TARGET_MIN_LUX,
     TARGET_STEP_LUX,
+    merged_options,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -361,6 +365,104 @@ class LuxCalibrateCancelView(HomeAssistantView):
             return _error(404, "未知区域")
         cancelled = await runtime.async_cancel_calibration()
         return web.json_response({"ok": True, "cancelled": cancelled})
+
+
+class LuxLinkGroupView(HomeAssistantView):
+    """GET/POST /api/fumiha_lighting/lux/link_group — one zone's link group.
+
+    GUI 编辑入口（V1.7.1，套 anl/config 先例）：联动组三键原藏在原生
+    options 流第 2 页（「校准与降级」，须先过第 1 页提交），面板内编辑
+    统一入口；组员名单可见性超越原生对话框（原生表单只有本条目的输入框）。
+    GET ?entry_id= 下发三键现值（merged_options 回填默认）+ ``link_members``
+    完整组员名单（复用 overview link_peers 的公开属性算法，含本区——
+    编辑弹窗展示完整组员面，前端标「本区」；overview 的 link_peers 排除
+    自身是卡片 chip 语义，两键分工不同）。POST {entry_id, link_group,
+    cross_fade, max_step_pct}：link_group strip 归一（lux/flow.py 写入侧
+    同语义，空串=停用）、数值范围与 options flow selector 同源（不设第二
+    套数字）；过校验后镜像写 entry.options（只替换三键，其余 options 键
+    原样保留——options 流保存是全镜像，漏带会把扫描间隔/死区等静默打回
+    默认），顶层 update listener 自动 reload 重建 runtime。
+    """
+
+    url = f"{API_BASE}/lux/link_group"
+    name = "api:fumiha_lighting:lux_link_group"
+    requires_auth = True
+
+    @require_admin
+    async def get(self, request: web.Request) -> web.Response:
+        hass = request.app["hass"]
+        runtime = _lux_runtimes(hass).get(request.query.get("entry_id"))
+        if runtime is None:
+            return _error(404, "未知区域")
+        opts = merged_options(runtime.entry.options)
+        group = str(opts[CONF_LINK_GROUP] or "").strip()
+        members = None
+        if group:
+            # 与 _serialize_lux_zone 的 link_peers 同一公开属性算法；含本区
+            # 且排序，展示面稳定
+            members = sorted(
+                other.zone_name
+                for other in _lux_runtimes(hass).values()
+                if getattr(other, "link_group", "") == group
+            )
+        return web.json_response(
+            {
+                "ok": True,
+                "zone_name": runtime.zone_name,
+                "link_group": group or None,
+                "cross_fade": opts[CONF_CROSS_FADE],
+                "max_step_pct": opts[CONF_MAX_STEP_PCT],
+                "link_members": members,
+            }
+        )
+
+    @require_admin
+    async def post(self, request: web.Request) -> web.Response:
+        hass = request.app["hass"]
+        body = await _json_object(request)
+        if body is None:
+            return _error(400, "请求体不是合法 JSON 对象")
+        entry_id = _entry_id_of(body)
+        if entry_id is None:
+            return _error(400, "entry_id 需为字符串")
+        runtime = _lux_runtimes(hass).get(entry_id)
+        if runtime is None:
+            return _error(404, "未知区域")
+        # entry 引用自 runtime 快照点取得（await 之后不再重读 hass.data 桶，
+        # AnlConfigView 同款并发模式）
+        entry = runtime.entry
+        group = body.get("link_group")
+        if group is not None and not isinstance(group, str):
+            return _error(400, "联动组标签需为字符串")
+        # 写入侧 strip 归一（lux/flow.py 同语义）：尾空格静默不同组的根治；
+        # 空串=停用
+        group = str(group or "").strip()
+        try:
+            cross_fade = float(body.get("cross_fade"))
+            max_step_pct = float(body.get("max_step_pct"))
+        except (TypeError, ValueError):
+            return _error(400, "交叉系数与缓变步幅需为数字")
+        # 范围与 options flow selector 同源（lux/flow.py async_step_lux_
+        # advanced：cross_fade 0.1~1.0 / max_step_pct 5~50），不设第二套数字
+        if not math.isfinite(cross_fade) or not 0.1 <= cross_fade <= 1.0:
+            return _error(400, "交叉系数需在 0.1–1.0 之间")
+        if not math.isfinite(max_step_pct) or not 5 <= max_step_pct <= 50:
+            return _error(400, "缓变步幅需在 5–50 之间")
+        options = {
+            **entry.options,
+            CONF_LINK_GROUP: group,
+            CONF_CROSS_FADE: cross_fade,
+            CONF_MAX_STEP_PCT: max_step_pct,
+        }
+        hass.config_entries.async_update_entry(entry, options=options)
+        return web.json_response(
+            {
+                "ok": True,
+                "link_group": group or None,
+                "cross_fade": cross_fade,
+                "max_step_pct": max_step_pct,
+            }
+        )
 
 
 # --------------------------------------------------------------------------
@@ -882,6 +984,7 @@ async def async_setup_web(hass: HomeAssistant) -> None:
         hass.http.register_view(LuxTargetView())
         hass.http.register_view(LuxCalibrateView())
         hass.http.register_view(LuxCalibrateCancelView())
+        hass.http.register_view(LuxLinkGroupView())
         hass.http.register_view(AnlSnapshotView())
         hass.http.register_view(AnlTriggerView())
         hass.http.register_view(AnlConfigView())

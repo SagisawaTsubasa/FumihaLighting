@@ -170,6 +170,16 @@
       if (path.indexOf("/api/fumiha_lighting/lux/overview") === 0) {
         return new Response(JSON.stringify({ zones: luxZones() }), { status: 200 });
       }
+      if (path.indexOf("/api/fumiha_lighting/lux/link_group") === 0) {
+        // V1.7.1 联动组编辑器 GET 契约（web.LuxLinkGroupView.get）：
+        // 三键现值 + link_members 完整组员名单（含本区，与 overview 的
+        // link_peers 排除自身分工不同）
+        return new Response(JSON.stringify({
+          ok: true, zone_name: "卫生间",
+          link_group: "卫生间", cross_fade: 0.5, max_step_pct: 20,
+          link_members: ["卫生间", "干区"],
+        }), { status: 200 });
+      }
       if (path.indexOf("/api/fumiha_lighting/anl/snapshot") === 0) {
         return new Response(JSON.stringify({ managers: anlManagers() }), { status: 200 });
       }

@@ -399,6 +399,8 @@ class LuxBalancePage extends HTMLElement {
     }
     const min = z.target_min ?? 10;
     const max = z.target_max ?? 500;
+    // target_step 随载荷下发（web._serialize_lux_zone，R1 发现 10）——
+    // ?? 5 仅为载荷缺字段时的兜底，不再各自硬编码
     const step = z.target_step ?? 5;
     const input = kit.el("input", {
       class: "cx-input",

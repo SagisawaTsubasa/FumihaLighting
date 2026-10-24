@@ -91,6 +91,9 @@ _LOGGER = logging.getLogger(__name__)
 # expected; they never count toward the "upgrade to 10% sweep" trigger.
 _CAL_MISSED_COUNT_MIN_PCT = 20.0
 
+# 协同采样「尚无上一档」哨兵（R1 发现 6）：与合法档位 None（基线档）区分
+_CAL_CROSS_NO_PREV = object()
+
 
 class CalibrationError(Exception):
     """Calibration could not produce a usable curve."""
@@ -132,6 +135,23 @@ def _parse_lux_state(state) -> float | None:
     return value if math.isfinite(value) else None
 
 
+def _light_pct(state, commanded_pct: float | None) -> float | None:
+    """灯亮度三态归一（R1 发现 3，P2）。
+
+    0.0=灭/状态缺失（贡献与位置基准都是 0）；数值=亮着且可读（属性优先，
+    回落指令值）；None=亮着但亮度未知（无上报且无指令）——未知既不贡献
+    （_external_contribution）也不作限幅基准（_apply 直发决策亮度）。
+    旧实现同一状态在两处分别静默判 0/判 100，WP4 拿 100 当限幅基准会
+    把真实 30% 反向推到 80%——三态统一后禁止再出现分叉默认。
+    """
+    if state is None or state.state != STATE_ON:
+        return 0.0
+    brightness = state.attributes.get(ATTR_BRIGHTNESS)
+    if isinstance(brightness, (int, float)) and brightness > 0:
+        return min(100.0, brightness / 255.0 * 100)
+    return commanded_pct
+
+
 class ZoneRuntime:
     """State machine + control loop for one bathroom zone."""
 
@@ -163,6 +183,9 @@ class ZoneRuntime:
         self.signal = f"{DOMAIN}_{entry.entry_id}_update"
         self.storage = ZoneStorage(hass, entry.entry_id)
         self._unsubs: list[Callable[[], None]] = []
+        # 联动组订阅单独记账（R1 发现 1）：_refresh_link_listeners 幂等重建
+        # 时只拆本列表，不动本体三订阅
+        self._link_unsubs: list[Callable[[], None]] = []
         self._cal_task: asyncio.Task | None = None
         self._eval_task: asyncio.Task | None = None
         self._apply_lock = asyncio.Lock()
@@ -180,9 +203,13 @@ class ZoneRuntime:
         # V1.3.0 联动组：同 link_group 标签的条目互认为同一照明空间；
         # ambient 计算扣除组内其他灯对本传感器的贡献（交叉曲线优先，
         # 近似 = 对方主曲线 × cross_fade 兜底）。
-        self.link_group: str = str(self.opts.get(CONF_LINK_GROUP) or "")
+        self.link_group: str = str(self.opts.get(CONF_LINK_GROUP) or "").strip()
         self._cross_fade: float = float(self.opts[CONF_CROSS_FADE])
-        self._max_step_pct: float = float(self.opts[CONF_MAX_STEP_PCT])
+        # R1 发现 7：消费点从 const 哲学夹取（与 set_target 同型）——.storage
+        # 被手改成 0/负值时旧码退化为「永不动/每轮下漂」，静默无区分
+        self._max_step_pct: float = max(
+            1.0, min(100.0, float(self.opts[CONF_MAX_STEP_PCT]))
+        )
         # 组内其他灯 → 本传感器的贡献曲线（校准协同采样产出），键=对方灯实体
         self._cross_curves: dict[str, Curve] = {}
         # 联动组协同采样暂存（WP3.1，仅校准期存活）：本校准区为 X 时，顺带
@@ -197,6 +224,13 @@ class ZoneRuntime:
         # 传感器读数滑动窗口（V1.2.2）：评估用中值而非瞬时值——变化触发
         # 上报的量化噪声（±10 lx 级抖动）直通闭环会造成亮度狩猎。
         self._lux_window: deque[float] = deque(maxlen=5)
+        # 决策环日志对账分量（R1 发现 13）：_prepare_lux 每轮写入，_record
+        # 消费——lux= 展示「净值（原始−扣）」，用户可与传感器实体读数对账
+        self._last_lux_gross: float = 0.0
+        self._last_external_lux: float = 0.0
+        # 协同采样慢组员补录（R1 发现 6）：上一档档位哨兵——None 是合法档位
+        # （基线档），object() 哨兵区分「尚无上一档」
+        self._cal_cross_prev_pct: float | None = _CAL_CROSS_NO_PREV
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -245,16 +279,33 @@ class ZoneRuntime:
         # manual).
         # V1.3.0 联动组: 组内其他灯的开关/调光影响本区 ambient——状态变化
         # 触发本区重评估（仅评估，不接管对方的灯）。
-        if self.link_group:
-            for other in self.hass.data.get(DOMAIN, {}).get("lux", {}).values():
-                if other is self:
-                    continue
-                if other.link_group == self.link_group:
-                    self._unsubs.append(
-                        async_track_state_change_event(
-                            self.hass, [other.light_entity], self._on_linked_event
-                        )
+        self._refresh_link_listeners()
+
+    @callback
+    def _refresh_link_listeners(self) -> None:
+        """幂等重建联动组监听（R1 发现 1，P1）。
+
+        旧实现只在 start() 时对「当时已在桶里」的组员订阅——条目按启动
+        顺序单向建链，先启动的区永远听不到后加入的组员（start() 全仓唯一
+        调用方是 setup，无重连路径）。现抽成本方法：先撤销旧联动订阅、再
+        按当前桶重订；lux_async_setup_entry 在 runtime.start() 后对桶内
+        所有 runtime 各调一次，双向链路对称。A↔B 互触发重评估由 decide()
+        死区（5% / 10 lx）收敛——交叉贡献扣除后对方调光不改变本区决策。
+        """
+        for unsub in self._link_unsubs:
+            unsub()
+        self._link_unsubs.clear()
+        if self._stopped or not self.link_group:
+            return
+        for other in self.hass.data.get(DOMAIN, {}).get("lux", {}).values():
+            if other is self:
+                continue
+            if other.link_group == self.link_group:
+                self._link_unsubs.append(
+                    async_track_state_change_event(
+                        self.hass, [other.light_entity], self._on_linked_event
                     )
+                )
 
     async def async_stop(self) -> None:
         """Detach listeners and cancel/await in-flight tasks.
@@ -267,6 +318,9 @@ class ZoneRuntime:
         for unsub in self._unsubs:
             unsub()
         self._unsubs.clear()
+        for unsub in self._link_unsubs:
+            unsub()
+        self._link_unsubs.clear()
         tasks: list[asyncio.Task] = []
         for attr in ("_cal_task", "_eval_task"):
             task = getattr(self, attr)
@@ -344,15 +398,6 @@ class ZoneRuntime:
         else:
             self._eval_task = self.hass.async_create_task(self.async_evaluate(trigger))
 
-    def _any_zone_calibrating(self) -> bool:
-        """True while any *other* zone runs a calibration sweep."""
-        lux_entries = self.hass.data.get(DOMAIN, {}).get("lux", {})
-        return any(
-            other.mode == MODE_CALIBRATING
-            for other in lux_entries.values()
-            if other is not self
-        )
-
     # ------------------------------------------------------------- closed loop
 
     def set_target(self, value: float) -> None:
@@ -429,21 +474,15 @@ class ZoneRuntime:
         """组内其他灯对本传感器的当前照度贡献（FL-IMP 联动组）。
 
         交叉曲线优先（校准协同采样产出，键=对方灯实体）；无交叉曲线时
-        近似 = 对方主曲线 × cross_fade。灯灭/读不到按 0。
+        近似 = 对方主曲线 × cross_fade。灯灭/读不到/亮度未知（三态 None）
+        一律按 0 不贡献（R1 发现 3 统一判据）。
         """
         total = 0.0
         for other in self._linked_runtimes():
-            state = self.hass.states.get(other.light_entity)
-            if state is None or state.state != STATE_ON:
-                continue
-            brightness = state.attributes.get(ATTR_BRIGHTNESS)
-            if isinstance(brightness, (int, float)) and brightness > 0:
-                other_pct = min(100.0, brightness / 255.0 * 100)
-            elif other.commanded_pct is not None:
-                other_pct = other.commanded_pct
-            else:
-                continue
-            if other_pct <= 0:
+            other_pct = _light_pct(
+                self.hass.states.get(other.light_entity), other.commanded_pct
+            )
+            if not other_pct:  # 灭=0.0 / 未知=None → 不贡献
                 continue
             cross = self._cross_curves.get(other.light_entity)
             if cross is not None:
@@ -452,19 +491,25 @@ class ZoneRuntime:
                 total += other.curve.lux_at(other_pct) * self._cross_fade
         return total
 
-    async def _async_compute_decision(
-        self,
-    ) -> tuple[Decision | None, float]:
+    def _prepare_lux(self) -> float | None:
+        """闭环主路径与开灯首帧共用的照度预处理（R1 发现 2，P2）。
+
+        stale 判定 + F-104 坏值过滤 + 中值滤波 + 组内交叉贡献扣除，两处
+        共用一份判据（旧开灯首帧用原始瞬时值、不扣贡献、不传照度死区，
+        组内已有灯亮时首帧显著偏低）。None = 数据不可信（调用方不得拿去
+        调灯）。副作用：_mark_lux_stale/恢复清窗、_last_lux_gross 与
+        _last_external_lux 写入（决策环日志对账分量，R1 发现 13）。
+        """
         lux_state = self.hass.states.get(self.lux_entity)
         stale_reason = _lux_stale_reason(lux_state)
         if stale_reason is not None:
             self._mark_lux_stale(stale_reason)
-            return None, 0.0
+            return None
         lux_now = _parse_lux_state(lux_state)
         if lux_now is None:
             # F-104：非数字/非有限值与 stale 同路——闭环不得拿坏数据调灯
             self._mark_lux_stale("照度读数非数字或非有限值")
-            return None, 0.0
+            return None
         if self.lux_stale:
             # 恢复：清窗防断档前后读数混算（F-104）；只复位数据可信态，
             # 不复位 WARNING 节流（与 _on_lux_event 恢复分支同语义）
@@ -472,11 +517,21 @@ class ZoneRuntime:
         self.lux_stale = False
         # V1.2.2 读数滤波：瞬时值含量化噪声，中值窗口压平抖动
         self._lux_window.append(lux_now)
-        lux_now = statistics.median(self._lux_window)
+        gross = statistics.median(self._lux_window)
         # V1.3.0 联动组: 扣除组内其他灯的贡献——否则对方的补偿会被本区
         # 当成环境扰动，多灯同房间时互相拉锯（震荡根因）。先中值滤波压平
         # 本传感器噪声，再扣外部贡献（对方灯状态属性无量化抖动问题）。
-        lux_now = max(0.0, lux_now - self._external_contribution())
+        external = self._external_contribution()
+        self._last_lux_gross = gross
+        self._last_external_lux = external
+        return max(0.0, gross - external)
+
+    async def _async_compute_decision(
+        self,
+    ) -> tuple[Decision | None, float]:
+        lux_now = self._prepare_lux()
+        if lux_now is None:
+            return None, 0.0
 
         curve = self.curve
         if curve is None:
@@ -485,10 +540,14 @@ class ZoneRuntime:
                 lux_now,
             )
 
+        current = self._current_pct()
         decision = decide(
             curve,
             lux_now,
-            self._current_pct(),
+            # 亮度未知（None）按灭灯基准 0 参与决策：ambient 含自身贡献
+            # （偏保守、欠驱），传感器随灯上报后下一轮自纠——旧码把未知
+            # 判 100 会反向过驱（R1 发现 3）
+            current if current is not None else 0.0,
             self.target_lux,
             float(self.opts[CONF_DEADBAND_PCT]),
             float(self.opts[CONF_MIN_BRIGHTNESS_PCT]),
@@ -516,17 +575,14 @@ class ZoneRuntime:
                 )
         return decision, lux_now
 
-    def _current_pct(self) -> float:
-        """Best estimate of the real light's current percent."""
-        state = self.hass.states.get(self.light_entity)
-        if state is None or state.state != STATE_ON:
-            return 0.0
-        brightness = state.attributes.get(ATTR_BRIGHTNESS)
-        if isinstance(brightness, (int, float)) and brightness > 0:
-            return min(100.0, round(brightness / 255.0 * 100, 1))
-        if self.commanded_pct is not None:
-            return self.commanded_pct
-        return 100.0
+    def _current_pct(self) -> float | None:
+        """Best estimate of the real light's current percent.
+
+        None = 亮度未知（亮着但无上报且无指令，R1 发现 3 三态统一）——
+        消费点（_apply 限幅 / 决策 pct_now）按各自退化规则处理，不再出现
+        「一处判 0 一处判 100」的分叉默认。
+        """
+        return _light_pct(self.hass.states.get(self.light_entity), self.commanded_pct)
 
     async def _apply(self, trigger: str, lux_now: float, decision: Decision) -> None:
         async with self._apply_lock:
@@ -537,21 +593,24 @@ class ZoneRuntime:
                 # 超过 max_step_pct 时只走一步（reason 追加「缓变」，pct 修正
                 # 为限幅后值），下轮评估继续逼近；off 决策不受缓变限制（关灯
                 # 不经本分支）。限幅边界复用既有机制：下界 min_brightness_pct、
-                # 上界 100%，不新增配置。
+                # 上界 100%，不新增配置。亮度未知（current is None，R1 发现
+                # 3）：无基准可限——退化为不限幅直发决策亮度（旧码把未知当
+                # 100% 限幅基准，会对「会调光但不上报」的灯具反向过冲）。
                 current = self._current_pct()
-                step = self._max_step_pct
-                ramped = min(decision.pct, current + step)
-                ramped = max(ramped, current - step)
-                target_pct = min(
-                    100.0,
-                    max(float(self.opts[CONF_MIN_BRIGHTNESS_PCT]), ramped),
-                )
-                if abs(decision.pct - current) > step:
-                    decision = replace(
-                        decision,
-                        pct=target_pct,
-                        reason=f"{decision.reason}（缓变）",
+                if current is not None:
+                    step = self._max_step_pct
+                    ramped = min(decision.pct, current + step)
+                    ramped = max(ramped, current - step)
+                    target_pct = min(
+                        100.0,
+                        max(float(self.opts[CONF_MIN_BRIGHTNESS_PCT]), ramped),
                     )
+                    if abs(decision.pct - current) > step:
+                        decision = replace(
+                            decision,
+                            pct=target_pct,
+                            reason=f"{decision.reason}（缓变）",
+                        )
                 ok = await self._async_call_light(
                     "turn_on", {ATTR_BRIGHTNESS_PCT: round(decision.pct)}
                 )
@@ -595,8 +654,17 @@ class ZoneRuntime:
         ):
             return None
         stamp = dt_util.as_local(dt_util.utcnow()).strftime("%H:%M:%S")
+        # R1 发现 13：决策环的 lux= 自 V1.6.1 起是「扣除后净值」，与传感器
+        # 实体读数对不上账——带组时追加「原始−扣」分量，用户可按
+        # 传感器读数 = 原始 核对（_prepare_lux 同轮写入；getattr 兜底裸
+        # 测试桩缺属性时退回旧格式）
+        gross = getattr(self, "_last_lux_gross", None)
+        external = getattr(self, "_last_external_lux", None)
+        lux_part = f"lux={lux_now:.0f}"
+        if gross is not None and external:
+            lux_part += f"（原{gross:.0f}−扣{external:.0f}）"
         line = (
-            f"{stamp} [{trigger}] lux={lux_now:.0f} "
+            f"{stamp} [{trigger}] {lux_part} "
             f"环境={decision.ambient_lux:.0f} 需求={decision.needed_lux:.0f} "
             f"→ {decision.action}"
             + (f" {decision.pct:.0f}%" if decision.pct is not None else "")
@@ -652,29 +720,32 @@ class ZoneRuntime:
             self.mode = MODE_ACTIVE
             self._off_streak = 0
             curve = self.curve
-            lux_state = self.hass.states.get(self.lux_entity)
-            lux_ok = curve is not None and _lux_stale_reason(lux_state) is None
-            if not lux_ok:
+            if curve is None:
                 await self._async_call_light("turn_on", {})
                 self.commanded_pct = None
                 self.notify()
                 return
-            lux_now = _parse_lux_state(lux_state)
+            # R1 发现 2（P2）：开灯首帧与闭环主路径共用 _prepare_lux——
+            # stale 判定 + 中值滤波 + 交叉贡献扣除同一份判据（旧实现用原始
+            # 瞬时值，组内已有灯亮时把对方贡献算进 ambient → 亮度显著偏低）
+            lux_now = self._prepare_lux()
             if lux_now is None:
-                # F-104：非数字/非有限值与 stale 同路——不拿坏数据算亮度，
-                # 无级 turn_on 由灯保持自身默认
-                self._mark_lux_stale("照度读数非数字或非有限值")
+                # F-104/stale 同路：不拿坏数据算亮度，无级 turn_on 由灯保持
+                # 自身默认
                 await self._async_call_light("turn_on", {})
                 self.commanded_pct = None
                 self.notify()
                 return
+            current = self._current_pct()
             decision = decide(
                 curve,
                 lux_now,
-                self._current_pct(),
+                current if current is not None else 0.0,
                 self.target_lux,
                 float(self.opts[CONF_DEADBAND_PCT]),
                 float(self.opts[CONF_MIN_BRIGHTNESS_PCT]),
+                # R1 发现 2：首帧同样传照度死区（V1.2.2 遗留缺口）
+                deadband_lux=float(self.opts[CONF_DEADBAND_LUX]),
             )
             # An explicit turn-on never ends in "off": floor at min brightness.
             if decision.action == "off":
@@ -832,6 +903,12 @@ class ZoneRuntime:
                 captured = True
                 self._cal_captured = True
             step = int(self.opts[CONF_CAL_STEP_PCT])
+            # R1 发现 6（慢组员补录）：交叉采样防重基准预置为扫描起点——
+            # 档间补录只收扫描开始后的读数，陈旧旧读数不得冒充基线档
+            sweep_floor = dt_util.utcnow()
+            for _other in self._linked_runtimes():
+                self._cal_cross_last_lc.setdefault(_other.light_entity, sweep_floor)
+            self._cal_cross_prev_pct = _CAL_CROSS_NO_PREV
             while True:
                 sweep = await self._async_sweep(step)
                 if sweep["missed_streak"] >= CAL_TIMEOUT_UPGRADE_STREAK and step < 10:
@@ -888,6 +965,7 @@ class ZoneRuntime:
             # 各失败分支的 WARNING 承担）。
             self._cal_cross_samples = {}
             self._cal_cross_last_lc = {}
+            self._cal_cross_prev_pct = _CAL_CROSS_NO_PREV
             self._finish_calibration()
             if captured and not self._cal_pending_off:
                 # Best-effort: cancellation landing on this await abandons it.
@@ -1071,21 +1149,37 @@ class ZoneRuntime:
             # 的新读数顺带入样（同一 started 判据与防重 last_changed）。Y 已
             # 被 start_calibration 挂起为 IDLE（不调灯不评估），本窗内其读数
             # 只反映 X 的调光——互斥保证无污染。
+            # R1 发现 6（慢组员补录）：比主传感器静默期慢一拍的组员，其已
+            # 稳定读数若落在「上一档窗口关闭后、本档 started 之前」（典型=
+            # blocking 服务调用期间），旧实现因 o_lc < started 被永久跳过
+            # ——档位稀疏、质量门不达。该读数物理上是上一档灯态（本档命令
+            # 尚未发出），按 _cal_cross_prev_pct 补录进上一档。
             for other in self._linked_runtimes():
                 o_state = self.hass.states.get(other.lux_entity)
                 if o_state is None:
                     continue
-                o_lc = o_state.last_changed
-                if o_lc < started or (
-                    o_lc == self._cal_cross_last_lc.get(other.light_entity)
-                ):
-                    continue
                 o_value = _parse_lux_state(o_state)
-                if o_value is not None:
-                    self._cal_cross_last_lc[other.light_entity] = o_lc
-                    self._cal_cross_samples.setdefault(
-                        other.light_entity, {}
-                    ).setdefault(pct, []).append(o_value)
+                if o_value is None:
+                    continue
+                o_lc = o_state.last_changed
+                recorded = self._cal_cross_last_lc.get(other.light_entity)
+                if o_lc < started:
+                    if (
+                        self._cal_cross_prev_pct is not _CAL_CROSS_NO_PREV
+                        and recorded is not None
+                        and o_lc > recorded
+                    ):
+                        self._cal_cross_last_lc[other.light_entity] = o_lc
+                        self._cal_cross_samples.setdefault(
+                            other.light_entity, {}
+                        ).setdefault(self._cal_cross_prev_pct, []).append(o_value)
+                    continue
+                if o_lc == recorded:
+                    continue
+                self._cal_cross_last_lc[other.light_entity] = o_lc
+                self._cal_cross_samples.setdefault(
+                    other.light_entity, {}
+                ).setdefault(pct, []).append(o_value)
             if now >= hard_deadline:
                 _LOGGER.warning(
                     "%s: 校准 %s 档静默期超时（连续上报不停），按已采样本收口",
@@ -1098,6 +1192,9 @@ class ZoneRuntime:
             if quiet_deadline is None and now >= first_deadline:
                 break
             await asyncio.sleep(CAL_POLL_INTERVAL_S)
+        # R1 发现 6：本档收口后即成为「上一档」——下一档的档间补录以此为
+        # 归属目标（命令失败的提前 return 不推进：灯仍处上一档灯态）
+        self._cal_cross_prev_pct = pct
         return samples
 
     async def _async_restore_light(self, was_on: bool, orig_pct: float | None) -> None:
@@ -1185,6 +1282,18 @@ class ZoneRuntime:
                     other.zone_name,
                     err,
                 )
+
+    async def async_drop_cross_curve(self, light_entity: str) -> None:
+        """回收以对方灯实体为键的本区交叉曲线（R1 发现 14，P3）。
+
+        对方区改绑/删除后，本区 store 里以其旧灯实体为键的交叉曲线成为
+        永久孤儿（键永远 miss + 每次启动读回脏数据；同 entity_id 换灯具
+        还会静默复活旧曲线）。内存与落盘两处一并回收；键不存在时幂等
+        no-op。改绑/删除挂点：lux/flow reconfigure、根 __init__ 删条目钩子。
+        """
+        if self._cross_curves.pop(light_entity, None) is not None:
+            self.notify()
+        await self.storage.async_remove_cross_curve(light_entity)
 
     def _attr_pct(self, state) -> float | None:
         brightness = state.attributes.get(ATTR_BRIGHTNESS) if state else None

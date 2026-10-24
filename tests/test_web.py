@@ -1299,6 +1299,7 @@ def test_calibrate_cancel_endpoint_paths():
     rt = ZoneRuntime.__new__(ZoneRuntime)
     rt.__dict__.update(
         {
+        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
             "hass": hass,
             "entry_id": "lux1",
             "mode": "idle",
@@ -1336,6 +1337,7 @@ def test_calibrate_cancel_restores_and_sets_no_error():
     real = ZoneRuntime.__new__(ZoneRuntime)  # 跳过 __init__（依赖真 Store/registry）
     real.__dict__.update(
         {
+        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
             "hass": hass,
             "opts": {CONF_CAL_STEP_PCT: 5},
             "mode": "idle",
@@ -1413,6 +1415,7 @@ def test_calibrate_cancel_same_tick_honors_pending_off():
     rt = ZoneRuntime.__new__(ZoneRuntime)
     rt.__dict__.update(
         {
+        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
             "hass": hass,
             "entry_id": "lux1",
             "mode": "calibrating",
@@ -1466,6 +1469,7 @@ def test_calibrate_cancel_committed_returns_false():
     rt = ZoneRuntime.__new__(ZoneRuntime)
     rt.__dict__.update(
         {
+        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
             "hass": hass,
             "entry_id": "lux1",
             "mode": "calibrating",
@@ -1522,6 +1526,7 @@ def test_calibrate_cancel_mid_run_restores_active():
 
     real.__dict__.update(
         {
+        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
             "hass": hass,
             "opts": {CONF_CAL_STEP_PCT: 5},
             "mode": "idle",
@@ -1599,6 +1604,7 @@ def test_calibrate_cancel_same_tick_uncaptured_light_on_judges_active():
     rt = ZoneRuntime.__new__(ZoneRuntime)
     rt.__dict__.update(
         {
+        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
             "hass": hass,
             "entry_id": "lux1",
             "mode": "idle",
@@ -1667,6 +1673,7 @@ def test_calibrate_cancel_window2_started_not_captured():
     real = ZoneRuntime.__new__(ZoneRuntime)
     real.__dict__.update(
         {
+        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
             "hass": hass,
             "opts": {CONF_CAL_STEP_PCT: 5},
             "mode": "active",  # 校准前 ACTIVE（灯亮有曲线）
@@ -1746,6 +1753,7 @@ def test_calibrate_cancel_wakes_suspended_sibling():
     sweeping = ZoneRuntime.__new__(ZoneRuntime)
     sweeping.__dict__.update(
         {
+        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
             "hass": hass,
             "opts": {CONF_CAL_STEP_PCT: 5},
             "mode": "idle",
@@ -1777,6 +1785,7 @@ def test_calibrate_cancel_wakes_suspended_sibling():
     sibling = ZoneRuntime.__new__(ZoneRuntime)
     sibling.__dict__.update(
         {
+        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
             "hass": hass,
             "entry_id": "lux2",
             "mode": "active",  # ACTIVE 起步——start_calibration 将它挂起为 IDLE
@@ -1859,6 +1868,7 @@ def test_calibrate_cancel_honors_pending_off_in_finally():
     real = ZoneRuntime.__new__(ZoneRuntime)
     real.__dict__.update(
         {
+        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
             "hass": hass,
             "opts": {CONF_CAL_STEP_PCT: 5},
             "mode": "idle",
@@ -1940,6 +1950,7 @@ def test_calibrate_cancel_same_tick_wakes_sibling_via_fallback():
     sweeping = ZoneRuntime.__new__(ZoneRuntime)
     sweeping.__dict__.update(
         {
+        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
             "hass": hass,
             "opts": {CONF_CAL_STEP_PCT: 5},
             "mode": "idle",
@@ -1969,6 +1980,7 @@ def test_calibrate_cancel_same_tick_wakes_sibling_via_fallback():
     sibling = ZoneRuntime.__new__(ZoneRuntime)
     sibling.__dict__.update(
         {
+        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
             "hass": hass,
             "entry_id": "lux2",
             "mode": "active",  # 亮灯闭环中被 start_calibration 挂起
@@ -2033,6 +2045,7 @@ def test_start_calibration_suspends_active_sibling_and_guards():
         rt = ZoneRuntime.__new__(ZoneRuntime)
         rt.__dict__.update(
             {
+            "link_group": "",  # 无组：_linked_runtimes 空返回（桩对齐生产）
                 "hass": hass,
                 "opts": {CONF_CAL_STEP_PCT: 5},
                 "mode": mode,
@@ -2128,6 +2141,7 @@ def test_calibrate_cancel_sibling_no_light_write_on_fallback():
     sweeping = ZoneRuntime.__new__(ZoneRuntime)
     sweeping.__dict__.update(
         {
+        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
             "hass": hass,
             "opts": {CONF_CAL_STEP_PCT: 5},
             "mode": "idle",
@@ -2158,6 +2172,7 @@ def test_calibrate_cancel_sibling_no_light_write_on_fallback():
     sibling = ZoneRuntime.__new__(ZoneRuntime)
     sibling.__dict__.update(
         {
+        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
             "hass": hass,
             "entry_id": "lux2",
             "mode": "active",
@@ -2317,6 +2332,7 @@ def test_idle_never_revives_on_external_light_on():
     rt = ZoneRuntime.__new__(ZoneRuntime)
     rt.__dict__.update(
         {
+        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
             "hass": hass,
             "entry_id": "lux1",
             "mode": "idle",
@@ -2368,6 +2384,7 @@ def test_turn_off_requested_leaves_real_light_alone():
     rt = ZoneRuntime.__new__(ZoneRuntime)
     rt.__dict__.update(
         {
+        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
             "hass": hass,
             "entry_id": "lux1",
             "mode": "active",

@@ -33,7 +33,7 @@ from .anl.manager import (
     entry_effective_day_ci_lights,
 )
 from .const import CONF_KIND, DOMAIN, KIND_ANL, KIND_LUX
-from .lux.const import SERVICE_CALIBRATE
+from .lux.const import CONF_LIGHT_ENTITY, SERVICE_CALIBRATE
 from .lux.runtime import ZoneRuntime
 from .lux.store import ZoneStorage
 from .web import async_setup_web, async_unload_web
@@ -102,6 +102,15 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Drop per-entry storage (the lux calibration curve) on delete."""
     if entry.data.get(CONF_KIND, KIND_LUX) == KIND_LUX:
         await ZoneStorage(hass, entry.entry_id).async_remove()
+        # R1 发现 14：他区 store 里以本区灯实体为键的交叉曲线成为永久孤儿
+        # （键 miss + 同 entity_id 换灯具会静默复活旧曲线）——删除时逐区
+        # 回收（内存+落盘，幂等；本区 runtime 已卸载出桶，循环天然跳过）
+        old_light = entry.data.get(CONF_LIGHT_ENTITY)
+        if old_light:
+            for other in list(
+                (hass.data.get(DOMAIN) or {}).get("lux", {}).values()
+            ):
+                await other.async_drop_cross_curve(old_light)
         return
     # F-057：anl 条目真删除时归还 CI 虚拟灯。本钩子只在删除触发、reload
     # 不触发——卸载路径（async_unload_entry→manager.stop）故意不动灯，防

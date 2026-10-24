@@ -46,6 +46,8 @@
       entry_id: "lux1", zone_name: "卫生间", mode: calibrating ? "calibrating" : "active",
       cal_progress: calibrating ? "上行 35%" : "",
       target_lux: 150.0, commanded_pct: 45.0, target_min: 10, target_max: 500,
+      // R1 发现 10：target_step 随载荷下发（web._serialize_lux_zone 契约）
+      target_step: 5,
       lux_stale: false,
       curve: { source: "calibrated", max_lux: 186.3, slope_20_80: 2.41,
         points: [[0, 0], [10, 18.2], [30, 112.4], [55, 176.9], [80, 185.1], [100, 186.3]] },
@@ -138,6 +140,13 @@
       }
       if (method === "POST") {
         window.__servicePosts.push({ path: path, body: options && options.body });
+        // R1 发现 11：?caldone=1 模拟「校准刚好自行结束」——取消端点返回
+        // cancelled:false（真实端点 web.py:354 契约），page-lux.js 的
+        // FL-IMP-24 分支在 L2 从此可达
+        if (params.has("caldone")
+            && path.indexOf("/api/fumiha_lighting/lux/calibrate/cancel") === 0) {
+          return new Response(JSON.stringify({ ok: true, cancelled: false }), { status: 200 });
+        }
         return new Response(JSON.stringify({ ok: true, started: true, triggered: 1 }), { status: 200 });
       }
       if (path.indexOf("/api/fumiha_hub/panels") === 0) {

@@ -33,6 +33,12 @@ async def lux_async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool
         _LOGGER.exception("%s: 区域加载失败，已回滚运行时", entry.title)
         raise
     runtime.start()
+    # R1 发现 1（P1）：对称化联动监听——条目按启动顺序逐个进桶，start()
+    # 只能看到当时的桶；此处对桶内所有 runtime 各重建一次联动订阅（幂等），
+    # 先启动的区也能听到后加入的组员。同包内调私有生命周期方法（web 层
+    # 禁调私有的 ANL-F-003 家规不覆盖本文件）。
+    for other in hass.data[DOMAIN].get("lux", {}).values():
+        other._refresh_link_listeners()
     return True
 
 

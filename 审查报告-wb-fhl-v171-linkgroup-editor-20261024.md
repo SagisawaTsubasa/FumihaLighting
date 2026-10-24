@@ -57,8 +57,16 @@
 
 R1 修复批（commit a481272，ANL-F-148~154）已使本报告三处描述失效——原文保留在上文供对照，以本节为准；今后修复批把「报告与代码同 commit 对齐」列入出门项。
 
-1. **「保存后 `_refresh()`」已删除**（§2 前端 / §4.3，ANL-F-150）：保存后**不再**立即 `_refresh()`——POST 只落 options、entry reload 是随后调度的异步任务，立即 GET 会撞旧 runtime（载荷不变→渲染门不重绘=旧 chip）或 unload 窗口（区出桶=空态闪最长 5s）。现行契约：保存响应直接乐观更新 chip（`_linkChipText` 单一来源），5s 轮询是唯一真相；reload 出桶窗口由 grace 兜住（ANL-F-155，`page-lux.js` `_lastSavedEntryId`+15s 窗，窗口内轮询缺刚保存条目不渲染空态）。
+1. **「保存后 `_refresh()`」已删除**（§2 前端 / §4.3，ANL-F-150）：保存后**不再**立即 `_refresh()`——POST 只落 options、entry reload 是随后调度的异步任务，立即 GET 会撞旧 runtime（载荷不变→渲染门不重绘=旧 chip）或 unload 窗口（区出桶=空态闪最长 5s）。现行契约：保存响应直接乐观更新 chip（`_linkChipText` 单一来源），5s 轮询是唯一真相；reload 出桶窗口由 grace 兜住（ANL-F-155/162/164/166，`page-lux.js` `_pendingSaves` Map + 15s 窗，收敛判据=条目在且 link_group/cross_fade/max_step_pct 三键全等，未收敛不渲染空态；判据演进与钉位详见 §7）。
 2. **POST 响应契约补记**（偏离①，R1 裁定可接受）：`POST /api/fumiha_lighting/lux/link_group` 响应为 `{ok, link_group, cross_fade, max_step_pct, link_peers}`——`link_peers` 按**新 group** 现查桶内其他区（排除自身，与 overview 同算法），供前端乐观更新不把有组员的组闪成「暂无同组成员」；单测 `test_link_group_post_returns_new_group_peers`（`tests/test_web.py`）。
 3. **「`float(True)` 可过、未新增防线」已失效**（§4.5，ANL-F-153）：`LuxLinkGroupView.post` 现显式拒 bool/非 int-float、`OverflowError` 归入 400，`tests/test_web.py` 有 `True`/`10**400` 钉；R2 起同族口径统一走 `_finite_number`（`anl/config_schema.py`，LuxTargetView / `_finite_or_none` / `_clean_num` 三处消费，ANL-F-156）。
 
 R2 复验新增发现 ANL-F-155~160（F-150 reload 窗口残留 / 数值同族 / 钉矩阵 / 缺键语义 / 本条 / 原生流警示）随第二轮修复 commit 收口，台账续编。
+
+## 7. R3/R4 修复回写（ANL-F-165）
+
+R3 修复批（commit 9e6136a，ANL-F-161~163）未随批回写本报告——违反 §6 自立的「报告与代码同 commit」出门项（R4 复验发现[2]追认）；本节随 R4 修复批（代码+钉+报告同 commit）补记，后续修复批继续执行该出门项。
+
+1. **ANL-F-161（R3）：乐观 chip 更新写游离节点**。修法=文案单一来源 `_linkChipText`（卡片渲染与保存后乐观更新共用，防两处漂移）+ 保存后按 entry_id 重查当前在 DOM 的 chip 再写（`[data-zone="…"] [data-action="link-group"]`，带 `_body` 空守）；查不到（区出桶/卡片重建中）跳过乐观更新等 5s 轮询收敛，不写不可见 DOM。钉：`dev/test_panel.py` `__bumpLuxPayload()` 触发弹窗期间重渲染 + `?reloadgap=1` 压住服务端真相（7s 空窗 > 4s 断言窗），可见 chip 新文案只能来自重查写入。
+2. **ANL-F-162（R3）→ ANL-F-164（R4 终态）：grace 收敛判据**。R3 落地=「条目在且 link_group 等于保存值」才清 grace、15s 超时放行；**已知残余**（R4 发现[1]）=组标签只是代理——只调 cross_fade/max_step_pct 的保存组标签不变，保存前已发出、保存后才落地的旧 overview 快照仍会提前清 grace，真出桶窗照旧闪空态。**现行口径（R4 修复）**：`web._serialize_lux_zone` 下发 `cross_fade`/`max_step_pct` 两数（`runtime.opts` merged_options 读穿），保存侧记三键，收敛判据=**条目在且三键全等**；grace 槽为 `Map<entry_id, {at, group, fade, step}>`（ANL-F-166，多区互不顶掉）。钉：超时侧（`?reloadgaplong`）/ `_boot` 重置 / `?reloadgapstale` 换标签旧快照（R3×3）+ R4 同标签只改交叉系数钉（旧码必红，红→绿实测）+ R4 双区 15s 内先后保存钉。
+3. **ANL-F-163（R3）：FakeRequest `body or {}` 吞 falsy body**。修法=模块级哨兵 `_UNSET`——未传 → `{}`，显式 falsy（`[]`/`None`/`0`）原值直达；缺键/非对象两防线分别断精确文案（lux+anl 两处），非对象分支获真覆盖（旧桩把 falsy 换成 `{}` 走缺键分支=假绿）。R4 复验确认 fixed。

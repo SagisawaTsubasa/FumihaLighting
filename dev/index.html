@@ -39,6 +39,13 @@
   // V1.7.1 联动组编辑器有状态夹具：POST 保存改写 luxLinkState，overview
   // GET 随之反映——L2 才能钉「保存后 chip 即时更新」全链
   var luxLinkState = { group: "卫生间", cross_fade: 0.5, max_step_pct: 20 };
+  // R4 ANL-F-166 双区夹具：?twozones=1 — 干区(lux2) 独立联动组状态（组
+  // 标签「干区」无同组员），POST/GET 按 entry_id 路由（单区夹具不变）
+  var luxLinkState2 = { group: "干区", cross_fade: 0.5, max_step_pct: 20 };
+  // ?reloadgappartial=1 — 保存后窗口内 overview 缺该区、其余区照常返回
+  //（entry_id -> 截止 ts）：复现「后存区已收敛的轮询 + 先存区仍在出桶窗」
+  // 的判别面（R4 ANL-F-166 单槽顶掉场景）
+  var luxReloadOmit = {};
   // F-150 reloadgap 钉：?reloadgap=1 时保存后 overview 在窗口内返回空
   // zones（模拟 reload 出桶窗口）。R2 ANL-F-155：单发布尔钉只证明「无立即
   // GET」（400ms 内 5s 轮询从未发生，空分支从未被消费）——改为时间窗
@@ -56,15 +63,22 @@
   // grace，会在旧快照处提前清掉、空窗内闪空态；新判据（条目在且
   // link_group 已等于保存值）则撑到真组到达或 15s 超时
   var reloadgapStalePending = false;
-  var luxGroupBeforePost = "";
+  // R4 ANL-F-164：旧快照要还原保存前三键——同标签只改交叉系数的保存组
+  // 标签不变，只回退 link_group 盖不住该场景
+  var luxStateBeforePost = null;
   // ANL-F-151：名单/同组按 luxLinkState.group 派生（web 层同算法：换组
   // 后 link_members 只剩本区、link_peers 归 None）——硬编码会让「换组后
   // 重开弹窗名单应更新」这条核心价值面在 L2 假绿
   function luxLinkMembers() {
     if (!luxLinkState.group) return null;
+    // ?twozones=1：干区(lux2) 独立组「干区」不在「卫生间」组——名单按
+    // 真实桶成员只剩本区；单区夹具维持原名单（干区计入组员面）
+    if (params.has("twozones")) return [luxLinkState.group];
     return luxLinkState.group === "卫生间" ? ["卫生间", "干区"] : ["卫生间"];
   }
   function luxLinkPeers(forGroup) {
+    // ?twozones=1：lux1 的组无其他同组成员（干区独立组）
+    if (params.has("twozones")) return null;
     var g = forGroup === undefined ? luxLinkState.group : forGroup;
     return g === "卫生间" ? ["干区"] : null;
   }
@@ -72,7 +86,7 @@
   function luxZones() {
     // ?cal=1 → 校准进行中态（取消按钮依赖此渲染，FL-IMP-26）
     const calibrating = new URLSearchParams(location.search).get("cal") === "1";
-    return [{
+    var zones = [{
       entry_id: "lux1", zone_name: "卫生间", mode: calibrating ? "calibrating" : "active",
       cal_progress: calibrating ? "上行 35%" : "",
       target_lux: 150.0, commanded_pct: 45.0, target_min: 10, target_max: 500,
@@ -90,9 +104,28 @@
       last_adjustment: "2026-10-13T12:00:00+08:00",
       light_entity: "light.bath", lux_entity: "sensor.bath_lux",
       // V1.3.0 联动组（web._serialize_lux_zone 契约）：组标签+同组成员名单
-      //（V1.7.1 起组标签/名单读 luxLinkState，编辑保存后即时反映）
+      //（V1.7.1 起组标签/名单读 luxLinkState，编辑保存后即时反映）；
+      // R4 ANL-F-164 契约扩展：cross_fade/max_step_pct 两数随载荷下发
+      //（runtime.opts 读穿），grace 三键收敛判据的数据面
       link_group: luxLinkState.group, link_peers: luxLinkPeers(),
+      cross_fade: luxLinkState.cross_fade, max_step_pct: luxLinkState.max_step_pct,
     }];
+    // R4 ANL-F-166 双区夹具：?twozones=1 — 干区(lux2) 独立联动组状态
+    if (params.has("twozones")) {
+      zones.push({
+        entry_id: "lux2", zone_name: "干区", mode: "active", cal_progress: "",
+        target_lux: 120.0, commanded_pct: 30.0, target_min: 10, target_max: 500,
+        target_step: 5, lux_stale: false, curve: null,
+        decisions: ["22:41:03 [lux] lux=38 环境=38 需求=82 → set 30%"],
+        ambient_lux_est: 38.0, needed_lux: 82.0,
+        last_adjustment: "2026-10-13T12:00:00+08:00",
+        light_entity: "light.dry", lux_entity: "sensor.dry_lux",
+        // 独立组「干区」无同组员（overview 真实桶推导 peers 为空）
+        link_group: luxLinkState2.group, link_peers: null,
+        cross_fade: luxLinkState2.cross_fade, max_step_pct: luxLinkState2.max_step_pct,
+      });
+    }
+    return zones;
   }
   function anlManagers() {
     // ?ci=1 → 日间恒照度开启态（V1.5.0 manager 摘要 tag 的夹具）
@@ -185,10 +218,14 @@
         // 响应契约对齐 web.LuxLinkGroupView.post
         if (path.indexOf("/api/fumiha_lighting/lux/link_group") === 0) {
           var linkBody = JSON.parse((options && options.body) || "{}");
-          luxGroupBeforePost = luxLinkState.group;
-          luxLinkState.group = String(linkBody.link_group || "").trim();
-          luxLinkState.cross_fade = linkBody.cross_fade;
-          luxLinkState.max_step_pct = linkBody.max_step_pct;
+          // R4 ANL-F-166：双区夹具按 entry_id 路由各自状态（单区夹具 lux1）
+          var st = linkBody.entry_id === "lux2" ? luxLinkState2 : luxLinkState;
+          luxStateBeforePost = {
+            group: st.group, fade: st.cross_fade, step: st.max_step_pct,
+          };
+          st.group = String(linkBody.link_group || "").trim();
+          st.cross_fade = linkBody.cross_fade;
+          st.max_step_pct = linkBody.max_step_pct;
           if (params.has("reloadgap")) reloadgapUntil = Date.now() + 7000;
           if (params.has("reloadgapstale")) {
             reloadgapUntil = Date.now() + 12000;
@@ -197,13 +234,21 @@
           // R3 ANL-F-162 超时钉：出桶窗口（30s）跨过 15s grace——超时后
           // 必须恢复渲染门（空态出现），不得无限期抱着旧 DOM
           if (params.has("reloadgaplong")) reloadgapUntil = Date.now() + 30000;
+          if (params.has("reloadgappartial")) {
+            // R4 ANL-F-166：lux1 慢出桶 9s、lux2 快 1s——窗口内 overview
+            // 缺该区、其余区照常返回（「后存区已收敛轮询 + 先存区仍缺」
+            // 的判别面；真实 reload 是数百 ms，拉长让轮询相位无关）
+            luxReloadOmit[linkBody.entry_id] = Date.now()
+              + (linkBody.entry_id === "lux2" ? 1000 : 9000);
+          }
           return new Response(JSON.stringify({
             ok: true,
-            link_group: luxLinkState.group || null,
-            cross_fade: luxLinkState.cross_fade,
-            max_step_pct: luxLinkState.max_step_pct,
-            // F-150：响应带新组 link_peers（web.LuxLinkGroupView.post 契约）
-            link_peers: luxLinkPeers(),
+            link_group: st.group || null,
+            cross_fade: st.cross_fade,
+            max_step_pct: st.max_step_pct,
+            // F-150：响应带新组 link_peers（web.LuxLinkGroupView.post 契约；
+            // lux2 独立组恒无同组员）
+            link_peers: st === luxLinkState2 ? null : luxLinkPeers(),
           }), { status: 200 });
         }
         // R1 发现 11：?caldone=1 模拟「校准刚好自行结束」——取消端点返回
@@ -228,13 +273,25 @@
       }
       if (path.indexOf("/api/fumiha_lighting/lux/overview") === 0) {
         // F-150 reloadgap 钉（见 reloadgapUntil 声明处）；reloadgapstale
-        // 先发一张旧快照（条目在、link_group 保存前旧值）再进空窗
+        // 先发一张旧快照（条目在、三键全为保存前旧值）再进空窗
         if (params.has("reloadgapstale") && reloadgapStalePending) {
           reloadgapStalePending = false;
           var staleZones = luxZones();
-          staleZones[0].link_group = luxGroupBeforePost;
-          staleZones[0].link_peers = luxLinkPeers(luxGroupBeforePost);
+          staleZones[0].link_group = luxStateBeforePost.group;
+          staleZones[0].link_peers = luxLinkPeers(luxStateBeforePost.group);
+          // R4 ANL-F-164：旧快照三键回退——同标签只改交叉系数的保存组标
+          // 签不变，收敛判据必须连两数一起比才不会在该快照处提前清 grace
+          staleZones[0].cross_fade = luxStateBeforePost.fade;
+          staleZones[0].max_step_pct = luxStateBeforePost.step;
           return new Response(JSON.stringify({ zones: staleZones }), { status: 200 });
+        }
+        // R4 ANL-F-166 双区出桶窗：缺「各自窗未满」的区，其余照常返回
+        if (params.has("reloadgappartial")) {
+          var nowMs = Date.now();
+          var partial = luxZones().filter(function (z) {
+            return !(luxReloadOmit[z.entry_id] > nowMs);
+          });
+          return new Response(JSON.stringify({ zones: partial }), { status: 200 });
         }
         if (Date.now() < reloadgapUntil) {
           return new Response(JSON.stringify({ zones: [] }), { status: 200 });
@@ -244,13 +301,18 @@
       if (path.indexOf("/api/fumiha_lighting/lux/link_group") === 0) {
         // V1.7.1 联动组编辑器 GET 契约（web.LuxLinkGroupView.get）：
         // 三键现值 + link_members 完整组员名单（含本区，与 overview 的
-        // link_peers 排除自身分工不同）
+        // link_peers 排除自身分工不同）。R4 ANL-F-166：双区夹具按
+        // entry_id 路由（单区夹具 lux1 行为不变）
+        var q = new URLSearchParams(path.split("?")[1] || "");
+        var isLux2 = q.get("entry_id") === "lux2";
+        var gst = isLux2 ? luxLinkState2 : luxLinkState;
         return new Response(JSON.stringify({
-          ok: true, zone_name: "卫生间",
-          link_group: luxLinkState.group,
-          cross_fade: luxLinkState.cross_fade,
-          max_step_pct: luxLinkState.max_step_pct,
-          link_members: luxLinkMembers(),
+          ok: true,
+          zone_name: isLux2 ? "干区" : "卫生间",
+          link_group: gst.group,
+          cross_fade: gst.cross_fade,
+          max_step_pct: gst.max_step_pct,
+          link_members: isLux2 ? (gst.group ? [gst.group] : null) : luxLinkMembers(),
         }), { status: 200 });
       }
       if (path.indexOf("/api/fumiha_lighting/anl/snapshot") === 0) {

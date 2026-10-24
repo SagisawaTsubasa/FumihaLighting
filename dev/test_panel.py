@@ -58,7 +58,7 @@ INSTALL_ROW_STATE_JS = """() => {
       window.__anlRowState = () => {
         const keys = ['trigger_time', 'start_offset', 'end_time', 'end_offset',
           'sun_entity', 'day_brightness',
-          'day_color_temp_kelvin', 'day_ci_virtual_light',
+          'day_color_temp_kelvin',
           'transition_interval'];
         const out = {};
         keys.forEach((k) => {
@@ -623,12 +623,19 @@ def run_checks(browser, base: str) -> None:
         bool(vis1) and vis1["sun_entity"],
         str(vis1),
     )
+    # V1.7.0 反查推导：虚拟灯行整体删除（CI 面清零），日间参数行恒显
+    vl_row_gone = page.evaluate(
+        """() => {
+          const d = window.__anlSettingsDialog;
+          return !d.querySelector('[data-anl-row="day_ci_virtual_light"]');
+        }"""
+    )
     check(
-        "anl visibility: day on shows day rows and virtual light row (config entry)",
+        "anl visibility: day on shows day rows, virtual light row removed (V1.7.0)",
         bool(vis1) and vis1["day_brightness"]
-        and vis1["day_color_temp_kelvin"] and vis1["day_ci_virtual_light"]
+        and vis1["day_color_temp_kelvin"] and vl_row_gone
         and vis1["day_brightness_display"] == "flex",
-        str(vis1),
+        str(vis1) + " / vl_row_gone=" + str(vl_row_gone),
     )
     check(
         "anl visibility: zero transitions hides transition_interval row",
@@ -718,8 +725,8 @@ def run_checks(browser, base: str) -> None:
         }"""
     )
     check(
-        "anl visibility: day off hides CI/day rows, end_transition stays greyed",
-        bool(vis7) and not vis7["day_ci_virtual_light"] and not vis7["day_brightness"]
+        "anl visibility: day off hides day rows, end_transition stays greyed",
+        bool(vis7) and not vis7["day_brightness"]
         and end_trans["shown"] and end_trans["disabled"],
         str(vis7) + " / " + str(end_trans),
     )
@@ -751,13 +758,11 @@ def run_checks(browser, base: str) -> None:
         str(vis8),
     )
 
-    # 保存发键断言（V1.6.1）：全局弹窗只发虚拟灯键；day_ci_lights 缺省
-    #（编辑面在逐灯弹窗，patch 语义=不动存量清单）
+    # 保存发键断言（V1.7.0 反查推导）：全局弹窗零 CI 键——day_ci_lights
+    # 缺省（编辑面在逐灯弹窗，patch 语义=不动存量清单）、虚拟灯键废除
     page.evaluate(
         """() => {
           const d = window.__anlSettingsDialog;
-          const vl = d.querySelector('[data-anl-row="day_ci_virtual_light"] input[type="text"]');
-          vl.value = 'light.bedroom_heng_zhao_du_deng';
           [...d.querySelectorAll('button')].find((x) => x.textContent === '保存设置').click();
           return true;
         }"""
@@ -766,12 +771,12 @@ def run_checks(browser, base: str) -> None:
         """() => (window.__servicePosts || []).some((p) => {
           if (p.path !== '/api/fumiha_lighting/anl/config') return false;
           const params = JSON.parse(p.body).patch.params;
-          return params && params.day_ci_virtual_light === 'light.bedroom_heng_zhao_du_deng'
-            && !("day_ci_lights" in params);
+          return params && !("day_ci_lights" in params)
+            && !("day_ci_virtual_light" in params);
         })""",
         timeout=4000,
     )
-    check("anl settings save POSTs virtual light key, omits day_ci_lights (V1.6.1)", True)
+    check("anl settings save POSTs zero CI keys (V1.7.0)", True)
 
     page.evaluate(CANCEL_DIALOG_JS)
     page.wait_for_timeout(200)
@@ -935,9 +940,9 @@ def run_checks(browser, base: str) -> None:
         str(hallway),
     )
 
-    # V1.6.1 逐灯开关：hallway（未接管）弹窗内开关未勾；勾选保存 →
-    # POST params.day_ci_lights 整表（存量 bedroom + hallway），follow 态零
-    # overrides 分节
+    # V1.7.0 zone 归属钉：hallway ∉恒照度区域（ci_zone_name=null）→ 开关
+    # 禁用 + 归属提示；旧「勾选保存 POST 整表」路径对无区域灯不再可达
+    # （禁用态挡新勾选，服务端 zone 归属 400 兜底）
     toggle_state = page5.evaluate(
         """() => {
           const p = document.getElementById('hub');
@@ -945,47 +950,26 @@ def run_checks(browser, base: str) -> None:
             const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
             if (d && d.textContent.includes('跟随全局设置')) {
               const t = d.querySelector('[data-anl-ci-toggle]');
-              return { exists: !!t, checked: !!t && t.checked };
+              return {
+                exists: !!t,
+                checked: !!t && t.checked,
+                disabled: !!t && t.disabled,
+                hint: d.textContent.includes('此灯不属于任何恒照度区域'),
+              };
             }
           }
           return null;
         }"""
     )
     check(
-        "anl ?ci=1: per-light dialog has takeover toggle, unchecked for hallway",
-        bool(toggle_state) and toggle_state["exists"] and not toggle_state["checked"],
+        "anl V1.7.0: hallway toggle disabled with no-zone hint (zone membership)",
+        bool(toggle_state) and toggle_state["exists"] and not toggle_state["checked"]
+        and toggle_state["disabled"] and toggle_state["hint"],
         str(toggle_state),
     )
-    page5.evaluate(
-        """() => {
-          const p = document.getElementById('hub');
-          for (const el of p.shadowRoot.querySelectorAll('*')) {
-            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
-            if (d && d.textContent.includes('跟随全局设置')) {
-              const t = d.querySelector('[data-anl-ci-toggle]');
-              t.checked = true;
-              [...d.querySelectorAll('button')].find((x) => x.textContent === '保存').click();
-              return true;
-            }
-          }
-          return false;
-        }"""
-    )
-    page5.wait_for_function(
-        """() => (window.__servicePosts || []).some((p) => {
-          if (p.path !== '/api/fumiha_lighting/anl/config') return false;
-          const patch = JSON.parse(p.body).patch;
-          return patch.params && Array.isArray(patch.params.day_ci_lights)
-            && patch.params.day_ci_lights.length === 2
-            && patch.params.day_ci_lights.includes('light.bedroom')
-            && patch.params.day_ci_lights.includes('light.hallway')
-            && Array.isArray(patch.overrides_remove)
-            && patch.overrides_remove.includes('light.hallway')
-            && !patch.overrides;
-        })""",
-        timeout=4000,
-    )
-    check("anl V1.6.1: hallway toggle-on POSTs full day_ci_lights list", True)
+    # V1.7.0：hallway 弹窗不再经保存关闭（禁用态无处可存）——显式取消
+    page5.evaluate(CANCEL_DIALOG_JS)
+    page5.wait_for_timeout(200)
 
     # bedroom（已接管）弹窗：开关预勾；取消保存 → POST 空清单 + overrides_remove
     page5.wait_for_function(NO_DIALOG_JS, timeout=4000)
@@ -1026,7 +1010,30 @@ def run_checks(browser, base: str) -> None:
           return null;
         }"""
     )
+    bedroom_zone = page5.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.textContent.includes('跟随全局设置')) {
+              const t = d.querySelector('[data-anl-ci-toggle]');
+              return {
+                checked: !!t && t.checked,
+                enabled: !!t && !t.disabled,
+                hint: d.textContent.includes('由恒照度区域「卫生间」接管'),
+              };
+            }
+          }
+          return null;
+        }"""
+    )
     check("anl V1.6.1: bedroom per-light toggle prefilled checked", bedroom_toggle is True)
+    check(
+        "anl V1.7.0: bedroom toggle enabled with zone hint (B2 annotation)",
+        bool(bedroom_zone) and bedroom_zone["checked"] and bedroom_zone["enabled"]
+        and bedroom_zone["hint"],
+        str(bedroom_zone),
+    )
     page5.evaluate(
         """() => {
           const p = document.getElementById('hub');
@@ -1069,12 +1076,10 @@ def run_checks(browser, base: str) -> None:
             if (d && d.querySelector('[data-extra-row]')) {
               const row = (k) => d.querySelector('[data-anl-row="' + k + '"]');
               const vis = (k) => { const r = row(k); return !!r && r.style.display !== 'none'; };
-              const vl = row('day_ci_virtual_light');
               return {
                 noListRow: !row('day_ci_lights'),
                 dayShown: vis('day_brightness') && vis('day_color_temp_kelvin'),
-                virtualShown: vis('day_ci_virtual_light'),
-                value: vl ? vl.querySelector('input[type="text"]').value : null,
+                virtualGone: !row('day_ci_virtual_light'),
               };
             }
           }
@@ -1082,10 +1087,9 @@ def run_checks(browser, base: str) -> None:
         }"""
     )
     check(
-        "anl ?ci=1: settings dialog keeps day rows (F-104), virtual light visible prefilled",
+        "anl ?ci=1: settings dialog keeps day rows (F-104), virtual light row removed (V1.7.0)",
         bool(ci_state) and ci_state["noListRow"] and ci_state["dayShown"]
-        and ci_state["virtualShown"]
-        and ci_state["value"] == "light.bedroom_heng_zhao_du_deng",
+        and ci_state["virtualGone"],
         str(ci_state),
     )
 
@@ -1169,6 +1173,55 @@ def run_checks(browser, base: str) -> None:
     page6.evaluate(CANCEL_DIALOG_JS)
     page6.wait_for_timeout(200)
     page6.close()
+
+    # ---- R1 发现 11：?caldone=1 桩返回 cancelled:false → FL-IMP-24 分支
+    # （「校准已自行结束」文案）在 L2 可达（真实取消端点契约对齐）----------
+    page7 = browser.new_page(viewport={"width": 1280, "height": 900})
+    page7.goto(base + "/?cal=1&caldone=1")
+    page7.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            if (el.shadowRoot && el.shadowRoot.querySelector('[data-action="cancel-calibrate"]')) return true;
+          }
+          return false;
+        }""",
+        timeout=9000,
+    )
+    page7.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const btn = el.shadowRoot && el.shadowRoot.querySelector('[data-action="cancel-calibrate"]');
+            if (btn) { btn.click(); return true; }
+          }
+          return false;
+        }"""
+    )
+    page7.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d) { const b = [...d.querySelectorAll('button')].find(x => x.textContent === '中止'); if (b) { b.click(); return true; } }
+          }
+          return false;
+        }""",
+        timeout=4000,
+    )
+    page7.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const toast = el.shadowRoot && el.shadowRoot.querySelector('.fx-toast');
+            if (toast && toast.textContent.includes('校准已自行结束')) return true;
+          }
+          return false;
+        }""",
+        timeout=4000,
+    )
+    check("lux caldone=1: cancelled:false surfaces FL-IMP-24 branch (R1 #11)", True)
+    page7.close()
 
     # ---- standalone fallback (pages boot without the shell) ------------------
     page3 = browser.new_page(viewport={"width": 1280, "height": 900})

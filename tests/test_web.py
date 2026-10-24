@@ -393,12 +393,42 @@ def test_link_group_post_writes_mirror_options_and_strips():
     )
     assert resp.payload["ok"] is True
     assert resp.payload["link_group"] == "卫生间"
+    # ANL-F-150：响应带新组 link_peers——桶内无同组对等区 → None
+    assert resp.payload["link_peers"] is None
     options = recorded[0][1]["options"]
     # strip 归一（lux/flow.py 写入侧同语义：尾空格静默不同组的根治）
     assert options["link_group"] == "卫生间"
     assert options["cross_fade"] == 0.8
     assert options["max_step_pct"] == 30
     assert options["scan_interval_s"] == 30  # 镜像保留（只替换三键）
+
+
+def test_link_group_post_returns_new_group_peers():
+    """ANL-F-150：响应 link_peers 按新 group 现查桶内其他区（排除自身）
+    ——本 entry 的 runtime 属性此刻仍是旧值（reload 未发生），不得用它。"""
+    hass = _recording_hass()
+    entry = _config_entry("lux1", data={"kind": "lux"}, options={"link_group": "旧组"})
+    rt = fake_lux_runtime("lux1", "湿区")
+    rt.entry = entry
+    rt.link_group = "旧组"
+    dry = fake_lux_runtime("lux2", "干区")
+    dry.entry = _config_entry(
+        "lux2", data={"kind": "lux"}, options={"link_group": "新组"}
+    )
+    dry.link_group = "新组"
+    _lux_bucket(hass, rt, dry)
+    resp = run(
+        web.LuxLinkGroupView().post(
+            FakeRequest(
+                hass,
+                {"entry_id": "lux1", "link_group": "新组",
+                 "cross_fade": 0.5, "max_step_pct": 20},
+            )
+        )
+    )
+    assert resp.payload["ok"] is True and resp.payload["link_group"] == "新组"
+    # 干区已在「新组」→ 成为对等区；排除自身（湿区自己不在列）
+    assert resp.payload["link_peers"] == ["干区"]
 
 
 def test_link_group_post_empty_group_disables():
@@ -442,6 +472,10 @@ def test_link_group_post_rejects_invalid_values():
         {**base, "cross_fade": float("nan")},
         {**base, "cross_fade": "abc"},
         {**base, "cross_fade": None},
+        # ANL-F-153：bool 是 int 子类（float(True)=1.0 可混过范围门）；
+        # 超大整数 float() 抛 OverflowError——均须 400 而非 500/混过
+        {**base, "cross_fade": True},
+        {**base, "cross_fade": 10**400},
         {**base, "max_step_pct": 4},
         {**base, "max_step_pct": 55},
         {**base, "max_step_pct": float("inf")},

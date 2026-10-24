@@ -334,27 +334,36 @@ class LuxBalancePage extends HTMLElement {
 
   /* ---- link group editor chip + dialog (V1.7.1) -------------------------- */
 
-  _linkChip(z) {
-    const kit = window.FUMIHA.kit;
-    const text = z.link_group
+  // chip 文案单一来源（卡片渲染与保存后乐观更新共用，防两处漂移）
+  _linkChipText(link) {
+    return link.link_group
       ? // V1.3.0 联动组：组标签+组内成员名单（ambient 已扣除对方贡献）
-        "联动组「" + z.link_group + "」" +
-        (z.link_peers && z.link_peers.length
-          ? "：与 " + z.link_peers.join("、") + " 交叉扣除"
+        "联动组「" + link.link_group + "」" +
+        (link.link_peers && link.link_peers.length
+          ? "：与 " + link.link_peers.join("、") + " 交叉扣除"
           : "（暂无同组成员）")
       : "联动组未设置（点击配置）";
-    return kit.el("button", {
+  }
+
+  _linkChip(z) {
+    const kit = window.FUMIHA.kit;
+    const chip = kit.el("button", {
       class: "cx-tag",
       type: "button",
       "data-action": "link-group",
-      text,
+      text: this._linkChipText(z),
       title: "编辑联动组（组标签 / 交叉系数 / 缓变步幅）",
       // button 无 UA 重置，补 border/cursor 对齐 span.cx-tag 观感
       style: { border: "none", cursor: "pointer" },
       onclick: async () => {
         try {
-          // 保存成功即时刷新 chip（reload 落地前的轮询兜底，5s 一轮）
-          if (await this._openLinkGroupDialog(z)) this._refresh();
+          // ANL-F-150：去掉保存后立即 _refresh()——POST 只落 options，
+          // entry reload 是随后调度的异步任务，立即 GET 会撞旧 runtime
+          // （载荷不变→渲染门不重绘=旧 chip）或 unload 窗口（区出桶=
+          // 空态闪 5s）；保存响应（三键+link_peers）直接乐观更新 chip，
+          // 5s 轮询是唯一真相
+          const saved = await this._openLinkGroupDialog(z);
+          if (saved) chip.textContent = this._linkChipText(saved);
         } catch (err) {
           kit.ack(this.shadowRoot, {
             ok: false,
@@ -364,10 +373,13 @@ class LuxBalancePage extends HTMLElement {
         }
       },
     });
+    return chip;
   }
 
   async _openLinkGroupDialog(z) {
     const kit = window.FUMIHA.kit;
+    // 返回值契约：保存成功=POST 响应对象（truthy，供 chip 乐观更新），
+    // 取消/Esc/GET 失败=false（ANL-F-150）
     // 先 GET 现值+组员名单（服务端 link_members 契约）再开弹窗——名单是
     // 本编辑器超越原生 options 流对话框的价值面，不从 overview 缓存拼
     let cur;
@@ -438,6 +450,27 @@ class LuxBalancePage extends HTMLElement {
           ).join("、")
         : "联动组未设置——给需要互认的区域填同一标签即成组",
     });
+    // 名单脚注（V1.7.1 首审裁定②）：只列已加载区——对等区 disabled/
+    // SETUP_RETRY 时名单会显得缺人，文案先讲清边界（不改语义）
+    const membersFoot = cur.link_group
+      ? kit.el("div", {
+          class: "cx-note",
+          style: { margin: "-3px 0 5px", color: "var(--fx-sub)" },
+          text: "仅显示已加载区域",
+        })
+      : null;
+    // ANL-F-149：校准中保存会经 update listener 触发 entry reload，
+    // reload 取消 _cal_task 且新 runtime 无痕（cal_last_error=None）——
+    // 15~40 分钟 sweep 被一次点击静默丢弃必须有醒目提示。软提示路线：
+    // 用户可能确需中途改组，不做 409 硬保护
+    const calWarn =
+      z.mode === "calibrating"
+        ? kit.el("div", {
+            class: "cx-note warn",
+            style: { margin: "0 0 5px" },
+            text: "校准进行中：保存会重载条目并中止本次校准，已采集数据弃用",
+          })
+        : null;
     return new Promise((resolve) => {
       const errLine = kit.el("div", {
         class: "fx-error",
@@ -449,7 +482,9 @@ class LuxBalancePage extends HTMLElement {
         "dialog",
         { class: "fx-dialog", style: { minWidth: "360px", maxWidth: "92vw" } },
         kit.el("h2", { text: z.zone_name + " — 联动组", style: { marginTop: "0" } }),
+        calWarn,
         membersNote,
+        membersFoot,
         row("联动组标签", groupInp),
         row("交叉系数（0.1–1.0）", fadeInp),
         row("缓变步幅（5–50，%）", stepInp),
@@ -503,14 +538,16 @@ class LuxBalancePage extends HTMLElement {
           if (!Number.isFinite(step) || step < 5 || step > 50) {
             throw new Error("缓变步幅需在 5–50 之间");
           }
-          await kit.api(this._hass).post(LINK_URL, {
+          // 响应三键+link_peers 交给调用方乐观更新 chip（ANL-F-150：
+          // resolve 值=保存响应对象，取消/Esc/GET 失败=false）
+          const res = await kit.api(this._hass).post(LINK_URL, {
             entry_id: z.entry_id,
             link_group: group,
             cross_fade: fade,
             max_step_pct: step,
           });
           kit.ack(this.shadowRoot, { ok: true, label: "联动组已保存，正在应用" });
-          finish(true);
+          finish(res);
         } catch (e) {
           errLine.textContent = String(e && e.message ? e.message : e);
           errLine.style.display = "";

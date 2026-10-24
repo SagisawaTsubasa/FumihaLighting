@@ -377,12 +377,13 @@ def _serialize_anl_manager(mgr, hass: HomeAssistant | None = None) -> dict:
 
     V1.7.0 反查推导：day_ci_virtual_light 键废除（移交对象由反查表推导，
     页面不再展示组级虚拟灯）；逐灯携带 ci_zone_name（B2 归属标注，逐灯弹
-    窗「由恒照度区域 X 接管」小字与 ∉表禁用态的数据源）——仅对「清单内
-    且 ∈ 反查表」的灯给出，反查失败静默为 None（失效告警由 manager 动作
-    路径负责）。
+    窗三态提示的数据源）。ANL-F-132：归属与清单解耦——∈ 反查表即给出，
+    不再看清单勾选态；「∈区域未勾选」的灯凭它解除禁用并提示「勾选后接管」
+    （归属是物理事实，勾选是编辑态，混判会让新开接管在 UI 上不存在）。
+    反查失败静默为 None（失效告警由 manager 动作路径负责）；接管是否生效
+    由页面按 清单 ∧ ∈区域 ∧ day_ci_active 自行合成。
     """
     index = build_light_zone_index(hass) if hass is not None else {}
-    ci_lights = set(mgr.day_ci_lights)
     lights = []
     for entity_id, machine in mgr.machines.items():
         lights.append(
@@ -394,10 +395,10 @@ def _serialize_anl_manager(mgr, hass: HomeAssistant | None = None) -> dict:
                 "target": list(machine.target) if machine.target else None,
                 "applied": list(machine.applied) if machine.applied else None,
                 "last_error": machine.last_error,
-                # B2：恒照度区域归属（清单内 ∧ ∈index 才有值）
+                # B2：恒照度区域归属（∈index 即有值，与清单勾选解耦）
                 "ci_zone_name": (
                     index[entity_id]["zone_name"]
-                    if entity_id in ci_lights and entity_id in index
+                    if entity_id in index
                     else None
                 ),
             }
@@ -568,24 +569,31 @@ class AnlConfigView(HomeAssistantView):
                 return _error(400, err)
             merged.update(clean)
             # day_ci_lights 区域归属校验（V1.7.0 反查推导，A1/A2 同源）：
-            # 清单内每盏灯必须 ∈ light_zone_index——移交对象由系统推导，
+            # 新增进清单的灯必须 ∈ light_zone_index——移交对象由系统推导，
             # 「灯不属于任何恒照度区域」的接管是无效控制，入口逐灯 400
-            # 报名（计划书生效语义：清单保留存储、400 拦无效写入）。本集成
-            # 虚拟恒照度灯不在反查表（表只收 lux 区真实灯）——F-064 的
-            # 「清单混入自家虚拟灯」拒绝由此自然覆盖。shape/灯集子集已在
+            # 报名（计划书生效语义：清单保留存储、400 拦无效写入）。
+            # ANL-F-134：只校验本次新增（ANL-F-106「校验只打本次改动面」
+            # 同哲学）——页面是逐灯开关、每次提交全表，整表校验遇 ≥2 条
+            # 失效存量会互锁（取消任一条都因另一条 400，永远摘不掉，且
+            # 同单捆绑的 overrides 修改一并被锁）；存量失效项放行，运行时
+            # 走失效告警+跳过语义（计划书生效语义）。本集成虚拟恒照度灯
+            # 不在反查表（表只收 lux 区真实灯）——F-064 的「清单混入自家
+            # 虚拟灯」新增拒绝由此自然覆盖。shape/灯集子集已在
             # validate_params 拒绝（schema 层保留格式校验）。
             ci_lights = clean.get(CONF_DAY_CI_LIGHTS)
             if ci_lights:
-                index = build_light_zone_index(hass)
-                outside = [e for e in ci_lights if e not in index]
-                if outside:
-                    return _error(
-                        400,
-                        "；".join(
-                            f"灯 {e} 不属于任何恒照度区域" for e in outside
+                added = [e for e in ci_lights if e not in set(old_ci_lights)]
+                if added:
+                    index = build_light_zone_index(hass)
+                    outside = [e for e in added if e not in index]
+                    if outside:
+                        return _error(
+                            400,
+                            "；".join(
+                                f"灯 {e} 不属于任何恒照度区域" for e in outside
+                            )
+                            + "（请先在恒照度侧为该灯配置区域，或取消其接管勾选）",
                         )
-                        + "（请先在恒照度侧为该灯配置区域，或取消其接管勾选）",
-                    )
         # overrides 一律在深拷贝副本上改动（ANL-F-026）：merged 是浅拷贝，
         # 嵌套 dict 与 entry.options 同对象——就地 prune/upsert 会在后段
         # 校验 400 时构成"已改内存、未触发 reload"的静默部分写入。

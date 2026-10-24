@@ -22,6 +22,7 @@ from custom_components.fumiha_lighting.lux.const import (
     CAL_MIN_USEFUL_LUX,
     CONF_AUTO_TURN_OFF,
     CONF_CAL_STEP_PCT,
+    CONF_CROSS_FADE,
     CONF_DEADBAND_LUX,
     CONF_DEADBAND_PCT,
     CONF_LIGHT_ENTITY,
@@ -832,6 +833,26 @@ def test_max_step_pct_clamped_at_construction():
         assert rt._max_step_pct == expected
 
 
+def test_cross_fade_clamped_at_construction():
+    """ANL-F-140（P3）：cross_fade 消费点夹取 0..1（与 max_step_pct 同族）
+    ——.storage 手改后三种静默错扣形态收敛：0=近似兜底失效（组内扣 0 回
+    互串震荡）、负值=扣成「加」（ambient 虚高过驱）、>1=过扣归零 ambient
+    （同样过驱），三种都无日志且与正常限幅不可区分。"""
+    for raw, expected in ((0, 0.0), (-0.5, 0.0), (7, 1.0), (0.5, 0.5)):
+        hass = _make_hass({})
+        entry = SimpleNamespace(
+            entry_id="e",
+            data={
+                CONF_ZONE_NAME: "z",
+                CONF_LIGHT_ENTITY: "light.a",
+                CONF_LUX_ENTITY: "sensor.a",
+            },
+            options={CONF_CROSS_FADE: raw},
+        )
+        rt = ZoneRuntime(hass, entry)
+        assert rt._cross_fade == expected
+
+
 def test_link_group_stripped_at_runtime_read():
     """R1 发现 9（P3）：读取侧 strip 兜底存量——尾空格组名不再静默成组。"""
     hass = _make_hass({})
@@ -937,3 +958,81 @@ def test_drop_cross_curve_removes_memory_and_disk(monkeypatch):
     run(a.async_drop_cross_curve("light.old"))
     assert _fake_store_cls.saves == saves_before
     assert notified == [True]
+
+
+def test_load_curve_rejects_non_finite_points(monkeypatch, caplog):
+    """ANL-F-139（P3）：主曲线含 NaN/inf 整条忽略并 WARNING——非有限点能
+    穿过解析与 Curve（其唯一异常源是空点集）直落决策链，`max(0, gross-
+    NaN)` 归零 ambient → 决策恒过驱且全程无日志。"""
+    store_mod, _cls = _fake_store_module(
+        monkeypatch,
+        {"points": [[0, 0], [50, float("nan")], [100, 50]]},
+    )
+    storage = store_mod.ZoneStorage(None, "e1")
+    with caplog.at_level(logging.WARNING, logger=store_mod._LOGGER.name):
+        curve = run(storage.async_load_curve())
+    assert curve is None
+    assert any("非有限值" in r.getMessage() for r in caplog.records)
+
+
+def test_load_cross_curves_rejects_non_finite_points(monkeypatch, caplog):
+    """ANL-F-139（P3）：交叉曲线含非有限点整条忽略（近似系数兜底）并
+    WARNING 带 light_entity；好曲线不受牵连。"""
+    store_mod, _cls = _fake_store_module(
+        monkeypatch,
+        {
+            "cross_curves": {
+                "light.good": {"points": [[0, 0], [100, 50]]},
+                "light.nan": {"points": [[0, 0], [100, float("inf")]]},
+            }
+        },
+    )
+    storage = store_mod.ZoneStorage(None, "e1")
+    with caplog.at_level(logging.WARNING, logger=store_mod._LOGGER.name):
+        curves = run(storage.async_load_cross_curves())
+    assert set(curves) == {"light.good"}
+    assert any(
+        "light.nan" in r.getMessage() and "非有限值" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_async_remove_serialized_with_saves_and_cleans_lock(monkeypatch):
+    """ANL-F-141（P3）：async_remove 与三个 save 同锁——改绑窗口
+    （async_remove → reload 卸载之间条目仍 loaded）内校准落盘不再把旧灯
+    曲线写回已删文件；删除后锁记账清理（_SAVE_LOCKS 不随删条目增长）。"""
+    from custom_components.fumiha_lighting.lux import store as store_mod
+
+    removed = []
+
+    class _Store:
+        def __init__(self, hass, version, key):
+            self.data = {"points": [[0, 0], [100, 50]]}
+
+        async def async_load(self):
+            return self.data
+
+        async def async_save(self, data):
+            self.data = data
+
+        async def async_remove(self):
+            removed.append(True)
+            self.data = None
+
+    monkeypatch.setattr(store_mod, "Store", _Store)
+    storage = store_mod.ZoneStorage(None, "e1")
+
+    async def scenario():
+        lock = store_mod._save_lock("e1")
+        async with lock:
+            task = asyncio.create_task(storage.async_remove())
+            for _ in range(5):
+                await asyncio.sleep(0)
+            # 持锁期间 remove 被挡（旧码直接删文件，校准 save 可插队写回）
+            assert not task.done()
+        await task
+        assert removed == [True]
+        # 锁记账清理：条目删除后 _SAVE_LOCKS 不残留
+        assert store_mod._SAVE_LOCKS.get("e1") is None
+
+    run(scenario())

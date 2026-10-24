@@ -604,15 +604,20 @@ class NightLightManager:
             if entity_id in self.machines and entity_id in index
         }
 
-    def _ci_zones(self) -> list[dict]:
+    def _ci_zones(self, lights: set[str] | None = None) -> list[dict]:
         """清单灯推导的去重 zone 集合（轮级至多一次 turn_on/turn_off）。
 
         每 zone 一盏虚拟灯：同 zone 多灯只 ensure/归还一次（取代 V1.6.0
         「全组单虚拟灯一次」）。 zone 信息实时查反查表，无缓存失效面。
+        ANL-F-133：lights=None（缺省）= day_ci_lights 全集语义——夜间归
+        还/启动对账/extra 起点等「放手面」必须对全部已知 zone 归还，不因
+        only_when_on 准入缩小；日间 ensure 调用点传准入后的 ci_lights，
+        关着的区不得经 lux 点亮（F-085 逐灯准入的 zone 集合等价）。
         """
+        wanted = self.day_ci_lights if lights is None else lights
         index = build_light_zone_index(self.hass)
         zones: dict[str, dict] = {}
-        for entity_id in self.day_ci_lights:
+        for entity_id in wanted:
             if entity_id in self.machines and entity_id in index:
                 zone = index[entity_id]
                 zones.setdefault(zone["entry_id"], zone)
@@ -620,8 +625,10 @@ class NightLightManager:
 
     def _warn_unmapped_ci_lights(self) -> None:
         """清单内灯 ∉ 反查表 → WARNING 每 manager 一次（错误必响；保留存
-        储不删，运行时跳过该灯）。只在动作路径（trigger/listener 接管）
-        调用——页面轮询与启动窗口不触发，防 lux 条目未加载的假告警。"""
+        储不删，运行时跳过该灯）。只在动作路径调用（ANL-F-137：trigger/
+        listener 日间分支/计划步日间守卫——自动化常态可观测，删区域后不
+        按「立即触发」也能看到告警）；页面轮询与启动窗口不触发，防 lux
+        条目未加载的假告警。节流内置（每 manager 一次），重复调用零成本。"""
         if self._warned_ci_unmapped:
             return
         index = build_light_zone_index(self.hass)
@@ -1501,6 +1508,11 @@ class NightLightManager:
             mode_now = self._mode_at(when.hour * 60 + when.minute)
         else:
             mode_now = None
+        # ANL-F-137：计划步落日间的守卫命中前告警一次——被动计划步是日间
+        # 的另一常态路径（主动 trigger/listener 之外唯一的直控决策点），
+        # 失效清单在此同样必须可观测；节流内置，重复调用零成本。
+        if ci and mode_now == MODE_DAY:
+            self._warn_unmapped_ci_lights()
         if self._ci_active_for_light(step.entity_id, mode_now):
             # F-060（V1.6.0 逐灯化）：CI 下非日侧带的窗口可能跨过日间锚点，
             # 落在日间的步进不得直控 CI 接管灯。被动计划步也不得经 lux 把
@@ -1641,6 +1653,12 @@ class NightLightManager:
         # dt_util.now() 只取一次算分钟，防两次取值不一致
         now = dt_util.now()
         mode = self._mode_at(now.hour * 60 + now.minute)
+        # ANL-F-137：失效清单告警挂监听日间分支——开灯监听是日间接管的
+        # 常态入口，此处不响则「删区域后清单失效」只有手动触发可见；须在
+        # _ci_active_for_light 之前调（失效灯恰不在 _ci_light_set 内，进
+        # 不了下方分支）。
+        if mode == MODE_DAY and self._ci_configured():
+            self._warn_unmapped_ci_lights()
         if self._ci_active_for_light(entity_id, mode):
             machine.manual_override = False
             machine.mismatch_steps = 0
@@ -1771,12 +1789,21 @@ class NightLightManager:
             ensured_zones: set[str] = set()
             if ci_lights:
                 # 准入后无灯（only_when_on 全关）零 ensure（F-085 组级语义
-                # 保留：关着的灯不经 lux 点亮）
-                for zone in self._ci_zones():
+                # 保留：关着的灯不经 lux 点亮）。ANL-F-133：zone 集合按准入
+                # 后的 ci_lights 推导——多区组里关着的区不得经 lux 点亮
+                #（ensure 开虚拟灯会把 lux 区真灯打开）。
+                for zone in self._ci_zones(lights=ci_lights):
                     if await self._async_ensure_zone_on(zone):
                         ensured_zones.add(zone["entry_id"])
             for entity_id in sorted(ci_lights):
-                zone = build_light_zone_index(self.hass)[entity_id]
+                # ANL-F-136：此处与 ci_lights 建立点之间隔着 ensure 的 await
+                #（事件循环已让出），并发卸载窗口内 lux 条目可出桶——裸下标
+                # 会 KeyError 并炸掉整轮触发（触发视图 500/夜锚回调腰斩），
+                # 与 web.py「await 之后不再重读桶」同型纪律。miss 的灯本轮
+                # 按未接管处理，照常进下方逐灯 fallback。
+                zone = build_light_zone_index(self.hass).get(entity_id)
+                if zone is None:
+                    continue
                 if zone["entry_id"] not in ensured_zones:
                     continue  # ensure 失败 → 逐灯 fallback 直控
                 # 恒照度闭环接管：CI 灯真实灯零直控（色温补发除外）、无
@@ -1904,17 +1931,17 @@ class NightLightManager:
             _LOGGER.debug("%s is off, skipped", entity_id)
             return False
 
-        if self._matches(state, brightness, kelvin):
-            machine.state = LightState.MATCHED
-            _LOGGER.debug("%s already matches target, no service call", entity_id)
-            return True
-
         # A3 防护（V1.7.0）：灯 ∈ 恒照度区域（无论是否在本组清单内）时，
         # 任何直控前先归还其闭环——夜间 anl 锚点直控 lux 区灯而 lux 零感知
         # 的「整夜互纠」根因（审计 A3）。所有直控路径（trigger/listener
         # settle/extra/计划步非跳过分支）都经本函数，守卫序单一收口；归还
         # 的 lux mode 白名单（idle/calibrating/None 不动）与 F-067 跨条目
         # 引用检查在 async_release_virtual_light 内恒执行。
+        # ANL-F-138：归还必须在 _matches 判定**之前**——灯恰已落在夜灯容
+        # 差内时旧序（_matches 短路 return True）够不到归还块，lux 闭环整
+        # 夜继续按自己的 target_lux 执掌该灯，把灯拉离夜灯参数；归还与否
+        # 不得取决于数值巧合。重入幂等（mode 守卫：归还后 mode=idle/灯灭，
+        # 下一轮进不了白名单零重复下发）。
         zone = build_light_zone_index(self.hass).get(entity_id)
         if zone is not None:
             await async_release_virtual_light(
@@ -1922,6 +1949,11 @@ class NightLightManager:
                 zone["virtual_entity_id"],
                 exclude_entry_id=self.entry.entry_id,
             )
+
+        if self._matches(state, brightness, kelvin):
+            machine.state = LightState.MATCHED
+            _LOGGER.debug("%s already matches target, no service call", entity_id)
+            return True
 
         # 状态不符，下发控制
         machine.state = LightState.SETTING

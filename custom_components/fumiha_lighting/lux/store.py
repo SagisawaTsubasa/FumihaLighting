@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
@@ -52,13 +53,19 @@ class ZoneStorage:
         except (TypeError, ValueError):
             _LOGGER.warning("lux_balance: 校准曲线数据损坏，已忽略并等待重新校准")
             return None
+        # ANL-F-139：非有限点（NaN/inf）能穿过解析与 Curve（其唯一异常源是
+        # 空点集）——落进决策链后 `max(0, gross-NaN)` 归零 ambient → 决策恒
+        # 过驱，全程无日志。整条忽略（不是逐点剔除：采样断续的曲线与缺档
+        # 不可区分，宁缺毋错），按 F-104 坏数据 WARNING 口径。
+        if not all(math.isfinite(p) and math.isfinite(v) for p, v in points):
+            _LOGGER.warning("lux_balance: 校准曲线含非有限值，已忽略并等待重新校准")
+            return None
         if len(points) < 2:
             return None
+        # Curve 的 ValueError 分支已删（ANL-F-139）：非空 points 不会触发其
+        # 唯一异常源（空点集），保留 try/except 会给后来者「已校验」的错觉
         source = str(data.get("source", "calibrated"))
-        try:
-            return Curve(points, source=source)
-        except ValueError:
-            return None
+        return Curve(points, source=source)
 
     async def async_save_curve(self, curve: Curve) -> None:
         # 读-改-写：保留同文件内的 cross_curves（联动组交叉曲线，V1.3.0）
@@ -103,14 +110,15 @@ class ZoneStorage:
                 continue
             if len(points) < 2:
                 continue
-            try:
-                result[str(light_entity)] = Curve(points, source="cross")
-            except ValueError:
+            # ANL-F-139：非有限点整条忽略（同主曲线口径）；Curve 的
+            # ValueError 死分支删除——非空点集不触发其唯一异常源
+            if not all(math.isfinite(p) and math.isfinite(v) for p, v in points):
                 _LOGGER.warning(
-                    "lux_balance: 交叉曲线点集非法（%s），已忽略该条并按近似系数兜底",
+                    "lux_balance: 交叉曲线含非有限值（%s），已忽略该条并按近似系数兜底",
                     light_entity,
                 )
                 continue
+            result[str(light_entity)] = Curve(points, source="cross")
         return result
 
     async def async_save_cross_curve(self, light_entity: str, curve: Curve) -> None:
@@ -142,4 +150,13 @@ class ZoneStorage:
 
     async def async_remove(self) -> None:
         """Drop the storage file when the config entry is deleted."""
-        await self._store.async_remove()
+        # ANL-F-141：删除也是一条写路径，必须与三个 save 同锁——改绑流程
+        # async_remove → async_update_reload_and_abort 之间条目仍 loaded，
+        # 校准任务可在 remove 的 await 窗口里 async_save_curve 把旧灯曲线
+        # 写回已删文件（新灯下次启动静默加载按旧灯标定的曲线）。
+        async with _save_lock(self._entry_id):
+            await self._store.async_remove()
+        # 锁记账清理：条目删除后不再有任何写路径取锁，残留条目只会让
+        # _SAVE_LOCKS 随删条目无限增长。已持旧锁对象的并发等待者不受
+        # dict 摘除影响（互斥按对象成立）。
+        _SAVE_LOCKS.pop(self._entry_id, None)

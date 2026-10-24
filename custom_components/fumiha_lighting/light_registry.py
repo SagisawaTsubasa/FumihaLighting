@@ -19,7 +19,8 @@ import logging
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
-from .const import DOMAIN
+from .const import CONF_KIND, DOMAIN, KIND_LUX
+from .lux.const import CONF_LIGHT_ENTITY
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -67,3 +68,30 @@ def build_light_zone_index(hass: HomeAssistant) -> dict[str, dict]:
             "virtual_entity_id": virtual_entry.entity_id,
         }
     return index
+
+
+def lux_light_owners(
+    hass: HomeAssistant, exclude_entry_id: str | None = None
+) -> dict[str, tuple[str, str]]:
+    """配置写入面的灯→区域归属真值（light_entity_id → (entry_id, zone_name)）。
+
+    ANL-F-135：本函数与 ``build_light_zone_index`` 的分工——反查表走运行时
+    桶，是「当前在跑的区域」，对**控制面**是对的；但 A2 查重与孤儿回收等
+    **配置写入面**要的是「配置真值」：disabled / SETUP_RETRY / 加载失败的
+    条目不在桶里，按桶判会漏拦同灯再建 zone（恢复后双 ACTIVE 闭环互抢）、
+    漏回收未加载区 store 里的孤儿交叉曲线。此处直接遍历
+    ``hass.config_entries`` 注册表（data+options 合并前的 data 即建区时的
+    绑定真值，lux/flow 单一事实），与 ``_anl_virtual_referenced_elsewhere``
+    同源。exclude_entry_id：改绑查重排除自身条目（纯改名/换传感器不命中
+    跨区 400）。
+    """
+    out: dict[str, tuple[str, str]] = {}
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if entry.data.get(CONF_KIND) != KIND_LUX:
+            continue
+        if entry.entry_id == exclude_entry_id:
+            continue
+        light = entry.data.get(CONF_LIGHT_ENTITY)
+        if light:
+            out[light] = (entry.entry_id, entry.title)
+    return out

@@ -14,6 +14,7 @@ import pytest
 from conftest import flush_deferred_callbacks as _flush_deferred
 
 from custom_components.fumiha_lighting import web
+from custom_components.fumiha_lighting.anl.const import CONF_DAY_ENABLED
 from custom_components.fumiha_lighting.config_flow import (
     FumihaLightingConfigFlow,
 )
@@ -2479,10 +2480,13 @@ def test_anl_entry_data_wizard_produces_no_ci_keys():
 
 
 def test_anl_snapshot_serializes_day_ci_keys():
-    """V1.7.0 快照契约：day_ci_virtual_light 键废除；逐灯 ci_zone_name 只对
-    「清单内 ∧ ∈反查表」的灯给出（B2 归属标注数据源）；清单外灯恒 None。"""
+    """V1.7.0 快照契约：day_ci_virtual_light 键废除；逐灯 ci_zone_name 与
+    清单解耦（ANL-F-132：∈反查表即给出——「∈区域未勾选」的灯凭它解除禁
+    用，逐灯开关是接管唯一新开入口，混判会让新开接管在 UI 上不存在）；
+    ∉任何区域的灯恒 None（B2 是物理归属，非勾选态）。"""
     hass = FakeHass()
     stubs.seed_light_zone(hass, "lux-x", "light.a", "卫生间", "light.a_virt")
+    stubs.seed_light_zone(hass, "lux-y", "light.b", "干区", "light.b_virt")
     _anl_bucket(
         hass,
         fake_anl_manager(day_ci_lights=["light.a"]),
@@ -2493,7 +2497,8 @@ def test_anl_snapshot_serializes_day_ci_keys():
     assert "day_ci_virtual_light" not in m  # 死键不再下发
     lights = {lt["entity_id"]: lt for lt in m["lights"]}
     assert lights["light.a"]["ci_zone_name"] == "卫生间"
-    assert lights["light.b"]["ci_zone_name"] is None  # 清单外恒 None
+    # ANL-F-132：清单外但 ∈index → 归属照给（勾选态由页面按清单合成）
+    assert lights["light.b"]["ci_zone_name"] == "干区"
     # 无反查表（lux 桶空）：清单内灯也不得谎报归属
     hass2 = FakeHass()
     _anl_bucket(hass2, fake_anl_manager(day_ci_lights=["light.a"]))
@@ -2580,3 +2585,36 @@ def test_anl_config_post_valid_zone_ci_lights_ok():
     options = recorded[0][1]["options"]
     assert options["day_ci_lights"] == ["light.a"]
     assert "day_ci_virtual_light" not in options
+
+
+def test_anl_config_post_stale_zone_entries_removal_unlocked():
+    """ANL-F-134：存量失效清单项放行（校验只打本次新增）——≥2 条失效项
+    时逐个取消各落盘一次，清单最终清空。旧整表校验在此场景互锁：取消任
+    一条都因另一条 400，永远摘不掉（页面逐灯开关每次提交全表）。"""
+    hass = _recording_hass()
+    entry = _config_entry(
+        data={"kind": "anl", "lights": ["light.a", "light.bad1", "light.bad2"],
+              CONF_DAY_ENABLED: True,
+              "day_ci_lights": ["light.bad1", "light.bad2"]}
+    )
+    _anl_bucket(hass, _config_manager(entry))
+    # 第一刀：取消 bad1 → 提交 [bad2]（存量放行）→ 200
+    resp1 = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"params": {
+                                   "day_ci_lights": ["light.bad2"]}}})
+        )
+    )
+    assert resp1.payload["ok"] is True
+    assert recorded[0][1]["options"]["day_ci_lights"] == ["light.bad2"]
+    # 第二刀：取消 bad2 → 提交 [] → 200 清空（旧码同样能过的 N=1 尾态）
+    resp2 = run(
+        web.AnlConfigView().post(
+            FakeRequest(hass, {"entry_id": "anl1",
+                               "patch": {"params": {"day_ci_lights": []}}})
+        )
+    )
+    assert resp2.payload["ok"] is True
+    assert entry.options["day_ci_lights"] == []  # _recording_hass 真实写回
+

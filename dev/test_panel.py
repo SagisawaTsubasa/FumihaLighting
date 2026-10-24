@@ -971,6 +971,63 @@ def run_checks(browser, base: str) -> None:
     page5.evaluate(CANCEL_DIALOG_JS)
     page5.wait_for_timeout(200)
 
+    # ANL-F-132 三态钉：balcony ∈恒照度区域但未勾选 → 开关可勾选（接管
+    # 唯一新开入口；旧码 ci_zone_name 只发清单内灯，此格恒禁用=新开接管
+    # 在 UI 上不存在）+「勾选后由该区闭环接管」提示
+    page5.wait_for_function(NO_DIALOG_JS, timeout=4000)
+    page5.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const card = el.shadowRoot && el.shadowRoot.querySelector('[data-light="light.balcony"]');
+            if (card) {
+              const btn = card.querySelector('[data-action="light-settings"]');
+              if (btn) { btn.click(); return true; }
+            }
+          }
+          return false;
+        }"""
+    )
+    page5.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.textContent.includes('跟随全局设置')) return true;
+          }
+          return false;
+        }""",
+        timeout=9000,
+    )
+    balcony_toggle = page5.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.textContent.includes('跟随全局设置')) {
+              const t = d.querySelector('[data-anl-ci-toggle]');
+              return {
+                exists: !!t,
+                checked: !!t && t.checked,
+                disabled: !!t && t.disabled,
+                hint: d.textContent.includes('属于恒照度区域「卫生间」')
+                  && d.textContent.includes('勾选后由该区闭环接管'),
+              };
+            }
+          }
+          return null;
+        }"""
+    )
+    check(
+        "anl V1.7.0 F-132: in-zone unchecked light enabled with opt-in hint",
+        bool(balcony_toggle) and balcony_toggle["exists"]
+        and not balcony_toggle["checked"] and not balcony_toggle["disabled"]
+        and balcony_toggle["hint"],
+        str(balcony_toggle),
+    )
+    page5.evaluate(CANCEL_DIALOG_JS)
+    page5.wait_for_timeout(200)
+
     # bedroom（已接管）弹窗：开关预勾；取消保存 → POST 空清单 + overrides_remove
     page5.wait_for_function(NO_DIALOG_JS, timeout=4000)
     page5.evaluate(

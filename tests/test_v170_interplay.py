@@ -19,16 +19,25 @@ from types import SimpleNamespace
 
 import conftest as stubs
 from test_anl_transitions import (
+    BAND_KEY,
     LIGHT,
     VIRT,
+    LightState,
+    PlanStep,
     _FakeState,
     _FakeStates,
     _RecordingServices,
     make_ci_manager,
+    make_manager,
 )
+from test_anl_v15_firstrev_fixes import _listener_event
 from test_lux_linkgroup import _make_hass, _pair_with_states, _state
 from test_web import run
 
+from custom_components.fumiha_lighting.anl.const import (
+    CONF_DAY_CI_LIGHTS,
+    CONF_LIGHTS,
+)
 from custom_components.fumiha_lighting.const import DOMAIN
 from custom_components.fumiha_lighting.lux import runtime as rt_mod
 from custom_components.fumiha_lighting.lux.logic import curve_from_manual
@@ -274,3 +283,118 @@ def test_on_linked_event_ignores_stale_mode_after_a3_release():
 
 async def _async_true():
     return True
+
+
+# ---------------------------------------------------------------------------
+# 4. 首审修复钉（ANL-F-133/136/137/138，fhl-v170 R1）
+# ---------------------------------------------------------------------------
+
+
+def test_f133_only_when_on_ensure_scoped_to_admitted_zones():
+    """ANL-F-133（P2）：only_when_on 准入传到 ensure 的 zone 集合——多区组
+    里 A 区灯亮、B 区灯灭时只 ensure A 的虚拟灯，B 区零调用（旧码对
+    day_ci_lights 全集 ensure，会把关着的区的灯经 lux 点亮）。"""
+    SECOND = "light.second"
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
+    m = make_ci_manager(
+        **{
+            CONF_DAY_CI_LIGHTS: [LIGHT, SECOND],
+            CONF_LIGHTS: [LIGHT, SECOND],
+            "only_when_on": True,
+        }
+    )
+    stubs.seed_light_zone(m.hass, "lux-second", SECOND, "干区", "light.second_virt")
+    svc = []
+    m.hass.services = _RecordingServices(svc)
+    m.hass.states.mapping[VIRT] = _FakeState("off")
+    m.hass.states.mapping[LIGHT] = _FakeState("on", 255, 4000)
+    m.hass.states.mapping[SECOND] = _FakeState("off")
+    run(m.async_trigger("test"))
+    # 恰两次虚拟灯面调用：A 区 ensure + A 灯 B1 色温补发；B 区虚拟灯零
+    # ensure（B 区真实灯不被点亮），SECOND 灯灭走真实 SKIPPED_OFF 零直控
+    assert svc == [
+        ("light", "turn_on", {"entity_id": VIRT}),
+        ("light", "turn_on", {"entity_id": LIGHT, "color_temp_kelvin": 4000}),
+    ]
+    assert m.machines[LIGHT].state == LightState.IDLE
+    assert m.machines[SECOND].state == LightState.SKIPPED_OFF
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)
+
+
+def test_f136_trigger_survives_zone_unload_during_ensure():
+    """ANL-F-136（P3）：ensure 的 await 让出后 lux 条目并发卸载出桶——逐
+    灯下标改 .get 后整轮不再 KeyError（触发视图 500/夜锚回调腰斩），miss
+    灯照常进逐灯 fallback 日间参数直控。"""
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
+    m = make_ci_manager()
+    svc = []
+    m.hass.services = _RecordingServices(svc)
+    m.hass.states.mapping[VIRT] = _FakeState("off")
+    calls = []
+
+    async def _fake_process(entity_id, brightness, kelvin, allow_turn_on=True,
+                            transition_s=None):
+        calls.append(entity_id)
+        return True
+
+    m._async_process_light = _fake_process
+    orig_ensure = m._async_ensure_zone_on
+
+    async def _ensure_then_unload(zone):
+        ok = await orig_ensure(zone)
+        # 并发卸载窗口（ensure 的 await 让出后）：lux 条目出桶+注册表清除
+        del m.hass.data[DOMAIN]["lux"]["lux-test"]
+        stubs._ENTITY_REGISTRY._entries_for.pop("lux-test", None)
+        return ok
+
+    m._async_ensure_zone_on = _ensure_then_unload
+    run(m.async_trigger("test"))  # 旧码在此抛 KeyError
+    assert svc == [("light", "turn_on", {"entity_id": VIRT})]  # ensure 先成功
+    assert calls == [LIGHT]  # 反查 miss → 逐灯 fallback 直控（非静默丢弃）
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)
+
+
+def test_f137_unmapped_warning_fires_on_listener_and_plan_step(caplog):
+    """ANL-F-137（P3）：失效清单 WARNING 挂自动化常态路径——开灯监听日间
+    分支与计划步日间守卫命中前各调一次（节流每 manager 一次），删区域后
+    不按「立即触发」也能看到告警；启动/轮询面维持不调（既有约束不变）。"""
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
+    m = make_ci_manager()
+    svc = []
+    m.hass.services = _RecordingServices(svc)
+    m.hass.states.mapping[VIRT] = _FakeState("off")
+    # 卸载 lux 区：LIGHT 在清单但 ∉反查表（失效清单形态）
+    del m.hass.data[DOMAIN]["lux"]["lux-test"]
+    stubs._ENTITY_REGISTRY._entries_for.pop("lux-test", None)
+    with caplog.at_level(logging.WARNING, logger=MANAGER_LOGGER):
+        # 常态路径一：监听日间分支（失效灯进不了 _ci_active_for_light，
+        # 旧码此处永不告警）
+        run(m._async_light_state_changed(_listener_event()))
+        # 常态路径二：计划步日间守卫（正午=日间）——节流后不再重复
+        step = PlanStep(LIGHT, 100, 4000, BAND_KEY, entrance=True)
+        run(m._async_run_steps([step], datetime(2026, 10, 2, 12, 0)))
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    assert "不属于任何恒照度区域" in warnings[0] and LIGHT in warnings[0]
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)
+
+
+def test_f138_release_precedes_match_shortcircuit():
+    """ANL-F-138（P3）：A3 归还上提到 _matches 之前——灯恰已落在夜灯容差
+    内（旧码 _matches 短路 return True 够不到归还块）时归还仍发生，lux
+    闭环不得因数值巧合整夜执掌该灯。CI 关（清单空）→ 轮级归还分支不触
+    发，逐灯 A3 是唯一归还口，钉的是归还判据本身。"""
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)
+    m = make_manager()
+    stubs.seed_light_zone(m.hass, "lux-test", LIGHT, "卫生间", VIRT)
+    m.hass.states.mapping[VIRT] = _FakeState("on", mode="active")
+    # 恰=夜间参数（25%≈64/2200K，容差内）→ _matches 恒真
+    m.hass.states.mapping[LIGHT] = _FakeState("on", 64, 2200)
+    svc = []
+    m.hass.services = _RecordingServices(svc)
+    run(m.async_trigger("test"))
+    assert svc == [("light", "turn_off", {"entity_id": VIRT})]
+    assert m.machines[LIGHT].state == LightState.MATCHED  # 匹配判定照常生效
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)

@@ -204,9 +204,14 @@ class ZoneRuntime:
         # ambient 计算扣除组内其他灯对本传感器的贡献（交叉曲线优先，
         # 近似 = 对方主曲线 × cross_fade 兜底）。
         self.link_group: str = str(self.opts.get(CONF_LINK_GROUP) or "").strip()
-        self._cross_fade: float = float(self.opts[CONF_CROSS_FADE])
-        # R1 发现 7：消费点从 const 哲学夹取（与 set_target 同型）——.storage
-        # 被手改成 0/负值时旧码退化为「永不动/每轮下漂」，静默无区分
+        # R1 发现 7 / ANL-F-140：消费点从 const 哲学夹取（与 set_target 同
+        # 型）——.storage 被手改后静默错扣：max_step_pct 0/负值退化为「永
+        # 不动/每轮下漂」；cross_fade 0=近似兜底失效、负值=扣成「加」
+        # （ambient 虚高过驱）、>1=过扣归零 ambient（同样过驱），三种都无
+        # 日志且与正常限幅不可区分。flow selector（0.1~1.0）只护 GUI 面。
+        self._cross_fade: float = max(
+            0.0, min(1.0, float(self.opts[CONF_CROSS_FADE]))
+        )
         self._max_step_pct: float = max(
             1.0, min(100.0, float(self.opts[CONF_MAX_STEP_PCT]))
         )

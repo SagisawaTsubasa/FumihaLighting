@@ -18,7 +18,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import selector
 
 from ..const import CONF_KIND, KIND_LUX
-from ..light_registry import build_light_zone_index
+from ..light_registry import lux_light_owners
 from .const import (
     CONF_AUTO_TURN_OFF,
     CONF_CAL_STEP_PCT,
@@ -76,9 +76,12 @@ def _validate_binding(
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Validate the light/lux binding shared by the user and reconfigure steps.
 
-    V1.7.0 A2 查重：候选灯已属其他恒照度区域（反查表命中且非自身条目）→
+    V1.7.0 A2 查重：候选灯已属其他恒照度区域（命中且非自身条目）→
     light_in_other_zone 错误 + zone_name 占位（「同一盏灯换一个传感器即可
     再建 zone」的互抢在入口拒绝——查重防的是「重复控制」而非「重复配置」）。
+    ANL-F-135：查重数据源=注册表配置真值（lux_light_owners），不是运行时
+    反查表——旧区被禁用或 lux 处于 SETUP_RETRY 时不在运行时桶里，按桶判
+    会放行同灯再建 zone，旧区恢复后双 ACTIVE 闭环互抢且配置期零提示。
     返回 (errors, description_placeholders)。
     """
     if user_input is None:
@@ -90,11 +93,13 @@ def _validate_binding(
         return {"base": "entity_missing"}, {}
     if registry_entry is not None and registry_entry.platform == DOMAIN:
         return {"base": "light_is_virtual"}, {}
-    zone = build_light_zone_index(hass).get(light_entity)
-    if zone is not None and zone["entry_id"] != exclude_entry_id:
+    owner = lux_light_owners(hass, exclude_entry_id=exclude_entry_id).get(
+        light_entity
+    )
+    if owner is not None:
         return (
             {"base": "light_in_other_zone"},
-            {"zone_name": zone["zone_name"]},
+            {"zone_name": owner[1]},
         )
     # BLE 灯经常离线：只有在线时才做亮度能力校验，离线不拦配置
     online = state is not None and state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
@@ -156,12 +161,28 @@ class LuxZoneFlowMixin:
                 if light_entity != old_light and old_light:
                     # R1 发现 14：他区 store 里以旧灯实体为键的交叉曲线
                     # 成永久孤儿（键 miss + 同 entity_id 换灯具会静默复活
-                    # 旧曲线）——改绑时逐区回收（内存+落盘，幂等）
-                    for other in (
-                        self.hass.data.get(DOMAIN, {}).get("lux", {}).values()
-                    ):
+                    # 旧曲线）——改绑时逐区回收（内存+落盘，幂等）。
+                    # ANL-F-135：回收面按注册表补全——桶循环只覆盖已加载
+                    # 区，disabled/SETUP_RETRY 区 store 里的旧键原样留着；
+                    # store 与 runtime 无关，未加载区直接构造 ZoneStorage
+                    # 落盘回收（已加载区由上方 runtime 循环处理，此处经
+                    # `in bucket` 跳过不重复 await）。
+                    bucket = self.hass.data.get(DOMAIN, {}).get("lux", {})
+                    for other in bucket.values():
                         if other.entry_id != entry.entry_id:
                             await other.async_drop_cross_curve(old_light)
+                    for other_entry in self.hass.config_entries.async_entries(
+                        DOMAIN
+                    ):
+                        if (
+                            other_entry.data.get(CONF_KIND) != KIND_LUX
+                            or other_entry.entry_id == entry.entry_id
+                            or other_entry.entry_id in bucket
+                        ):
+                            continue
+                        await ZoneStorage(
+                            self.hass, other_entry.entry_id
+                        ).async_remove_cross_curve(old_light)
                 await ZoneStorage(self.hass, entry.entry_id).async_remove()
             return self.async_update_reload_and_abort(
                 entry,

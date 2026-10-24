@@ -33,9 +33,14 @@ class FakeStates:
 
 
 def make_hass(states):
-    # data 桶：light_registry 反查表消费面（A2 查重）真机 hass 恒有——
-    # 桩补空桶（空桶=无任何恒照度区域）
-    return SimpleNamespace(states=FakeStates(states), data={})
+    # data 桶：light_registry 反查表消费面真机 hass 恒有——桩补空桶
+    # config_entries：ANL-F-135 起 A2 查重/改绑回收走注册表配置真值
+    #（async_entries），真机 hass 必有——桩补空表（条目经 _seed_zone 注入）
+    return SimpleNamespace(
+        states=FakeStates(states),
+        data={},
+        config_entries=SimpleNamespace(async_entries=lambda domain: []),
+    )
 
 
 def registry(entry_or_none):
@@ -225,16 +230,60 @@ def test_options_chain_without_target_lux():
     assert "target_lux" not in final["data"]
 
 
+def test_options_link_group_stripped_on_write():
+    """ANL-F-126 收尾（首审核销脚注「双侧钉实仅读侧有钉」）：写侧 strip
+    ——TextSelector 原样带回的「 卫生间 」尾空格输入落盘即归一（读侧
+    runtime strip 兜底存量已有钉 test_link_group_stripped_at_runtime_read，
+    此为双侧钉的另一半）。"""
+    flow = cf.LuxZoneOptionsFlow()
+    flow.config_entry = SimpleNamespace(options={})
+    run(
+        flow.async_step_lux_init(
+            {
+                "scan_interval_s": 45,
+                "deadband_pct": 5.0,
+                "deadband_lux": 10.0,
+                "min_brightness_pct": 5.0,
+                "auto_turn_off": False,
+            }
+        )
+    )
+    final = run(
+        flow.async_step_lux_advanced(
+            {
+                "calibrate_step_pct": 5,
+                "manual_slope": 0.0,
+                "link_group": " 卫生间 ",
+                "cross_fade": 0.5,
+                "max_step_pct": 20.0,
+            }
+        )
+    )
+    assert final["type"] == "create_entry"
+    assert final["data"]["link_group"] == "卫生间"
+
+
 # ---------------------------------------------------------------------------
 # V1.7.0 A2：lux flow 保存查重（灯→zone 反查表；一盏灯只归一个区域）
 # ---------------------------------------------------------------------------
 
 
-def _seed_zone(hass, entry_id, light, zone_name, virtual):
-    """等价 conftest.seed_light_zone（本文件不依赖 conftest 直用桩）。"""
-    import conftest as stubs
+def _seed_zone(hass, entry_id, light, zone_name, virtual=None):
+    """向注册表种一条 lux 配置条目（A2 查重的数据源桩）。
 
-    stubs.seed_light_zone(hass, entry_id, light, zone_name, virtual)
+    ANL-F-135：A2 查重改走 config_entries 配置真值（lux_light_owners），
+    不再消费运行时桶——条目桩带真机 ConfigEntry 恒有的 data/entry_id/
+    title。virtual 参数保留占位（旧反查表桩签名兼容），注册表路径不需
+    实体注册表种子。"""
+    seeded = list(hass.config_entries.async_entries("fumiha_lighting"))
+    seeded.append(
+        SimpleNamespace(
+            entry_id=entry_id,
+            data={"kind": "lux", "light_entity": light},
+            title=zone_name,
+        )
+    )
+    hass.config_entries.async_entries = lambda domain: seeded
 
 
 def test_user_rejects_light_already_in_other_zone(monkeypatch):
@@ -293,3 +342,65 @@ def test_reconfigure_rebind_to_other_zone_light_rejected(monkeypatch):
         )
     )
     assert result["errors"] == {"base": "light_in_other_zone"}
+
+
+def test_reconfigure_rejects_light_of_disabled_zone_entry(monkeypatch):
+    """ANL-F-135：A2 漏拦封堵——目标灯属一条**未加载**的 lux 条目
+    （disabled/SETUP_RETRY 形态：在注册表、不在运行时桶）→ 仍 400。旧
+    反查表按运行时桶判会放行，旧区恢复后双 ACTIVE 闭环互抢。"""
+    hass = make_hass(
+        {LIGHT: {"state": "off", "attributes": BRIGHT_MODES},
+         "light.other": {"state": "off", "attributes": BRIGHT_MODES}}
+    )
+    # 只种注册表条目，不种运行时桶（hass.data 空=未加载形态）
+    _seed_zone(hass, "lux-other", "light.other", "干区")
+    flow = make_user_flow(hass)
+    result = run(flow.async_step_lux_zone(
+        {"zone_name": "卫生间", "light_entity": "light.other",
+         "lux_entity": LUX}
+    ))
+    assert result["errors"] == {"base": "light_in_other_zone"}
+    assert result["description_placeholders"] == {"zone_name": "干区"}
+
+
+def test_reconfigure_recycle_covers_unloaded_zone_storage(monkeypatch):
+    """ANL-F-135：改绑孤儿回收覆盖未加载区——他区条目在注册表但不在运行
+    时桶时，其 store 里以旧灯为键的交叉曲线仍须落盘回收（同 entity_id 换
+    灯具重新加组防静默复活旧曲线）。已加载区照旧走 runtime 循环（内存+
+    落盘），本钉锁未加载半边。"""
+    hass = make_hass(
+        {LIGHT: {"state": "off", "attributes": BRIGHT_MODES},
+         "light.spare": {"state": "off", "attributes": BRIGHT_MODES}}
+    )
+    # 他区条目只在注册表（未加载）
+    _seed_zone(hass, "lux-other", "light.other", "干区")
+    flow = make_user_flow(hass)
+    flow.context = {"entry_id": "e1"}
+    entry = SimpleNamespace(
+        entry_id="e1",
+        data=dict(USER_INPUT),
+        unique_id=f"lux:{LIGHT}::{LUX}",
+        title="卫生间",
+    )
+    flow._reconfigure_entry = entry
+    removed = []
+
+    class _RecStorage:
+        def __init__(self, hass_, entry_id):
+            self.entry_id = entry_id
+
+        async def async_remove_cross_curve(self, light):
+            removed.append((self.entry_id, light))
+
+        async def async_remove(self):
+            pass  # 改绑尾部对本区 store 的整体清除（与本钉无关）
+
+    monkeypatch.setattr(lux_flow, "ZoneStorage", _RecStorage)
+    result = run(
+        flow.async_step_lux_reconfigure(
+            {"zone_name": "卫生间", "light_entity": "light.spare",
+             "lux_entity": LUX}
+        )
+    )
+    assert result == {"type": "abort", "reason": "reconfigure_successful"}
+    assert removed == [("lux-other", LIGHT)]

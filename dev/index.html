@@ -75,11 +75,18 @@
       lights: [
         { entity_id: "light.bedroom", state: "verified", manual_override: false,
           mismatch_steps: 0, target: [12, 2700], applied: [12, 2700], last_error: null,
-          // V1.7.0 快照契约：逐灯恒照度区域归属（B2；清单内 ∧ ∈反查表才有值）
+          // V1.7.0 快照契约（ANL-F-132 起）：逐灯恒照度区域归属（B2）——
+          // ∈反查表即有值，与清单勾选解耦；ciStorage=「lux 区存在」的夹具
+          // 开关（区是物理事实，不随 anl 清单变）
           ci_zone_name: ciStorage ? "卫生间" : null },
         { entity_id: "light.hallway", state: "mismatch", manual_override: true,
           mismatch_steps: 2, target: [12, 2700], applied: null, last_error: null,
           ci_zone_name: null },
+        { entity_id: "light.balcony", state: "idle", manual_override: false,
+          mismatch_steps: 0, target: null, applied: null, last_error: null,
+          // ANL-F-132 第三态夹具：∈区域但未勾选——开关可勾选（接管唯一
+          // 新开入口），提示「勾选后由该区闭环接管」
+          ci_zone_name: ciStorage ? "卫生间" : null },
       ],
       start_mode: "sunset", end_mode: "sunrise",
       // ANL-F-046：两字段真实分叉——transition_enabled=true（end_transition>0）
@@ -101,7 +108,7 @@
     return {
       ok: true,
       config: {
-        lights: ["light.bedroom", "light.hallway"],
+        lights: ["light.bedroom", "light.hallway", "light.balcony"],
         // start_mode 故意用枚举外值：钉 ANL-F-031（枚举不匹配时追加展示
         // 而非静默回落首项「固定时间」）
         start_mode: "noon", end_mode: "sunrise",

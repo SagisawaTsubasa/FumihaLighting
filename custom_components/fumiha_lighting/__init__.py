@@ -105,10 +105,28 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
         # 回收（内存+落盘，幂等；本区 runtime 已卸载出桶，循环天然跳过）
         old_light = entry.data.get(CONF_LIGHT_ENTITY)
         if old_light:
-            for other in list(
-                (hass.data.get(DOMAIN) or {}).get("lux", {}).values()
-            ):
+            # R1 发现 14：他区 store 里以本区灯实体为键的交叉曲线成为永久
+            # 孤儿（键 miss + 同 entity_id 换灯具会静默复活旧曲线）——删除
+            # 时逐区回收（内存+落盘，幂等；本区 runtime 已卸载出桶，循环
+            # 天然跳过）。
+            # ANL-F-135：桶循环只覆盖已加载区——disabled/SETUP_RETRY/加载
+            # 失败区的 store 里旧键原样留着，日后同 entity_id 换灯具重新
+            # 加组会静默复活旧曲线。按注册表补全：store 与 runtime 无关，
+            # 未加载区直接构造 ZoneStorage 落盘回收（`in bucket` 跳过已
+            # 处理的加载区；跳过被删条目自身——其 store 已整体移除）。
+            bucket = (hass.data.get(DOMAIN) or {}).get("lux", {})
+            for other in list(bucket.values()):
                 await other.async_drop_cross_curve(old_light)
+            for other_entry in hass.config_entries.async_entries(DOMAIN):
+                if (
+                    other_entry.data.get(CONF_KIND) != KIND_LUX
+                    or other_entry.entry_id == entry.entry_id
+                    or other_entry.entry_id in bucket
+                ):
+                    continue
+                await ZoneStorage(
+                    hass, other_entry.entry_id
+                ).async_remove_cross_curve(old_light)
         return
     # F-057：anl 条目真删除时归还 CI 虚拟灯。本钩子只在删除触发、reload
     # 不触发——卸载路径（async_unload_entry→manager.stop）故意不动灯，防

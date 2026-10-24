@@ -826,11 +826,13 @@ class AnlPage extends HTMLElement {
     const ovr = (config.overrides || {})[gid] || null;
     const dayOn = !!config.day_enabled;
     // 日间恒照度（V1.5.0 引入，V1.6.0 逐灯化，V1.7.0 反查推导）：本灯真
-    // 被接管（快照生效值 + ∈反查表）时日间段不渲染——日间段不渲染时保存
-    // 走保留分支（存储保留，退出清单后恢复生效）。F-061：生效值才决定
-    // 日间段是否真被恒照度接管；V1.7.0 起逐灯有效性由 ci_zone_name 表达
-    // （清单内但区域已删的灯 ci_zone_name=null → 日间段照常渲染）。
-    const ciOn = !!m.day_ci_active && lt.ci_zone_name != null;
+    // 被接管（组级生效值 ∧ 在清单 ∧ ∈反查表）时日间段不渲染——日间段不
+    // 渲染时保存走保留分支（存储保留，退出清单后恢复生效）。F-061：生效
+    // 值才决定日间段是否真被恒照度接管。ANL-F-132：ci_zone_name 已与清单
+    // 解耦（∈区域即下发），接管生效判定在此补回清单腿。
+    const ciList = (config.day_ci_lights || []).slice();
+    const ciListOriginal = ciList.includes(gid);
+    const ciOn = !!m.day_ci_active && ciListOriginal && lt.ci_zone_name != null;
     const dayVisible = dayOn && !ciOn;
     const extras = config.extras || [];
     const controls = [];
@@ -848,11 +850,11 @@ class AnlPage extends HTMLElement {
 
     // 日间恒照度接管（V1.6.1 逐灯开关 + V1.7.0 归属标注）：勾选态读存储
     // 值 day_ci_lights（编辑面与数据同源；生效值 ciOn 只决定日间段显隐与
-    // 接管说明）。B2：灯卡归属随快照逐灯 ci_zone_name 下发——∈恒照度区域
-    // 的灯标「由区域 X 接管」，∉区域的灯开关禁用（接管是无效控制）；
-    // 存量勾选但区域已删的灯保持可取消（禁用只挡新勾选）。
-    const ciList = (config.day_ci_lights || []).slice();
-    const ciListOriginal = ciList.includes(gid);
+    // 接管说明）。B2：灯卡归属随快照逐灯 ci_zone_name 下发（ANL-F-132 起
+    // 与清单解耦，∈恒照度区域即有值）。三态：∈区域已勾选=「由区域 X 接
+    // 管」；∈区域未勾选=可勾选（接管唯一新开入口，V1.6.1 起全局弹窗零
+    // CI），提示勾选后接管；∉任何区域=禁用（接管是无效控制），存量勾选
+    // 但区域已删的灯保持可取消（禁用只挡新勾选）。
     const ciZone = lt.ci_zone_name || null;
     const ciCb = kit.el("input", {
       type: "checkbox",
@@ -861,7 +863,9 @@ class AnlPage extends HTMLElement {
       ...(!ciZone && !ciListOriginal ? { disabled: true } : {}),
     });
     const ciHint = ciZone
-      ? "由恒照度区域「" + ciZone + "」接管"
+      ? (ciListOriginal
+        ? "由恒照度区域「" + ciZone + "」接管"
+        : "属于恒照度区域「" + ciZone + "」，勾选后由该区闭环接管")
       : "此灯不属于任何恒照度区域";
     const ciRow = dlgRow("日间恒照度接管", ciCb, ciHint);
 
@@ -955,7 +959,8 @@ class AnlPage extends HTMLElement {
             throw new Error("日间恒照度需先在全局设置启用日间模式");
           }
           // V1.7.0 反查推导：虚拟灯前置校验废除——区域归属由服务端 zone
-          // 归属校验兜底（∉区域的灯开关本页已禁用；存量勾选可取消）
+          // 归属校验兜底（ANL-F-134：只校验本次新增；∉区域的灯开关本页
+          // 已禁用，存量勾选可取消）
           const nextList = wantCi
             ? ciList.concat([gid])
             : ciList.filter((e) => e !== gid);

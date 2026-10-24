@@ -280,6 +280,21 @@ def test_target_write_out_of_range():
     assert resp.status == 400 and "lx 之间" in resp.payload["error"]
 
 
+def test_target_write_rejects_bool_and_overflow():
+    """ANL-F-156：LuxTargetView 数值口径统一走 _finite_number——bool 是
+    int 子类（float(True)=1.0 旧码可混过范围门）、超大整数 float() 抛
+    OverflowError 不在旧 except 内 → 500；统一后均须 400 且零写入。"""
+    hass = FakeHass()
+    rt = fake_lux_runtime("lux1")
+    rt.set_target = lambda v: (_ for _ in ()).throw(AssertionError("must not write"))
+    _lux_bucket(hass, rt)
+    for bad in (True, 10**400):
+        req = FakeRequest(hass)
+        req.json = _json_body({"entry_id": "lux1", "value": bad})
+        resp = run(web.LuxTargetView().post(req))
+        assert resp.status == 400, bad
+
+
 def test_target_write_unknown_entry():
     hass = FakeHass()
     _lux_bucket(hass)
@@ -481,6 +496,9 @@ def test_link_group_post_rejects_invalid_values():
         {**base, "max_step_pct": float("inf")},
         {**base, "max_step_pct": None},
         {**base, "link_group": 42},
+        # ANL-F-158：缺 link_group 键 ≠ 空串——静默停用是「键 miss 静默降级」，
+        # 须 400（留空停用请显式传空串，test_link_group_post_empty_group_disables）
+        {"entry_id": "lux1", "cross_fade": 0.5, "max_step_pct": 20},
     ):
         resp = run(web.LuxLinkGroupView().post(FakeRequest(hass, bad)))
         assert resp.status == 400, bad

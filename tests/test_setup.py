@@ -285,5 +285,39 @@ def test_fresh_lux_entry_data_untouched_by_setup():
     assert lux_entry.data == data_before
 
 
+def test_update_listener_warns_when_calibrating(caplog):
+    """ANL-F-160：原生 options 流保存经 update listener reload——校准进行中
+    时 reload 取消 _cal_task 且新 runtime 无痕（面板路径的保存警示 ANL-F-149
+    只覆盖 page-lux.js 编辑器），至少落 WARNING「配置保存中止校准」让中止
+    可归因；reload 本身照常发生。"""
+    hass = make_hass()
+    reloads = []
+
+    async def _reload(entry_id):
+        reloads.append(entry_id)
+
+    hass.config_entries = SimpleNamespace(
+        async_update_entry=lambda *a, **k: _ok(None),
+        async_reload=_reload,
+    )
+    rt = SimpleNamespace(entry_id="lux1", zone_name="卫生间", mode="calibrating")
+    hass.data.setdefault(DOMAIN, {"lux": {"lux1": rt}, "anl": {}})
+    entry = make_entry(KIND_LUX, "lux1")
+
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        run(pkg._async_update_listener(hass, entry))
+    assert reloads == ["lux1"]  # reload 照常发生（警示不阻断保存语义）
+    assert any("配置保存中止校准" in r.getMessage() for r in caplog.records)
+
+    # 非 calibrating 不告警（防恒告警漂移）
+    caplog.clear()
+    rt.mode = "active"
+    run(pkg._async_update_listener(hass, entry))
+    assert reloads == ["lux1", "lux1"]
+    assert not any("配置保存中止校准" in r.getMessage() for r in caplog.records)
+
+
 def run(coro):
     return asyncio.run(coro)

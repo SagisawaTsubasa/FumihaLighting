@@ -74,6 +74,14 @@ def test_validate_params_rejects_non_finite():
         assert clean2 is None and "有限" in err2  # float 字段同样拒绝（ANL-F-019）
 
 
+def test_validate_params_rejects_overflow_int():
+    """ANL-F-156：超大整数旧码在 math.isfinite(int) 的 float 转换处抛
+    OverflowError → AnlConfigView params/extras/overrides 路径 500——
+    统一 _finite_number 后归 400 口径（clean=None + err 非 None）。"""
+    clean, err = validate_params({"brightness": 10**400}, LIGHTS)
+    assert clean is None and err is not None
+
+
 def test_validate_params_rejects_out_of_range_and_unknown():
     assert validate_params({"brightness": 0}, LIGHTS)[1] is not None
     assert validate_params({"brightness": 101}, LIGHTS)[1] is not None

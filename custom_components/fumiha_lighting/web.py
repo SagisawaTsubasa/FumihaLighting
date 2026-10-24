@@ -34,6 +34,7 @@ from homeassistant.util import dt as dt_util
 
 from .anl.config_schema import (
     CONFIG_KEYS,
+    _finite_number,
     limits_payload,
     validate_extras,
     validate_overrides,
@@ -148,11 +149,10 @@ def _anl_managers(hass: HomeAssistant) -> dict:
 
 
 def _finite_or_none(value, ndigits: int) -> float | None:
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return None
-    return round(f, ndigits) if math.isfinite(f) else None
+    # ANL-F-156：口径统一走 _finite_number——旧码只捕 (TypeError, ValueError)，
+    # 被手改 store 里的超大整数 float() 抛 OverflowError → overview 500
+    f = _finite_number(value)
+    return round(f, ndigits) if f is not None else None
 
 
 def _serialize_curve(curve) -> dict | None:
@@ -302,11 +302,13 @@ class LuxTargetView(HomeAssistantView):
         runtime = _lux_runtimes(hass).get(entry_id)
         if runtime is None:
             return _error(404, "未知区域")
-        try:
-            v = float(value)
-        except (TypeError, ValueError):
+        # ANL-F-156：数值口径单点走 _finite_number——旧码 float(True)=1.0 可
+        # 混过范围门、超大整数 float() 抛 OverflowError 不在既有 except 内
+        # → 500；统一后 bool/溢出/非有限均归 400
+        v = _finite_number(value)
+        if v is None:
             return _error(400, "目标照度不是数字")
-        if not math.isfinite(v) or v < TARGET_MIN_LUX or v > TARGET_MAX_LUX:
+        if v < TARGET_MIN_LUX or v > TARGET_MAX_LUX:
             return _error(
                 400,
                 f"目标照度需在 {TARGET_MIN_LUX:g}–{TARGET_MAX_LUX:g} lx 之间",
@@ -377,7 +379,9 @@ class LuxLinkGroupView(HomeAssistantView):
     完整组员名单（复用 overview link_peers 的公开属性算法，含本区——
     编辑弹窗展示完整组员面，前端标「本区」；overview 的 link_peers 排除
     自身是卡片 chip 语义，两键分工不同）。POST {entry_id, link_group,
-    cross_fade, max_step_pct}：link_group strip 归一（lux/flow.py 写入侧
+    cross_fade, max_step_pct} 键全必填（缺键 400——ANL-F-158，停用请
+    显式传空串，缺键静默停用是「键 miss 静默降级」形状）：link_group
+    strip 归一（lux/flow.py 写入侧
     同语义，空串=停用）、数值范围与 options flow selector 同源（不设第二
     套数字）；过校验后镜像写 entry.options（只替换三键，其余 options 键
     原样保留——options 流保存是全镜像，漏带会把扫描间隔/死区等静默打回
@@ -431,6 +435,11 @@ class LuxLinkGroupView(HomeAssistantView):
         # entry 引用自 runtime 快照点取得（await 之后不再重读 hass.data 桶，
         # AnlConfigView 同款并发模式）
         entry = runtime.entry
+        # ANL-F-158：缺键 ≠ 空串——cross_fade/max_step_pct 缺键已 400，
+        # 标签键缺键被 str(group or "") 吞成空串=静默解散联动组（ambient
+        # 交叉扣除无声停用）；留空停用请显式传空串
+        if "link_group" not in body:
+            return _error(400, "缺少 link_group（留空请显式传空串）")
         group = body.get("link_group")
         if group is not None and not isinstance(group, str):
             return _error(400, "联动组标签需为字符串")

@@ -10,7 +10,8 @@
   html, body { margin: 0; height: 100%; }
   fumiha-hub-panel { display: block; height: 100%; }
   .fx-dialog { border: 1px solid var(--fx-edge); border-radius: 10px; padding: 16px 18px; background: var(--fx-panel); color: var(--fx-txt); min-width: 280px; max-width: 90vw; }
-  .fx-dialog::backdrop { background: rgba(0,0,0,.35); }
+  <!-- V1.7.1 感知校准 0.35→0.25（与 tokens.css .fx-dialog::backdrop 同步，FXH-F-009） -->
+  .fx-dialog::backdrop { background: rgba(0,0,0,.25); }
 </style>
 </head>
 <body>

@@ -237,6 +237,14 @@ def _serialize_lux_zone(runtime, runtimes=None) -> dict:
         "lux_entity": runtime.lux_entity,
         "link_group": link_group,
         "link_peers": link_peers,
+        # ANL-F-164：grace 三键收敛判据的数据面——只调 cross_fade/max_step_
+        # pct 的保存组标签不变，旧 overview 快照（保存前已发出、保存后才落
+        # 地）的 link_group 与保存值相同，前端只比标签会把旧快照误判收敛清
+        # 掉 grace；两数随载荷下发（opts 是 merged_options 单一来源公共属
+        # 性，lux/runtime.py 构造时快照——reload 完成前仍是旧值，正是判据
+        # 要甄别的「未收敛」态）后与保存响应同源可比
+        "cross_fade": _finite_or_none(runtime.opts.get(CONF_CROSS_FADE), 2),
+        "max_step_pct": _finite_or_none(runtime.opts.get(CONF_MAX_STEP_PCT), 1),
     }
 
 

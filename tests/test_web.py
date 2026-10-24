@@ -18,6 +18,7 @@ from custom_components.fumiha_lighting.anl.const import CONF_DAY_ENABLED
 from custom_components.fumiha_lighting.config_flow import (
     FumihaLightingConfigFlow,
 )
+from custom_components.fumiha_lighting.lux.const import merged_options
 from custom_components.fumiha_lighting.const import (
     CONF_KIND,
     KIND_ANL,
@@ -117,6 +118,10 @@ def fake_lux_runtime(entry_id="lux1", zone="卫生间", **overrides):
         entry_id=entry_id,
         zone_name=zone,
         mode="active",
+        # ANL-F-164：overview 序列化读 runtime.opts（merged_options 单一
+        # 来源公共属性）取 cross_fade/max_step_pct——桩同形，默认经
+        # merged_options({}) 回填（桩失真=回归网破洞，V1.4.0 教训）
+        opts=merged_options({}),
         cal_progress="",
         target_lux=150.0,
         commanded_pct=45.0,
@@ -235,13 +240,18 @@ def test_lux_overview_link_group_fields():
     """V1.3.0 联动组：组标签+同组成员名单随载荷下发；未设组两键 None。
 
     成员在 web 层按公开属性 link_group 自算（ANL-F-003 教训：不直调
-    runtime 私有方法），页面 chip 据此渲染组标签+名单。
+    runtime 私有方法），页面 chip 据此渲染组标签+名单。ANL-F-164：overview
+    另下发 cross_fade/max_step_pct 两数（runtime.opts 读穿，round 归一），
+    前端 reload grace 三键收敛判据的数据面——只调两数不换标签的保存，旧
+    快照组标签与保存值相同，判据必须连两数一起比。
     """
     hass = FakeHass()
     wet = fake_lux_runtime("lux1", "湿区")
     dry = fake_lux_runtime("lux2", "干区")
     wet.link_group = "卫"
     dry.link_group = "卫"
+    # 非 default 值：钉 opts 读穿路径（不是序列化里硬编码的常数）
+    wet.opts = merged_options({"cross_fade": 0.8, "max_step_pct": 30})
     solo = fake_lux_runtime("lux3", "书房")
     _lux_bucket(hass, wet, dry, solo)
     resp = run(web.LuxOverviewView().get(FakeRequest(hass)))
@@ -252,6 +262,11 @@ def test_lux_overview_link_group_fields():
     assert zones["干区"]["link_peers"] == ["湿区"]
     assert zones["书房"]["link_group"] is None
     assert zones["书房"]["link_peers"] is None
+    # ANL-F-164：三键收敛判据的两数随载荷下发（opts 读穿 + 默认回填）
+    assert zones["湿区"]["cross_fade"] == 0.8
+    assert zones["湿区"]["max_step_pct"] == 30.0
+    assert zones["书房"]["cross_fade"] == 0.5
+    assert zones["书房"]["max_step_pct"] == 20.0
 
 
 # ---------------------------------------------------------------------------

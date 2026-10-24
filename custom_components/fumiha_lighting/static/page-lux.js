@@ -70,9 +70,10 @@ class LuxBalancePage extends HTMLElement {
     this._conn = "idle"; // idle | ok | err
     this._lastOk = null; // Date of last successful overview
     this._failStreak = 0;
-    this._lastSavedEntryId = null; // ANL-F-155 reload 窗口 grace 判定源
-    this._lastSavedAt = 0;
-    this._lastSavedGroup = null; // ANL-F-162 grace 收敛判据：保存响应的组标签
+    // ANL-F-155 reload 窗口 grace 判定源；ANL-F-166 起为多槽 Map（单槽会
+    // 被 15s 内的第二个保存顶掉，先存区出桶窗重新裸奔）：
+    // entry_id -> { at, group, fade, step }（保存响应三键）
+    this._pendingSaves = new Map();
   }
 
   set hass(h) {
@@ -143,9 +144,7 @@ class LuxBalancePage extends HTMLElement {
     this._zones = [];
     this._confirmingCalibrate = false;
     this._targetDrafts = {};
-    this._lastSavedEntryId = null;
-    this._lastSavedAt = 0;
-    this._lastSavedGroup = null;
+    this._pendingSaves.clear();
 
     const root = this.shadowRoot;
     root.innerHTML = "";
@@ -208,26 +207,36 @@ class LuxBalancePage extends HTMLElement {
 
     // ANL-F-155：保存后的轮询若撞上 reload 出桶窗口（刚保存的条目不在
     // zones 里），grace 内保留现有 DOM 与 _zones 不渲染空态——旧码会把
-    // 卡片闪没最长 5s；条目回来或超时后正常收敛
-    if (this._lastSavedEntryId) {
-      // ANL-F-162：「条目仍在」≠ reload 已完成——保存前已发出、保存后才
-      // 落地的 overview（或 reload 尚未 pop 的快照）会先命中一次条目在而
-      // link_group 仍旧值，此时清 grace 会在随后的真出桶窗口闪空态。收敛
-      // 判据=条目在且 link_group 已等于保存值（POST 响应与 _serialize_lux_
-      // zone 对空组都发 null，两侧 || "" 归一后比较）；15s 超时无条件放行，
-      // 兜住条目被删等永不收敛的场景
-      const savedZone = zones.find(
-        (zone) => zone.entry_id === this._lastSavedEntryId
-      );
-      const notConverged =
-        !savedZone || (savedZone.link_group || "") !== this._lastSavedGroup;
-      if (notConverged && Date.now() - this._lastSavedAt < RELOAD_GRACE_MS) {
+    // 卡片闪没最长 5s；收敛或超时后正常放行
+    if (this._pendingSaves.size) {
+      // ANL-F-162/164：收敛判据=条目在且三键全等。「条目仍在」≠ reload
+      // 已完成——保存前已发出、保存后才落地的 overview（或 reload 尚未
+      // pop 的桶）里组标签可能与保存值相同（只调 cross_fade/max_step_pct
+      // 的保存组标签不变，旧快照仅比标签会被误判收敛清掉 grace，随后真
+      // 出桶窗照旧闪空态），故 overview 自 R4 修复起下发两数，与保存响应
+      // 同源全等比对（POST 响应与 _serialize_lux_zone 对空组都发 null，
+      // 两侧 || "" 归一）。15s 超时无条件放行，兜住条目被删等永不收敛的
+      // 场景。ANL-F-166：槽按 entry_id 存 Map，收敛/超时各自删除；渲染是
+      // 整页 all-or-nothing，任一未收敛条目在窗内即整页保持
+      let hold = false;
+      const now = Date.now();
+      for (const [entryId, saved] of this._pendingSaves) {
+        const zone = zones.find((z) => z.entry_id === entryId);
+        const notConverged =
+          !zone
+          || (zone.link_group || "") !== saved.group
+          || zone.cross_fade !== saved.fade
+          || zone.max_step_pct !== saved.step;
+        if (notConverged && now - saved.at < RELOAD_GRACE_MS) {
+          hold = true;
+        } else {
+          this._pendingSaves.delete(entryId);
+        }
+      }
+      if (hold) {
         this._renderConn();
         return;
       }
-      this._lastSavedEntryId = null;
-      this._lastSavedAt = 0;
-      this._lastSavedGroup = null;
     }
     const json = JSON.stringify(zones);
     if (json !== this._payloadJson || !this._rendered) {
@@ -397,11 +406,17 @@ class LuxBalancePage extends HTMLElement {
           // grace 兜住（记保存事件，窗口内轮询缺本区不渲染空态）
           const saved = await this._openLinkGroupDialog(z);
           if (saved) {
-            this._lastSavedEntryId = z.entry_id;
-            this._lastSavedAt = Date.now();
-            // ANL-F-162：grace 收敛判据（_refresh 拿 overview 的 link_group
-            // 与保存值比对；响应空组为 null，归一成空串）
-            this._lastSavedGroup = saved.link_group || "";
+            // ANL-F-155/162/164：reload 窗口 grace 判定源记三键（组标签+
+            // 交叉系数+缓变步幅）——只调两数的保存组标签不变，旧 overview
+            // 快照仅比标签会误判收敛；响应两数与 overview 下发的
+            // _finite_or_none 归一值同源可比（GUI 档位 0.05/5 均在舍入精
+            // 度内）。ANL-F-166：Map 多槽并存，15s 内先后保存互不顶掉
+            this._pendingSaves.set(z.entry_id, {
+              at: Date.now(),
+              group: saved.link_group || "",
+              fade: saved.cross_fade,
+              step: saved.max_step_pct,
+            });
             // ANL-F-161：保存 await 期间任何载荷变化都会 _render()
             // replaceChildren 重建全部卡片（弹窗挂 shadowRoot 不受影响，
             // 用户可跨重渲染继续保存）——闭包里的 chip 可能已是游离节点，

@@ -161,9 +161,12 @@ READ_LINK_DIALOG_JS = """() => {
 # ---- R3 钉共用：联动组弹窗保存 + 可见 chip 精确文案断言 ---------------------
 # （V1.7.1 R3 四个新钉页共用，值经 Playwright arg 传入、免字符串插值。）
 # SAVE_LINK_GROUP_JS(g=组标签)：向当前打开的联动组弹窗写标签并点保存，
-# 弹窗须已开；WAIT_LINK_CHIP_JS(t=chip 完整文案)：可见卡片内在 DOM 芯片
-# 的精确全文案断言（R3 新钉组均为无同组成员新组）
-SAVE_LINK_GROUP_JS = """(g) => {
+# 弹窗须已开；R4 ANL-F-164 同标签钉传 [标签, 交叉系数] 数组（Playwright
+# evaluate 单 arg 限制，JS 侧解构）只改系数；WAIT_LINK_CHIP_JS(t=chip 完
+# 整文案)：可见卡片内在 DOM 芯片的精确全文案断言（R3 新钉组均为无同组成
+# 员新组）
+SAVE_LINK_GROUP_JS = """(g, fade) => {
+  if (Array.isArray(g)) { fade = g[1]; g = g[0]; }
   const p = document.getElementById('hub');
   for (const el of p.shadowRoot.querySelectorAll('*')) {
     const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
@@ -171,6 +174,10 @@ SAVE_LINK_GROUP_JS = """(g) => {
       const inp = [...d.querySelectorAll('input')].find(
         (x) => x.getAttribute('aria-label') === '联动组标签');
       inp.value = g;
+      if (fade !== undefined && fade !== null) {
+        [...d.querySelectorAll('input')].find(
+          (x) => x.getAttribute('aria-label') === '交叉系数').value = String(fade);
+      }
       [...d.querySelectorAll('button')].find(
         (b) => b.textContent === '保存').click();
       return true;
@@ -1756,6 +1763,180 @@ def run_checks(browser, base: str) -> None:
     )
     check("lux R3 F-162: card intact with new group after stale window", converged)
     page12.close()
+
+    # ---- R4 ANL-F-164：三键收敛判据钉（F-162 已知残余的闭合面）——
+    # ?reloadgapstale=1 + 同标签保存（只改交叉系数 0.5→0.65）：旧快照的
+    # link_group 与保存值相同，R3 判据（只比 link_group）在该快照处立即
+    # 清 grace，随后 12s 空窗的轮询必闪空态（审查员 R4 必红证明，红→绿
+    # 实测见 commit）；修后判据三键全等，交叉系数不等即保持。no-empty 哨
+    # 兵与 R3 F-162 钉同构
+    page12b = browser.new_page(viewport={"width": 1280, "height": 900})
+    page12b.goto(base + "/?reloadgapstale=1")
+    wait_page_dom(page12b, '[data-zone="lux1"]')
+    page12b.evaluate(
+        """() => {
+          window.__sawEmptyState = false;
+          const p = document.getElementById('hub');
+          window.__emptyWatch = setInterval(() => {
+            for (const el of p.shadowRoot.querySelectorAll('*')) {
+              if (el.shadowRoot
+                && el.shadowRoot.textContent.includes('尚无区域')) {
+                window.__sawEmptyState = true;
+              }
+            }
+          }, 100);
+          return true;
+        }"""
+    )
+    page12b.evaluate(LUX_CHIP_CLICK_JS)
+    page12b.wait_for_function(WAIT_LINK_DIALOG_JS, timeout=4000)
+    page12b.evaluate(SAVE_LINK_GROUP_JS, ["卫生间", 0.65])
+    # 保持中验（11s<15s、<12s 空窗满）：三键判据未收敛，_pendingSaves 必
+    # 仍持 1 槽（超时/提前清放行都到不了这里）
+    page12b.wait_for_timeout(11000)
+    still_holding = page12b.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            if (el.tagName === 'LUX-BALANCE-PAGE'
+              && el.shadowRoot
+              && el.shadowRoot.querySelector('[data-zone="lux1"]')) {
+              return el._pendingSaves && el._pendingSaves.size === 1;
+            }
+          }
+          return false;
+        }"""
+    )
+    saw_empty = page12b.evaluate("() => window.__sawEmptyState")
+    check(
+        "lux R4 F-164: same-label save (fade only) never sees empty state",
+        not saw_empty,
+    )
+    check("lux R4 F-164: grace still holds at 11s (no early clear)", still_holding)
+    # 窗后收敛排空：真数据（新系数）到达、三键全等 → 收敛删除（非 15s
+    # 超时放行）——三键判据对两数真收敛的证明。try/except 只为红跑一轮
+    # 出全批红证据（旧码此处谓词抛错/超时转 FAIL，不中断套件）
+    try:
+        page12b.wait_for_function(
+            """() => {
+              const p = document.getElementById('hub');
+              for (const el of p.shadowRoot.querySelectorAll('*')) {
+                if (el.tagName === 'LUX-BALANCE-PAGE'
+                  && el.shadowRoot
+                  && el.shadowRoot.querySelector('[data-zone="lux1"]')) {
+                  return el._pendingSaves.size === 0;
+                }
+              }
+              return false;
+            }""",
+            timeout=8000,
+        )
+        check("lux R4 F-164: pending save drains by convergence after window", True)
+    except Exception as e:
+        check(
+            "lux R4 F-164: pending save drains by convergence after window",
+            False,
+            detail=type(e).__name__ + ": " + str(e)[:200],
+        )
+    page12b.close()
+
+    # ---- R4 ANL-F-166：grace 单槽被第二保存顶掉——?twozones=1&reloadgap
+    # partial=1。两区 15s 内先后保存（lux1 慢出桶 9s、lux2 快 1s）：「lux2
+    # 已收敛、lux1 仍缺」的轮询不得清掉 lux1 的保护——旧单槽码该轮询清槽
+    # 并整页重渲染，lux1 卡片在出桶窗内消失（审查员 R4 场景）；Map 槽各
+    # 自收敛/超时，任一未收敛条目在窗内即整页保持（渲染 all-or-nothing）
+    page12c = browser.new_page(viewport={"width": 1280, "height": 900})
+    page12c.goto(base + "/?twozones=1&reloadgappartial=1")
+    wait_page_dom(page12c, '[data-zone="lux2"]')
+    # lux1 卡片哨兵：只在 lux 页元素内判卡（100ms 采样，消失一帧即记到）
+    page12c.evaluate(
+        """() => {
+          window.__sawLux1Gone = false;
+          window.__lux1Seen = false;
+          const p = document.getElementById('hub');
+          window.__lux1Watch = setInterval(() => {
+            for (const el of p.shadowRoot.querySelectorAll('*')) {
+              if (el.tagName !== 'LUX-BALANCE-PAGE' || !el.shadowRoot) continue;
+              if (el.shadowRoot.querySelector('[data-zone="lux1"]')) {
+                window.__lux1Seen = true;
+              } else if (window.__lux1Seen) {
+                window.__sawLux1Gone = true;
+              }
+            }
+          }, 100);
+          return true;
+        }"""
+    )
+    # 先存 lux1（换标签 → 慢出桶 9s）
+    page12c.evaluate(LUX_CHIP_CLICK_JS)
+    page12c.wait_for_function(WAIT_LINK_DIALOG_JS, timeout=4000)
+    page12c.evaluate(SAVE_LINK_GROUP_JS, "卫生间P")
+    page12c.wait_for_function(
+        WAIT_LINK_CHIP_JS, arg="联动组「卫生间P」（暂无同组成员）", timeout=4000
+    )
+    # 15s 内再存 lux2（换标签 → 快出桶 1s）——单槽码在此顶掉 lux1 的槽位
+    page12c.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const card = el.shadowRoot
+              && el.shadowRoot.querySelector('[data-zone="lux2"]');
+            if (card) {
+              const chip = card.querySelector('[data-action="link-group"]');
+              if (chip) { chip.click(); return true; }
+            }
+          }
+          return false;
+        }"""
+    )
+    page12c.wait_for_function(WAIT_LINK_DIALOG_JS, timeout=4000)
+    page12c.evaluate(SAVE_LINK_GROUP_JS, "干区P")
+    # 第二次保存落地确认用 __servicePosts 计数（确定性）：lux2 的 chip 文
+    # 案在旧码下会被其 1s 出桶窗后的重渲染短暂摘卡，4s 文案 wait 与 5s 轮
+    # 询相位碰撞会假超时；视觉终态由收尾 both-chips 断言承担
+    page12c.wait_for_function(
+        """() => window.__servicePosts.filter(
+              (p) => p.path.indexOf('/api/fumiha_lighting/lux/link_group') === 0
+            ).length >= 2""",
+        timeout=4000,
+    )
+    # 跨判别面采样（lux2 出桶 1s 后即出现「lux2 在、lux1 缺」的轮询，直至
+    # lux1 窗 9s 满后收敛渲染）：lux1 卡片不得消失
+    page12c.wait_for_timeout(10500)
+    saw_lux1_gone = page12c.evaluate("() => window.__sawLux1Gone")
+    check(
+        "lux R4 F-166: second save does not clobber first zone's grace",
+        not saw_lux1_gone,
+    )
+    # 终态：两卡都在、chip 各为新组（窗后收敛渲染，Map 排空后放行）。
+    # try/except 同 F-164 排空检查（红跑一轮出全批红证据）
+    try:
+        page12c.wait_for_function(
+            """() => {
+              const p = document.getElementById('hub');
+              for (const el of p.shadowRoot.querySelectorAll('*')) {
+                const sr = el.tagName === 'LUX-BALANCE-PAGE' && el.shadowRoot;
+                if (!sr) continue;
+                const c1 = sr.querySelector('[data-zone="lux1"]');
+                const c2 = sr.querySelector('[data-zone="lux2"]');
+                if (!c1 || !c2) return false;
+                const t1 = c1.querySelector('[data-action="link-group"]').textContent;
+                const t2 = c2.querySelector('[data-action="link-group"]').textContent;
+                return t1 === '联动组「卫生间P」（暂无同组成员）'
+                  && t2 === '联动组「干区P」（暂无同组成员）';
+              }
+              return false;
+            }""",
+            timeout=8000,
+        )
+        check("lux R4 F-166: both zones converge with new labels after window", True)
+    except Exception as e:
+        check(
+            "lux R4 F-166: both zones converge with new labels after window",
+            False,
+            detail=type(e).__name__ + ": " + str(e)[:200],
+        )
+    page12c.close()
 
     # ---- standalone fallback (pages boot without the shell) ------------------
     page3 = browser.new_page(viewport={"width": 1280, "height": 900})

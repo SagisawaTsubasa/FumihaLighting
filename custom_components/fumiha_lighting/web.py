@@ -437,10 +437,22 @@ class LuxLinkGroupView(HomeAssistantView):
         # 写入侧 strip 归一（lux/flow.py 同语义）：尾空格静默不同组的根治；
         # 空串=停用
         group = str(group or "").strip()
+        # 数值解析（ANL-F-153）：bool 是 int 子类（float(True)=1.0 可混过
+        # 范围门），超大整数 float() 抛 OverflowError 不在既有 except 内
+        # →500——显式拒 bool/非 int-float，OverflowError 一并归入 400
+        fade_raw = body.get("cross_fade")
+        step_raw = body.get("max_step_pct")
+        if (
+            isinstance(fade_raw, bool)
+            or not isinstance(fade_raw, (int, float))
+            or isinstance(step_raw, bool)
+            or not isinstance(step_raw, (int, float))
+        ):
+            return _error(400, "交叉系数与缓变步幅需为数字")
         try:
-            cross_fade = float(body.get("cross_fade"))
-            max_step_pct = float(body.get("max_step_pct"))
-        except (TypeError, ValueError):
+            cross_fade = float(fade_raw)
+            max_step_pct = float(step_raw)
+        except (TypeError, ValueError, OverflowError):
             return _error(400, "交叉系数与缓变步幅需为数字")
         # 范围与 options flow selector 同源（lux/flow.py async_step_lux_
         # advanced：cross_fade 0.1~1.0 / max_step_pct 5~50），不设第二套数字
@@ -455,12 +467,26 @@ class LuxLinkGroupView(HomeAssistantView):
             CONF_MAX_STEP_PCT: max_step_pct,
         }
         hass.config_entries.async_update_entry(entry, options=options)
+        # ANL-F-150：响应带新组的 link_peers（排除自身，overview 同算法）
+        # ——前端乐观更新 chip 不致把有组员的组闪成「暂无同组成员」。本
+        # entry 的 runtime 属性此刻仍是旧值（reload 尚未发生），故按新
+        # group 现查桶内其他区，排除自身后无可复用 stale 值
+        peers = None
+        if group:
+            peers = [
+                other.zone_name
+                for eid, other in _lux_runtimes(hass).items()
+                if eid != entry_id
+                and getattr(other, "link_group", "") == group
+            ]
+            peers = peers or None
         return web.json_response(
             {
                 "ok": True,
                 "link_group": group or None,
                 "cross_fade": cross_fade,
                 "max_step_pct": max_step_pct,
+                "link_peers": peers,
             }
         )
 

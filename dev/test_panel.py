@@ -103,6 +103,57 @@ NO_DIALOG_JS = """() => {
   return true;
 }"""
 
+# V1.7.1 联动组 chip 点击（lux 区卡内 data-action=link-group）
+LUX_CHIP_CLICK_JS = """() => {
+  const p = document.getElementById('hub');
+  for (const el of p.shadowRoot.querySelectorAll('*')) {
+    const card = el.shadowRoot && el.shadowRoot.querySelector('[data-zone="lux1"]');
+    if (card) {
+      const chip = card.querySelector('[data-action="link-group"]');
+      if (chip) { chip.click(); return true; }
+    }
+  }
+  return false;
+}"""
+
+WAIT_LINK_DIALOG_JS = """() => {
+  const p = document.getElementById('hub');
+  for (const el of p.shadowRoot.querySelectorAll('*')) {
+    const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+    if (d && d.querySelector('[data-lux-link-members]')) return true;
+  }
+  return false;
+}"""
+
+# 联动组弹窗状态读取（预填/重开复用；含 ANL-F-148 计算样式钉）
+READ_LINK_DIALOG_JS = """() => {
+  const p = document.getElementById('hub');
+  for (const el of p.shadowRoot.querySelectorAll('*')) {
+    const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+    if (d && d.querySelector('[data-lux-link-members]')) {
+      const val = (label) => {
+        const inp = [...d.querySelectorAll('input')].find(
+          (x) => x.getAttribute('aria-label') === label);
+        return inp ? inp.value : null;
+      };
+      const note = d.querySelector('[data-lux-link-members]');
+      return {
+        title: d.querySelector('h2').textContent,
+        members: note.textContent,
+        group: val('联动组标签'),
+        fade: val('交叉系数'),
+        step: val('缓变步幅（%）'),
+        // ANL-F-148 计算样式钉：Hub 壳路径链接的是 FumihaHub 仓的
+        // tokens.css——计算样式断言真实校验跨仓同步，防两仓再漂移
+        noteFs: getComputedStyle(note).fontSize,
+        backdrop: getComputedStyle(d, '::backdrop').backgroundColor,
+        footnote: d.textContent.includes('仅显示已加载区域'),
+      };
+    }
+  }
+  return null;
+}"""
+
 # F-062：读当前设置弹窗里两个过渡输入的 title（CI 跳过提示 / 置灰提示）
 READ_TRANS_TITLES_JS = """() => {
   const p = document.getElementById('hub');
@@ -219,60 +270,27 @@ def run_checks(browser, base: str) -> None:
     )
 
     # V1.7.1 联动组面板内编辑：chip 点击 → 编辑弹窗（组员名单+三键现值）→
-    # 保存 POST → chip 即时更新（保存成功 _refresh；轮询 5s 兜底）
-    page.evaluate(
-        """() => {
-          const p = document.getElementById('hub');
-          for (const el of p.shadowRoot.querySelectorAll('*')) {
-            const card = el.shadowRoot && el.shadowRoot.querySelector('[data-zone="lux1"]');
-            if (card) {
-              const chip = card.querySelector('[data-action="link-group"]');
-              if (chip) { chip.click(); return true; }
-            }
-          }
-          return false;
-        }"""
-    )
-    page.wait_for_function(
-        """() => {
-          const p = document.getElementById('hub');
-          for (const el of p.shadowRoot.querySelectorAll('*')) {
-            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
-            if (d && d.querySelector('[data-lux-link-members]')) return true;
-          }
-          return false;
-        }""",
-        timeout=4000,
-    )
-    link_dlg = page.evaluate(
-        """() => {
-          const p = document.getElementById('hub');
-          for (const el of p.shadowRoot.querySelectorAll('*')) {
-            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
-            if (d && d.querySelector('[data-lux-link-members]')) {
-              const val = (label) => {
-                const inp = [...d.querySelectorAll('input')].find(
-                  (x) => x.getAttribute('aria-label') === label);
-                return inp ? inp.value : null;
-              };
-              return {
-                title: d.querySelector('h2').textContent,
-                members: d.querySelector('[data-lux-link-members]').textContent,
-                group: val('联动组标签'),
-                fade: val('交叉系数'),
-                step: val('缓变步幅（%）'),
-              };
-            }
-          }
-          return null;
-        }"""
-    )
+    # 保存 POST → chip 乐观更新（ANL-F-150：保存后无立即 _refresh，5s 轮询
+    # 是唯一真相）
+    page.evaluate(LUX_CHIP_CLICK_JS)
+    page.wait_for_function(WAIT_LINK_DIALOG_JS, timeout=4000)
+    link_dlg = page.evaluate(READ_LINK_DIALOG_JS)
     check(
         "lux V1.7.1: link dialog prefilled with members and current values",
         bool(link_dlg) and link_dlg["title"] == "卫生间 — 联动组"
         and "卫生间（本区）" in link_dlg["members"] and "干区" in link_dlg["members"]
         and link_dlg["group"] == "卫生间" and link_dlg["fade"] == "0.5"
         and link_dlg["step"] == "20",
+        str(link_dlg),
+    )
+    # ANL-F-148 计算样式钉（Hub 壳路径）+ 名单脚注（裁定②）：10px 基础
+    # 注记与 0.25 遮罩必须来自跨仓同步后的 FumihaHub tokens.css，断言防
+    # 两仓再漂移（dev harness 走 Hub 路径，断言会真实校验跨仓同步生效）
+    check(
+        "lux V1.7.1: hub-path computed styles (note 10px / backdrop 0.25) + footnote",
+        bool(link_dlg) and link_dlg["noteFs"] == "10px"
+        and link_dlg["backdrop"] == "rgba(0, 0, 0, 0.25)"
+        and link_dlg["footnote"] is True,
         str(link_dlg),
     )
     # 改组标签保存 → POST 三键 + 关弹窗 + chip 即时更新
@@ -310,14 +328,34 @@ def run_checks(browser, base: str) -> None:
             const card = el.shadowRoot && el.shadowRoot.querySelector('[data-zone="lux1"]');
             if (card) {
               const chip = card.querySelector('[data-action="link-group"]');
-              return !!chip && chip.textContent.indexOf('联动组「卫生间2」') === 0;
+              // 精确全文案（ANL-F-151）：新组无同组成员 → 后缀「（暂无同
+              // 成员）」，乐观更新自保存响应（link_peers=null）
+              return !!chip
+                && chip.textContent === '联动组「卫生间2」（暂无同组成员）';
             }
           }
           return false;
         }""",
         timeout=9000,
     )
-    check("lux V1.7.1: chip updates after save", True)
+    check("lux V1.7.1: chip updates after save (exact, optimistic)", True)
+
+    # ANL-F-151：保存后重开弹窗——名单必须按新组派生（只剩本区，不含
+    # 干区）、三键预填新值；夹具名单硬编码时此处假绿
+    page.wait_for_function(NO_DIALOG_JS, timeout=4000)
+    page.evaluate(LUX_CHIP_CLICK_JS)
+    page.wait_for_function(WAIT_LINK_DIALOG_JS, timeout=4000)
+    reopen = page.evaluate(READ_LINK_DIALOG_JS)
+    check(
+        "lux V1.7.1: reopen dialog shows members derived from new group",
+        bool(reopen) and reopen["title"] == "卫生间 — 联动组"
+        and reopen["group"] == "卫生间2"
+        and reopen["members"] == "组内成员：卫生间（本区）"
+        and "干区" not in reopen["members"],
+        str(reopen),
+    )
+    page.evaluate(CANCEL_DIALOG_JS)
+    page.wait_for_function(NO_DIALOG_JS, timeout=4000)
 
     # target REST write
     page.evaluate(
@@ -427,6 +465,27 @@ def run_checks(browser, base: str) -> None:
         timeout=4000,
     )
     check("lux calibrate cancel POSTs to own REST", True)
+
+    # ANL-F-149：?cal=1 下打开联动组弹窗必须有「保存会中止校准」警示行
+    # （软提示路线：校准中保存经 reload 取消 _cal_task 且新 runtime 无痕）
+    page.evaluate(LUX_CHIP_CLICK_JS)
+    page.wait_for_function(WAIT_LINK_DIALOG_JS, timeout=4000)
+    cal_warn = page.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.querySelector('[data-lux-link-members]')) {
+              return d.textContent.includes(
+                '校准进行中：保存会重载条目并中止本次校准，已采集数据弃用');
+            }
+          }
+          return false;
+        }"""
+    )
+    check("lux ?cal=1: link dialog warns saving aborts calibration", cal_warn)
+    page.evaluate(CANCEL_DIALOG_JS)
+    page.wait_for_function(NO_DIALOG_JS, timeout=4000)
 
     # ---- anl page (deep link) -----------------------------------------------
     page.evaluate("() => { location.hash = 'pn=anl.main'; }")
@@ -1413,9 +1472,65 @@ def run_checks(browser, base: str) -> None:
     check("lux caldone=1: cancelled:false surfaces FL-IMP-24 branch (R1 #11)", True)
     page7.close()
 
+    # ---- ANL-F-150：?reloadgap=1 — POST 后第一次 overview 返回空 zones
+    # （reload 出桶窗口）。修后保存无立即 _refresh()：断言窗口内不闪空态、
+    # chip 由保存响应乐观更新；旧码立即 GET 会当场吃下空态+旧 chip
+    page8 = browser.new_page(viewport={"width": 1280, "height": 900})
+    page8.goto(base + "/?reloadgap=1")
+    wait_page_dom(page8, '[data-zone="lux1"]')
+    page8.evaluate(LUX_CHIP_CLICK_JS)
+    page8.wait_for_function(WAIT_LINK_DIALOG_JS, timeout=4000)
+    page8.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.querySelector('[data-lux-link-members]')) {
+              const inp = [...d.querySelectorAll('input')].find(
+                (x) => x.getAttribute('aria-label') === '联动组标签');
+              inp.value = '卫生间3';
+              [...d.querySelectorAll('button')].find(
+                (b) => b.textContent === '保存').click();
+              return true;
+            }
+          }
+          return false;
+        }"""
+    )
+    page8.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const card = el.shadowRoot && el.shadowRoot.querySelector('[data-zone="lux1"]');
+            if (card) {
+              const chip = card.querySelector('[data-action="link-group"]');
+              return !!chip
+                && chip.textContent === '联动组「卫生间3」（暂无同组成员）';
+            }
+          }
+          return false;
+        }""",
+        timeout=4000,
+    )
+    page8.wait_for_timeout(400)
+    no_flash = page8.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            if (el.shadowRoot && el.shadowRoot.querySelector('[data-zone="lux1"]')
+                && !el.shadowRoot.textContent.includes('尚无区域')) return true;
+          }
+          return false;
+        }"""
+    )
+    check("lux reloadgap: no empty flash, chip optimistic after save", no_flash)
+    page8.close()
+
     # ---- standalone fallback (pages boot without the shell) ------------------
     page3 = browser.new_page(viewport={"width": 1280, "height": 900})
-    page3.goto(base + "/?standalone=1")
+    # &cal=1（ANL-F-154 钉载体）：standalone 路径链接本仓 tokens.css，
+    # 卡片带 .cx-note.warn（校准进行中）供计算样式断言
+    page3.goto(base + "/?standalone=1&cal=1")
     page3.evaluate("""async () => {
       for (const m of ['page-lux.js', 'page-anl.js']) {
         await import('/fumiha_lighting/' + m + '?ver=1.0.0');
@@ -1440,6 +1555,28 @@ def run_checks(browser, base: str) -> None:
         timeout=9000,
     )
     check("standalone fallback: both pages boot from vendored kit", True)
+    # ANL-F-154 计算样式钉（standalone 路径链接本仓 tokens.css）：warn
+    # 注记 11.5px 不随基础 10px 缩小（告警不得比正文更小）、竖条删除后
+    # 基础圆角归一 8px（Hub 半边由主会话二次跨仓同步后同绿）
+    warn_style = page3.evaluate(
+        """() => {
+          const l = document.getElementById('luxpage');
+          const n = l && l.shadowRoot
+            && l.shadowRoot.querySelector('.cx-note.warn');
+          if (!n) return null;
+          const cs = getComputedStyle(n);
+          return {
+            fs: cs.fontSize,
+            radius: cs.borderTopLeftRadius + '/' + cs.borderTopRightRadius,
+          };
+        }"""
+    )
+    check(
+        "standalone tokens: warn note 11.5px + radius 8px (ANL-F-154)",
+        bool(warn_style) and warn_style["fs"] == "11.5px"
+        and warn_style["radius"] == "8px/8px",
+        str(warn_style),
+    )
     page3.close()
 
     check("no page errors so far", not errors, "; ".join(errors[:3]))

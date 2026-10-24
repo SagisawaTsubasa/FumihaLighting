@@ -9,9 +9,6 @@
 <style>
   html, body { margin: 0; height: 100%; }
   fumiha-hub-panel { display: block; height: 100%; }
-  .fx-dialog { border: 1px solid var(--fx-edge); border-radius: 10px; padding: 16px 18px; background: var(--fx-panel); color: var(--fx-txt); min-width: 280px; max-width: 90vw; }
-  <!-- V1.7.1 感知校准 0.35→0.25（与 tokens.css .fx-dialog::backdrop 同步，FXH-F-009） -->
-  .fx-dialog::backdrop { background: rgba(0,0,0,.25); }
 </style>
 </head>
 <body>
@@ -42,6 +39,20 @@
   // V1.7.1 联动组编辑器有状态夹具：POST 保存改写 luxLinkState，overview
   // GET 随之反映——L2 才能钉「保存后 chip 即时更新」全链
   var luxLinkState = { group: "卫生间", cross_fade: 0.5, max_step_pct: 20 };
+  // F-150 reloadgap 钉：?reloadgap=1 时 POST 后第一次 overview 返回空
+  // zones（模拟 reload 出桶窗口）——旧码保存后的立即 _refresh() 会当场
+  // 吃下空态；修后无立即 GET，该分支由 5s 轮询消费
+  var reloadgapPending = false;
+  // ANL-F-151：名单/同组按 luxLinkState.group 派生（web 层同算法：换组
+  // 后 link_members 只剩本区、link_peers 归 None）——硬编码会让「换组后
+  // 重开弹窗名单应更新」这条核心价值面在 L2 假绿
+  function luxLinkMembers() {
+    if (!luxLinkState.group) return null;
+    return luxLinkState.group === "卫生间" ? ["卫生间", "干区"] : ["卫生间"];
+  }
+  function luxLinkPeers() {
+    return luxLinkState.group === "卫生间" ? ["干区"] : null;
+  }
 
   function luxZones() {
     // ?cal=1 → 校准进行中态（取消按钮依赖此渲染，FL-IMP-26）
@@ -60,8 +71,8 @@
       last_adjustment: "2026-10-13T12:00:00+08:00",
       light_entity: "light.bath", lux_entity: "sensor.bath_lux",
       // V1.3.0 联动组（web._serialize_lux_zone 契约）：组标签+同组成员名单
-      //（V1.7.1 起组标签读 luxLinkState，编辑保存后即时反映）
-      link_group: luxLinkState.group, link_peers: ["干区"],
+      //（V1.7.1 起组标签/名单读 luxLinkState，编辑保存后即时反映）
+      link_group: luxLinkState.group, link_peers: luxLinkPeers(),
     }];
   }
   function anlManagers() {
@@ -158,11 +169,14 @@
           luxLinkState.group = String(linkBody.link_group || "").trim();
           luxLinkState.cross_fade = linkBody.cross_fade;
           luxLinkState.max_step_pct = linkBody.max_step_pct;
+          if (params.has("reloadgap")) reloadgapPending = true;
           return new Response(JSON.stringify({
             ok: true,
             link_group: luxLinkState.group || null,
             cross_fade: luxLinkState.cross_fade,
             max_step_pct: luxLinkState.max_step_pct,
+            // F-150：响应带新组 link_peers（web.LuxLinkGroupView.post 契约）
+            link_peers: luxLinkPeers(),
           }), { status: 200 });
         }
         // R1 发现 11：?caldone=1 模拟「校准刚好自行结束」——取消端点返回
@@ -186,6 +200,11 @@
         }), { status: 200 });
       }
       if (path.indexOf("/api/fumiha_lighting/lux/overview") === 0) {
+        // F-150 reloadgap 钉（见 reloadgapPending 声明处）
+        if (reloadgapPending) {
+          reloadgapPending = false;
+          return new Response(JSON.stringify({ zones: [] }), { status: 200 });
+        }
         return new Response(JSON.stringify({ zones: luxZones() }), { status: 200 });
       }
       if (path.indexOf("/api/fumiha_lighting/lux/link_group") === 0) {
@@ -197,7 +216,7 @@
           link_group: luxLinkState.group,
           cross_fade: luxLinkState.cross_fade,
           max_step_pct: luxLinkState.max_step_pct,
-          link_members: ["卫生间", "干区"],
+          link_members: luxLinkMembers(),
         }), { status: 200 });
       }
       if (path.indexOf("/api/fumiha_lighting/anl/snapshot") === 0) {

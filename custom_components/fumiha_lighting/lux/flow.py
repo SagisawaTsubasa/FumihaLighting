@@ -134,6 +134,16 @@ class LuxZoneFlowMixin:
             ):
                 # 校准曲线与旧灯/传感器绑定，改绑后不再对应——清除并回落
                 # 到手动系数（改绑后需重新校准）
+                old_light = entry.data.get(CONF_LIGHT_ENTITY)
+                if light_entity != old_light and old_light:
+                    # R1 发现 14：他区 store 里以旧灯实体为键的交叉曲线
+                    # 成永久孤儿（键 miss + 同 entity_id 换灯具会静默复活
+                    # 旧曲线）——改绑时逐区回收（内存+落盘，幂等）
+                    for other in (
+                        self.hass.data.get(DOMAIN, {}).get("lux", {}).values()
+                    ):
+                        if other.entry_id != entry.entry_id:
+                            await other.async_drop_cross_curve(old_light)
                 await ZoneStorage(self.hass, entry.entry_id).async_remove()
             return self.async_update_reload_and_abort(
                 entry,
@@ -208,6 +218,14 @@ class LuxZoneOptionsFlow(config_entries.OptionsFlow):
         """校准与降级：校准步长 / 手动斜率。"""
         if user_input is not None:
             self._cache.update(user_input)
+            # R1 发现 9：link_group 写入侧 strip 归一——TextSelector 原样
+            # 返回用户输入，「卫生间 」与「卫生间」尾空格静默不同组（三处
+            # 精确 == 比较都看不见空格）；写入侧一次性归一（存量在下次保存
+            # 时归一），运行时读取侧 runtime.__init__ 再 strip 一道兜底存量
+            if CONF_LINK_GROUP in self._cache:
+                self._cache[CONF_LINK_GROUP] = str(
+                    self._cache.get(CONF_LINK_GROUP) or ""
+                ).strip()
             data = {
                 key: value
                 for key, value in self._cache.items()

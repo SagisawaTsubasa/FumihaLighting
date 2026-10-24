@@ -88,7 +88,12 @@ from .const import (
     STANDALONE_LUX_URL_PATH,
     URL_BASE,
 )
-from .lux.const import LUX_STALE_AFTER_S, TARGET_MAX_LUX, TARGET_MIN_LUX
+from .lux.const import (
+    LUX_STALE_AFTER_S,
+    TARGET_MAX_LUX,
+    TARGET_MIN_LUX,
+    TARGET_STEP_LUX,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -209,6 +214,9 @@ def _serialize_lux_zone(runtime, runtimes=None) -> dict:
         ),
         "target_min": TARGET_MIN_LUX,
         "target_max": TARGET_MAX_LUX,
+        # R1 发现 10：target_step 随载荷下发（const 单一来源注释的同一约定
+        # ——TARGET_STEP_LUX 改动时页面不再静默不同步；页面 ?? 5 仅为兜底）
+        "target_step": TARGET_STEP_LUX,
         "lux_stale": runtime.lux_stale,
         "cal_last_error": runtime.cal_last_error,
         "stale_limit_min": LUX_STALE_AFTER_S // 60,

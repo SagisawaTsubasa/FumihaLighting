@@ -604,15 +604,19 @@ class NightLightManager:
             if entity_id in self.machines and entity_id in index
         }
 
-    def _ci_zones(self, lights: set[str] | None = None) -> list[dict]:
+    def _ci_zones(
+        self, lights: set[str] | list[str] | None = None
+    ) -> list[dict]:
         """清单灯推导的去重 zone 集合（轮级至多一次 turn_on/turn_off）。
 
         每 zone 一盏虚拟灯：同 zone 多灯只 ensure/归还一次（取代 V1.6.0
         「全组单虚拟灯一次」）。 zone 信息实时查反查表，无缓存失效面。
         ANL-F-133：lights=None（缺省）= day_ci_lights 全集语义——夜间归
         还/启动对账/extra 起点等「放手面」必须对全部已知 zone 归还，不因
-        only_when_on 准入缩小；日间 ensure 调用点传准入后的 ci_lights，
-        关着的区不得经 lux 点亮（F-085 逐灯准入的 zone 集合等价）。
+        only_when_on 准入缩小；日间 ensure 调用点传准入集合（按
+        day_ci_lights 配置序过滤，zone ensure 顺序与全集路径同序且确定
+        ——传裸 set 会引入哈希序抖动），关着的区不得经 lux 点亮（F-085
+        逐灯准入的 zone 集合等价）。
         """
         wanted = self.day_ci_lights if lights is None else lights
         index = build_light_zone_index(self.hass)
@@ -1790,9 +1794,13 @@ class NightLightManager:
             if ci_lights:
                 # 准入后无灯（only_when_on 全关）零 ensure（F-085 组级语义
                 # 保留：关着的灯不经 lux 点亮）。ANL-F-133：zone 集合按准入
-                # 后的 ci_lights 推导——多区组里关着的区不得经 lux 点亮
-                #（ensure 开虚拟灯会把 lux 区真灯打开）。
-                for zone in self._ci_zones(lights=ci_lights):
+                # 后的灯推导——多区组里关着的区不得经 lux 点亮（ensure 开
+                # 虚拟灯会把 lux 区真灯打开）；按 day_ci_lights 配置序过滤
+                # 传入，zone ensure 顺序确定（裸 set 是哈希序，服务调用顺
+                # 序会随进程抖动）。
+                for zone in self._ci_zones(
+                    lights=[e for e in self.day_ci_lights if e in ci_lights]
+                ):
                     if await self._async_ensure_zone_on(zone):
                         ensured_zones.add(zone["entry_id"])
             for entity_id in sorted(ci_lights):

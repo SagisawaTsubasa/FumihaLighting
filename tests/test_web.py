@@ -2487,10 +2487,12 @@ def test_anl_snapshot_serializes_day_ci_keys():
     hass = FakeHass()
     stubs.seed_light_zone(hass, "lux-x", "light.a", "卫生间", "light.a_virt")
     stubs.seed_light_zone(hass, "lux-y", "light.b", "干区", "light.b_virt")
-    _anl_bucket(
-        hass,
-        fake_anl_manager(day_ci_lights=["light.a"]),
-    )
+    mgr = fake_anl_manager(day_ci_lights=["light.a"])
+    # 第三盏灯：index 非空但本灯 ∉index（区域未配/已删形态）→ 恒 None
+    from custom_components.fumiha_lighting.anl.manager import LightMachine
+
+    mgr.machines["light.c"] = LightMachine(entity_id="light.c")
+    _anl_bucket(hass, mgr)
     resp = run(web.AnlSnapshotView().get(FakeRequest(hass)))
     m = resp.payload["managers"][0]
     assert m["day_ci_lights"] == ["light.a"]
@@ -2499,6 +2501,7 @@ def test_anl_snapshot_serializes_day_ci_keys():
     assert lights["light.a"]["ci_zone_name"] == "卫生间"
     # ANL-F-132：清单外但 ∈index → 归属照给（勾选态由页面按清单合成）
     assert lights["light.b"]["ci_zone_name"] == "干区"
+    assert lights["light.c"]["ci_zone_name"] is None  # ∈表才有值，缺表不谎报
     # 无反查表（lux 桶空）：清单内灯也不得谎报归属
     hass2 = FakeHass()
     _anl_bucket(hass2, fake_anl_manager(day_ci_lights=["light.a"]))

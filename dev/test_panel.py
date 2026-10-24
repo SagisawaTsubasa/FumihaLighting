@@ -218,6 +218,107 @@ def run_checks(browser, base: str) -> None:
         lux[:200],
     )
 
+    # V1.7.1 联动组面板内编辑：chip 点击 → 编辑弹窗（组员名单+三键现值）→
+    # 保存 POST → chip 即时更新（保存成功 _refresh；轮询 5s 兜底）
+    page.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const card = el.shadowRoot && el.shadowRoot.querySelector('[data-zone="lux1"]');
+            if (card) {
+              const chip = card.querySelector('[data-action="link-group"]');
+              if (chip) { chip.click(); return true; }
+            }
+          }
+          return false;
+        }"""
+    )
+    page.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.querySelector('[data-lux-link-members]')) return true;
+          }
+          return false;
+        }""",
+        timeout=4000,
+    )
+    link_dlg = page.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.querySelector('[data-lux-link-members]')) {
+              const val = (label) => {
+                const inp = [...d.querySelectorAll('input')].find(
+                  (x) => x.getAttribute('aria-label') === label);
+                return inp ? inp.value : null;
+              };
+              return {
+                title: d.querySelector('h2').textContent,
+                members: d.querySelector('[data-lux-link-members]').textContent,
+                group: val('联动组标签'),
+                fade: val('交叉系数'),
+                step: val('缓变步幅（%）'),
+              };
+            }
+          }
+          return null;
+        }"""
+    )
+    check(
+        "lux V1.7.1: link dialog prefilled with members and current values",
+        bool(link_dlg) and link_dlg["title"] == "卫生间 — 联动组"
+        and "卫生间（本区）" in link_dlg["members"] and "干区" in link_dlg["members"]
+        and link_dlg["group"] == "卫生间" and link_dlg["fade"] == "0.5"
+        and link_dlg["step"] == "20",
+        str(link_dlg),
+    )
+    # 改组标签保存 → POST 三键 + 关弹窗 + chip 即时更新
+    page.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.querySelector('[data-lux-link-members]')) {
+              const inp = [...d.querySelectorAll('input')].find(
+                (x) => x.getAttribute('aria-label') === '联动组标签');
+              inp.value = '卫生间2';
+              [...d.querySelectorAll('button')].find(
+                (b) => b.textContent === '保存').click();
+              return true;
+            }
+          }
+          return false;
+        }"""
+    )
+    page.wait_for_function(
+        """() => (window.__servicePosts || []).some((p) => {
+          if (p.path !== '/api/fumiha_lighting/lux/link_group') return false;
+          const b = JSON.parse(p.body);
+          return b.link_group === '卫生间2' && b.entry_id === 'lux1'
+            && typeof b.cross_fade === 'number' && typeof b.max_step_pct === 'number';
+        })""",
+        timeout=4000,
+    )
+    check("lux V1.7.1: link dialog save POSTs three keys", True)
+    page.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const card = el.shadowRoot && el.shadowRoot.querySelector('[data-zone="lux1"]');
+            if (card) {
+              const chip = card.querySelector('[data-action="link-group"]');
+              return !!chip && chip.textContent.indexOf('联动组「卫生间2」') === 0;
+            }
+          }
+          return false;
+        }""",
+        timeout=9000,
+    )
+    check("lux V1.7.1: chip updates after save", True)
+
     # target REST write
     page.evaluate(
         """() => {
@@ -1024,6 +1125,38 @@ def run_checks(browser, base: str) -> None:
         and not balcony_toggle["checked"] and not balcony_toggle["disabled"]
         and balcony_toggle["hint"],
         str(balcony_toggle),
+    )
+    # V1.7.1 换行钉：三态说明挂行下块级 cx-note——不在开关所在的 flex 行内
+    # （V1.7.0 错用 dlgRow 第三参数位与开关同级并排的用户反馈回归钉）
+    ci_hint_layout = page5.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+            if (d && d.textContent.includes('跟随全局设置')) {
+              const t = d.querySelector('[data-anl-ci-toggle]');
+              const hint = d.querySelector('[data-anl-ci-hint]');
+              if (!t || !hint) return { toggle: !!t, hint: !!hint };
+              const rowEl = t.parentElement;
+              return {
+                toggle: true,
+                hint: true,
+                inlineWithToggle: hint.parentElement === rowEl,
+                belowToggle: hint.parentElement === rowEl.parentElement
+                  && hint.previousElementSibling === rowEl,
+                block: getComputedStyle(hint).display === 'block',
+              };
+            }
+          }
+          return null;
+        }"""
+    )
+    check(
+        "anl V1.7.1: CI hint is a block note below the toggle row (not inline)",
+        bool(ci_hint_layout) and ci_hint_layout.get("toggle")
+        and ci_hint_layout.get("hint") and ci_hint_layout["inlineWithToggle"] is False
+        and ci_hint_layout["belowToggle"] is True and ci_hint_layout["block"] is True,
+        str(ci_hint_layout),
     )
     page5.evaluate(CANCEL_DIALOG_JS)
     page5.wait_for_timeout(200)

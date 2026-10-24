@@ -326,7 +326,9 @@ def test_link_group_get_returns_values_and_members():
     hass = FakeHass()
     wet = fake_lux_runtime("lux1", "湿区")
     wet.link_group = "卫"
-    wet.entry = _config_entry("lux1", data={"kind": "lux"}, options={"link_group": "卫"})
+    wet.entry = _config_entry(
+        "lux1", data={"kind": "lux"}, options={"link_group": "卫"}
+    )
     dry = fake_lux_runtime("lux2", "干区")
     dry.link_group = "卫"
     dry.entry = _config_entry(

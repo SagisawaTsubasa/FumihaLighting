@@ -4,10 +4,10 @@
 时段**不在向导里**——它们由夜灯助手页面的 GUI 设置弹窗经
 /api/fumiha_lighting/anl/config 读写（唯一编辑入口），向导产物不含
 extras/overrides（manager 对这些键按缺省值消费，GUI 后补）。
-V1.6.0：日间恒照度两键同样移出向导（day_ci_lights/day_ci_virtual_light
-由 GUI 编辑），保存时经 _GUI_MANAGED_KEYS 携带——存量 day_ci_enabled=true
-条目携带时展开为当时灯集（读入迁移的写侧对偶，防 reconfigure/options
-保存把 CI 静默清零）。
+V1.6.0：日间恒照度清单键移出向导（day_ci_lights 由 GUI 编辑），保存时
+经 _GUI_MANAGED_KEYS 携带——存量 day_ci_enabled=true 条目携带时展开为
+当时灯集（读入迁移的写侧对偶，防 reconfigure/options 保存把 CI 静默清零）。
+V1.7.0：虚拟灯键废除，移交对象改反查表推导（A1）。
 
 reconfigure/options 保存时把条目里 GUI 管理的键携带过去，避免向导保存
 把 GUI 改动冲掉；overrides/day_ci_lights 同时按当前灯集裁剪，不留死键。
@@ -46,6 +46,7 @@ from homeassistant.helpers.selector import (
 )
 
 from ..const import CONF_KIND, KIND_ANL
+from ..light_registry import build_light_zone_index
 from .config_schema import (
     PARAMS_NUMERIC,
     TIMES_ENUM,
@@ -61,7 +62,6 @@ from .const import (
     CONF_DAY_BRIGHTNESS,
     CONF_DAY_CI_ENABLED,
     CONF_DAY_CI_LIGHTS,
-    CONF_DAY_CI_VIRTUAL_LIGHT,
     CONF_DAY_COLOR_TEMP_KELVIN,
     CONF_DAY_ENABLED,
     CONF_END_TIME,
@@ -94,13 +94,14 @@ _LOGGER = logging.getLogger(__name__)
 # 向导保存时原样携带的 GUI 管理键（防 reconfigure 清 options 丢数据）。
 # custom_per_light/extra_count 不在内：manager 用 len(self.extras) 自算数量，
 # 两者均为零消费死键（ANL-F-022/029），旧条目残留值不再向 options 固化。
-# V1.6.0：day_ci_lights/day_ci_virtual_light 移入 GUI 编辑，向导保存同样
-# 携带（day_ci_lights 按灯集裁剪、存量旧键展开见 _carry_gui_keys）。
+# V1.6.0：day_ci_lights 移入 GUI 编辑，向导保存同样携带（按灯集裁剪、
+# 存量旧键展开见 _carry_gui_keys）。V1.7.0：day_ci_virtual_light 死键化
+# （移交对象改反查表推导）——不再携带，reconfigure 全量收敛 data 时自然
+# 从存量条目消失。
 _GUI_MANAGED_KEYS = (
     CONF_EXTRAS,
     CONF_OVERRIDES,
     CONF_DAY_CI_LIGHTS,
-    CONF_DAY_CI_VIRTUAL_LIGHT,
 )
 
 # 向导只建 times/params 字段（extras 移入 GUI 编辑器），无需 extras 规格
@@ -326,44 +327,52 @@ class _FlowMixin:
     async def _async_release_stale_virtual(
         self, old: dict, new: dict, *, exclude_entry_id: str | None
     ) -> None:
-        """CI 停用或改指时归还旧虚拟灯（F-057 双闭环互纠）。
+        """CI 停用或改指时归还旧 zone 虚拟灯（F-057 双闭环互纠；V1.7.0 反查）。
 
-        旧配置生效 CI 清单非空且配了灯、新配置不再引用同一虚拟灯 →
-        best-effort turn_off 旧灯（lux off=纯放手，对真实灯零下发）；失败
-        WARNING 不阻断保存。只在创建/更新条目之前调用（reconfigure/options
-        的 _finish）；新建流没有旧条目，不调。reload/卸载路径不归还——正常
-        reload 会把 CI 关掉、日间闭环还在，归还只属于「配置真的放弃该灯」
-        的边界。
-        V1.6.0：旧侧引用判据走读入迁移生效清单（entry_effective_day_ci_
-        lights 单一来源，存量 day_ci_enabled=true 形状同样构成引用）；新侧
-        「仍引用」=day_enabled 开 + 清单非空 + 虚拟灯同——day_enabled 关的
-        失效配置不构成引用（F-077 同源），关日间模式的向导保存也会归还。
+        旧配置生效 CI 清单（读入迁移单一来源）经 light_registry 反查表推导
+        旧 zone 虚拟灯集合；新配置（day_enabled 开且清单非空，否则空集）
+        推导新集合；差集（不再被引用的 zone）逐一 best-effort turn_off。
+        V1.7.0：day_ci_virtual_light 配置键废除——引用关系只能经反查表推导
+        （清单内灯 ∉ 表的区域本就不构成移交，无灯可还，自然不在集合里）。
+        只在创建/更新条目之前调用（reconfigure/options 的 _finish）；新建流
+        没有旧条目，不调。reload/卸载路径不归还——正常 reload 会把 CI 关掉、
+        日间闭环还在，归还只属于「配置真的放弃该区域」的边界。
         F-067：归还前跨条目检查——其他 anl 条目仍引用同一虚拟灯时跳过
         turn_off（关掉会静默终止别组的日间闭环），INFO 可观测。排除自身
         条目：reconfigure 流传被改条目 id，options 流传当前条目 id。
         F-083：归还动作统一走 async_release_virtual_light（lux mode 守卫 +
         跨条目检查 + best-effort turn_off，anl/manager.py 单一来源）。
+        F-090：配置侧挂点启用 calibrating 有界延迟归还。
         F-095：exclude_entry_id 关键字必填（与 helper 的 F-089 纪律对齐）
         ——归还发生在落盘之前，此刻当前条目 data/options 的旧值仍引用
-        old_virtual；省略该参会把当前条目自己当成「其他引用」而静默跳过
+        旧 zone；省略该参会把当前条目自己当成「其他引用」而静默跳过
         归还（F-081「忘了传」形状，防线不得止步于 helper）。
         """
-        old_virtual = old.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
-        if not (entry_effective_day_ci_lights(old) and old_virtual):
+        old_lights = entry_effective_day_ci_lights(old)
+        if not old_lights:
             return
-        if (
-            new.get(CONF_DAY_ENABLED)
-            and new.get(CONF_DAY_CI_LIGHTS)
-            and (new.get(CONF_DAY_CI_VIRTUAL_LIGHT) or "") == old_virtual
-        ):
-            return
-        # F-090：配置侧挂点启用 calibrating 有界延迟归还
-        await async_release_virtual_light(
-            self.hass,
-            old_virtual,
-            exclude_entry_id=exclude_entry_id,
-            retry_on_calibrating=True,
+        index = build_light_zone_index(self.hass)
+        old_zones = {
+            index[entity_id]["virtual_entity_id"]
+            for entity_id in old_lights
+            if entity_id in index
+        }
+        new_lights = (
+            entry_effective_day_ci_lights(new) if new.get(CONF_DAY_ENABLED) else []
         )
+        new_zones = {
+            index[entity_id]["virtual_entity_id"]
+            for entity_id in new_lights
+            if entity_id in index
+        }
+        # F-090：配置侧挂点启用 calibrating 有界延迟归还
+        for virtual in sorted(old_zones - new_zones):
+            await async_release_virtual_light(
+                self.hass,
+                virtual,
+                exclude_entry_id=exclude_entry_id,
+                retry_on_calibrating=True,
+            )
 
     def _carry_gui_keys(self, current: dict, lights=None) -> dict:
         """GUI 管理键携带（reconfigure 收敛 data / options 全镜像都需要）。

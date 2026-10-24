@@ -152,14 +152,12 @@ def fake_anl_manager(entry_id="anl1", title="自动夜灯", **overrides):
         transitions_active=False,  # 生效总闸：day 关 → manager 归零（真实分叉）
         day_enabled=False,
         day_ci_lights=[],  # V1.6.0 单灯化：接管灯清单（组级守卫=非空）
-        day_ci_virtual_light=None,
         respect_manual=True,
     )
-    # F-061：序列化读 ci_configured()——默认按真实语义镜像清单/虚拟灯两字段
-    # F-065 + V1.6.0：镜像 manager._ci_configured 生效判据（含 day_enabled）
-    mgr.ci_configured = lambda: bool(
-        mgr.day_enabled and mgr.day_ci_lights and mgr.day_ci_virtual_light
-    )
+    # F-061：序列化读 ci_configured()——默认按真实语义镜像生效判据
+    # F-065 + V1.6.0 + V1.7.0：日间模式开 + 清单非空（虚拟灯键废除，
+    # 逐灯有效性由 ci_zone_name 表达）
+    mgr.ci_configured = lambda: bool(mgr.day_enabled and mgr.day_ci_lights)
     mgr._anchor_modes = lambda: [
         (_time(23, 30), "night"),
         (_time(6, 56), "day"),
@@ -177,14 +175,19 @@ def fake_anl_manager(entry_id="anl1", title="自动夜灯", **overrides):
 
 
 def _lux_bucket(hass, *runtimes):
-    buckets = hass.data.setdefault(web.DOMAIN, {"lux": {}, "anl": {}})
+    # 双桶都 setdefault（seed_light_zone 先建 lux 桶时 anl 桶不缺）
+    buckets = hass.data.setdefault(web.DOMAIN, {})
+    buckets.setdefault("lux", {})
+    buckets.setdefault("anl", {})
     for rt in runtimes:
         buckets["lux"][rt.entry_id] = rt
     return buckets
 
 
 def _anl_bucket(hass, *managers):
-    buckets = hass.data.setdefault(web.DOMAIN, {"lux": {}, "anl": {}})
+    buckets = hass.data.setdefault(web.DOMAIN, {})
+    buckets.setdefault("lux", {})
+    buckets.setdefault("anl", {})
     for mgr in managers:
         buckets["anl"][mgr.entry.entry_id] = mgr
     return buckets
@@ -1073,7 +1076,9 @@ def test_flow_kind_selects_anl():
 def test_flow_reconfigure_dispatches_on_kind():
     flow = _make_flow()
     flow.hass = SimpleNamespace(states=SimpleNamespace(get=lambda eid: None))
-    lux_entry = SimpleNamespace(data={CONF_KIND: KIND_LUX}, options={})
+    lux_entry = SimpleNamespace(
+        entry_id="lux1", data={CONF_KIND: KIND_LUX}, options={}
+    )
     flow._reconfigure_entry = lux_entry
     result = run(flow.async_step_reconfigure(None))
     assert result["step_id"] == "lux_reconfigure"
@@ -2474,30 +2479,34 @@ def test_anl_entry_data_wizard_produces_no_ci_keys():
 
 
 def test_anl_snapshot_serializes_day_ci_keys():
+    """V1.7.0 快照契约：day_ci_virtual_light 键废除；逐灯 ci_zone_name 只对
+    「清单内 ∧ ∈反查表」的灯给出（B2 归属标注数据源）；清单外灯恒 None。"""
     hass = FakeHass()
+    stubs.seed_light_zone(hass, "lux-x", "light.a", "卫生间", "light.a_virt")
     _anl_bucket(
         hass,
-        fake_anl_manager(day_ci_lights=["light.a"], day_ci_virtual_light="light.virt"),
+        fake_anl_manager(day_ci_lights=["light.a"]),
     )
     resp = run(web.AnlSnapshotView().get(FakeRequest(hass)))
     m = resp.payload["managers"][0]
     assert m["day_ci_lights"] == ["light.a"]
-    assert m["day_ci_virtual_light"] == "light.virt"
-    # 空串归一为 None（页面判「未配置」）
+    assert "day_ci_virtual_light" not in m  # 死键不再下发
+    lights = {lt["entity_id"]: lt for lt in m["lights"]}
+    assert lights["light.a"]["ci_zone_name"] == "卫生间"
+    assert lights["light.b"]["ci_zone_name"] is None  # 清单外恒 None
+    # 无反查表（lux 桶空）：清单内灯也不得谎报归属
     hass2 = FakeHass()
-    _anl_bucket(
-        hass2,
-        fake_anl_manager(day_ci_lights=[], day_ci_virtual_light=""),
-    )
+    _anl_bucket(hass2, fake_anl_manager(day_ci_lights=["light.a"]))
     resp2 = run(web.AnlSnapshotView().get(FakeRequest(hass2)))
-    assert resp2.payload["managers"][0]["day_ci_virtual_light"] is None
+    lights2 = {lt["entity_id"]: lt for lt in resp2.payload["managers"][0]["lights"]}
+    assert lights2["light.a"]["ci_zone_name"] is None
 
 
-def test_anl_config_post_rejects_missing_virtual_light():
+def test_anl_config_post_rejects_retired_virtual_light_key():
+    """V1.7.0：day_ci_virtual_light 死键化——patch 携带该键按未知字段 400。"""
     hass = _recording_hass()
     entry = _config_entry(data={"kind": "anl", "lights": ["light.a"]})
     _anl_bucket(hass, _config_manager(entry))
-    hass.states = SimpleNamespace(get=lambda eid: None)
     resp = run(
         web.AnlConfigView().post(
             FakeRequest(hass, {"entry_id": "anl1",
@@ -2505,72 +2514,69 @@ def test_anl_config_post_rejects_missing_virtual_light():
                                    "day_ci_virtual_light": "light.ghost"}}})
         )
     )
-    assert resp.status == 400 and "light.ghost" in resp.payload["error"]
+    assert resp.status == 400
+    assert "未知字段" in resp.payload["error"]
+    assert "day_ci_virtual_light" in resp.payload["error"]
     assert recorded == []  # 校验失败绝不写条目
 
 
-def test_anl_config_post_rejects_non_light_virtual():
-    """F-073：经注册表桩命中 domain 分支（platform==本集成 而 domain!="light"）
-    ——states 桩版本只遮蔽出 reg_entry is None 路径。platform!=DOMAIN 对照
-    见 test_anl_v15_fixes.test_web_post_new_virtual_wrong_platform_400。"""
-    hass = _recording_hass()
-    entry = _config_entry(data={"kind": "anl", "lights": ["light.a"]})
-    _anl_bucket(hass, _config_manager(entry))
-    stubs._ENTITY_REGISTRY._entities["light.virt"] = SimpleNamespace(
-        entity_id="light.virt", platform="fumiha_lighting", domain="sensor"
+def test_anl_config_get_whitelist_drops_virtual_light_key():
+    """V1.7.0：GET 白名单（CONFIG_KEYS）不再含 day_ci_virtual_light——
+    编辑面读不到死键（存量条目 storage 残留值不下发）。"""
+    hass = FakeHass()
+    entry = _config_entry(
+        data={"kind": "anl", "lights": ["light.a"],
+              "day_ci_virtual_light": "light.virt"}
     )
+    _anl_bucket(hass, _config_manager(entry))
+    req = FakeRequest(hass)
+    req.query = {"entry_id": "anl1"}
+    resp = run(web.AnlConfigView().get(req))
+    cfg = resp.payload["config"]
+    assert "day_ci_virtual_light" not in cfg
+    assert cfg["day_ci_lights"] == []  # ANL-F-102 镜像恒在：无生效清单 → []
+    assert resp.payload["ok"] is True
+
+
+def test_anl_config_post_dead_virtual_light_key_popped_on_save():
+    """V1.7.0 死键惯例：存量条目的 day_ci_virtual_light 残留在任意一次保存
+    后从 options 消失（day_ci_enabled 同款落盘侧清理）。"""
+    hass = _recording_hass()
+    entry = _config_entry(
+        data={"kind": "anl", "lights": ["light.a"],
+              "day_ci_virtual_light": "light.virt"}
+    )
+    _anl_bucket(hass, _config_manager(entry))
     resp = run(
         web.AnlConfigView().post(
             FakeRequest(hass, {"entry_id": "anl1",
                                "patch": {"params": {
-                                   "day_ci_virtual_light": "light.virt"}}})
-        )
-    )
-    assert resp.status == 400 and "light 实体" in resp.payload["error"]
-
-
-def test_anl_config_post_empty_virtual_light_saves_empty_string():
-    """CI 关时 GUI 全量键提交空串/空清单 → 200 且落盘 ""/[]（不查存在性）。"""
-    hass = _recording_hass()
-    entry = _config_entry(data={"kind": "anl", "lights": ["light.a"]})
-    _anl_bucket(hass, _config_manager(entry))
-    resp = run(
-        web.AnlConfigView().post(
-            FakeRequest(hass, {"entry_id": "anl1",
-                               "patch": {"params": {
-                                   "day_ci_lights": [],
-                                   "day_ci_virtual_light": ""}}})
+                                   "day_ci_lights": []}}})
         )
     )
     assert resp.payload["ok"] is True
     options = recorded[0][1]["options"]
-    assert options["day_ci_virtual_light"] == ""
     assert options["day_ci_lights"] == []
+    assert "day_ci_virtual_light" not in options  # 死键 pop
+    assert "day_ci_enabled" not in options  # 既有死键照常
 
 
-def test_anl_config_post_valid_virtual_light_ok():
+def test_anl_config_post_valid_zone_ci_lights_ok():
+    """V1.7.0 zone 归属校验：清单灯 ∈ 反查表 → 200 落盘（零归还——
+    同 zone 保留）。"""
     hass = _recording_hass()
+    stubs.seed_light_zone(hass, "lux-x", "light.a", "卫生间", "light.a_virt")
     entry = _config_entry(data={"kind": "anl", "lights": ["light.a"]})
     _anl_bucket(hass, _config_manager(entry))
-    hass.states = SimpleNamespace(
-        get=lambda eid: SimpleNamespace(domain="light", state="off")
-        if eid == "light.virt"
-        else None
-    )
-    # F-058：身份校验改走实体注册表——注册本集成的 light 条目后才放行
-    stubs._ENTITY_REGISTRY._entities["light.virt"] = SimpleNamespace(
-        entity_id="light.virt", platform="fumiha_lighting", domain="light"
-    )
     resp = run(
         web.AnlConfigView().post(
             FakeRequest(hass, {"entry_id": "anl1",
                                "patch": {"params": {
                                    "day_enabled": True,
-                                   "day_ci_lights": ["light.a"],
-                                   "day_ci_virtual_light": "light.virt"}}})
+                                   "day_ci_lights": ["light.a"]}}})
         )
     )
     assert resp.payload["ok"] is True
     options = recorded[0][1]["options"]
     assert options["day_ci_lights"] == ["light.a"]
-    assert options["day_ci_virtual_light"] == "light.virt"
+    assert "day_ci_virtual_light" not in options

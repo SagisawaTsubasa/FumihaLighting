@@ -53,6 +53,7 @@ from custom_components.fumiha_lighting.anl.manager import PlanStep
 from custom_components.fumiha_lighting.const import CONF_KIND, KIND_ANL
 
 VIRT = "light.virtX"
+VIRT2 = "light.virt2"
 
 # 共享表单输入（与 test_web 既有链式用例同形状）
 _TIMES = {
@@ -130,6 +131,8 @@ def test_web_post_ci_disabled_releases_old_virtual():
         if eid == VIRT
         else None
     )
+    # V1.7.0 反查推导：待归还虚拟灯由生效清单经反查表推导
+    stubs.seed_light_zone(hass, "lux-x", "light.a", "卫生间", VIRT)
     _anl_bucket(hass, _config_manager(_ci_entry()))
     resp = run(
         web.AnlConfigView().post(
@@ -157,25 +160,29 @@ def test_web_post_unchanged_ci_zero_calls():
 
 
 def test_web_post_repoint_releases_old_only():
-    """③改指 X→Y → turn_off 旧灯 X；新灯走注册表校验后落盘。"""
+    """③zone 改指（清单 light.a→light.b，V1.7.0 语义：虚拟灯无配置键，
+    改指=改接管清单）→ turn_off 旧 zone 虚拟灯；新 zone 虚拟灯不动。"""
     hass = _recording_hass()
     hass.states = SimpleNamespace(  # F-083：助手 mode 守卫，见①
         get=lambda eid: SimpleNamespace(state="on", attributes={"mode": "active"})
-        if eid == VIRT
+        if eid in (VIRT, VIRT2)
         else None
     )
-    _anl_bucket(hass, _config_manager(_ci_entry()))
-    _register_virtual("light.new")
+    stubs.seed_light_zone(hass, "lux-a", "light.a", "卫生间", VIRT)
+    stubs.seed_light_zone(hass, "lux-b", "light.b", "干区", VIRT2)
+    entry = _ci_entry()
+    entry.data["lights"] = ["light.a", "light.b"]  # 灯集须含新接管灯
+    _anl_bucket(hass, _config_manager(entry))
     resp = run(
         web.AnlConfigView().post(
             FakeRequest(hass, {"entry_id": "anl1",
                                "patch": {"params": {
-                                   "day_ci_virtual_light": "light.new"}}})
+                                   "day_ci_lights": ["light.b"]}}})
         )
     )
     assert resp.payload["ok"] is True
     assert hass.services.calls == [("light", "turn_off", {"entity_id": VIRT})]
-    assert recorded[0][1]["options"]["day_ci_virtual_light"] == "light.new"
+    assert recorded[0][1]["options"]["day_ci_lights"] == ["light.b"]
 
 
 def test_web_post_validation_400_never_touches_lights():
@@ -205,6 +212,7 @@ def test_options_flow_releases_before_entry_update():
     )
     opts.hass = SimpleNamespace(
         # F-083：归还走助手 lux mode 守卫——桩给出闭环在跑的真实形态
+        data={},  # 反查表读 hass.data 桶（真机 hass 恒有）
         states=SimpleNamespace(
             get=lambda eid: SimpleNamespace(
                 state="on", attributes={"mode": "active"}
@@ -216,6 +224,9 @@ def test_options_flow_releases_before_entry_update():
         # F-067：flow 归还前跨条目检查读 config_entries.async_entries
         config_entries=SimpleNamespace(async_entries=lambda domain: []),
     )
+    # V1.7.0 反查推导：旧生效清单（存量 day_ci_enabled=true → [light.a]）
+    # 经反查表映射到 VIRT——桩喂 lux 桶 + 注册表条目
+    stubs.seed_light_zone(opts.hass, "lux-x", "light.a", "卫生间", VIRT)
     real_create = opts.async_create_entry
 
     def _recording_create(title, data):
@@ -236,6 +247,7 @@ def test_reconfigure_flow_releases_old_virtual_on_ci_off():
     events = []
     flow.hass = SimpleNamespace(
         # F-083：归还走助手 lux mode 守卫——桩给出闭环在跑的真实形态
+        data={},  # 反查表读 hass.data 桶（真机 hass 恒有）
         states=SimpleNamespace(
             get=lambda eid: SimpleNamespace(
                 state="on", attributes={"mode": "active"}
@@ -247,6 +259,8 @@ def test_reconfigure_flow_releases_old_virtual_on_ci_off():
         # F-067：flow 归还前跨条目检查读 config_entries.async_entries
         config_entries=SimpleNamespace(async_entries=lambda domain: []),
     )
+    # V1.7.0 反查推导：旧生效清单（存量形状 → [light.a]）映射到 VIRT
+    stubs.seed_light_zone(flow.hass, "lux-x", "light.a", "卫生间", VIRT)
     flow.source = "reconfigure"
     entry = SimpleNamespace(
         entry_id="anl1",
@@ -274,6 +288,8 @@ def test_remove_entry_anl_releases_virtual_lux_does_not():
         if eid == VIRT
         else None
     )
+    # V1.7.0 反查推导：待归还虚拟灯由生效清单经反查表推导
+    stubs.seed_light_zone(hass, "lux-x", "light.a", "卫生间", VIRT)
     anl_entry = SimpleNamespace(
         entry_id="anl1",
         data={"kind": "anl", "lights": ["light.a"],
@@ -294,17 +310,17 @@ def test_remove_entry_anl_releases_virtual_lux_does_not():
 # ---------------------------------------------------------------------------
 
 
-def test_web_post_stored_virtual_resubmit_skips_registry_check():
-    """F-058 核心：存量值原样重存（注册表缺失）→ 放行 200、零归还。"""
+def test_web_post_stored_ci_lights_resubmit_zero_release():
+    """存量值放行（F-058 新形态）：清单原样重存（zone 有效）→ 200、零归还
+    （reload 等价场景不动灯；虚拟灯注册表校验随键废除消失）。"""
     hass = _recording_hass()
+    stubs.seed_light_zone(hass, "lux-x", "light.a", "卫生间", VIRT)
     _anl_bucket(hass, _config_manager(_ci_entry()))
-    # 刻意不注册 light.virtX——老 states 校验必 400 的场景
     resp = run(
         web.AnlConfigView().post(
             FakeRequest(hass, {"entry_id": "anl1",
                                "patch": {"params": {
-                                   "day_ci_lights": ["light.a"],
-                                   "day_ci_virtual_light": VIRT}}})
+                                   "day_ci_lights": ["light.a"]}}})
         )
     )
     assert resp.payload["ok"] is True
@@ -325,18 +341,22 @@ def test_web_post_existing_virtual_registry_present_states_absent_ok():
     assert resp.payload["ok"] is True
 
 
-def test_web_post_new_virtual_missing_from_registry_400():
-    """F-058/F-064：改指为注册表不存在的实体 → 400、零落盘。"""
+def test_web_post_ci_light_outside_any_zone_400():
+    """zone 归属校验（V1.7.0 A1/A2 同源）：组内灯 ∉ 反查表 → 400 逐灯报名、
+    零落盘（校验失败绝不动灯）。"""
     hass = _recording_hass()
-    _anl_bucket(hass, _config_manager(_ci_entry()))
+    entry = _ci_entry()
+    entry.data["lights"] = ["light.a", "light.b"]  # light.b 在组内、无区域
+    _anl_bucket(hass, _config_manager(entry))
     resp = run(
         web.AnlConfigView().post(
             FakeRequest(hass, {"entry_id": "anl1",
                                "patch": {"params": {
-                                   "day_ci_virtual_light": "light.ghost"}}})
+                                   "day_ci_lights": ["light.b"]}}})
         )
     )
-    assert resp.status == 400 and "light.ghost" in resp.payload["error"]
+    assert resp.status == 400
+    assert "灯 light.b 不属于任何恒照度区域" in resp.payload["error"]
     assert recorded == []
 
 

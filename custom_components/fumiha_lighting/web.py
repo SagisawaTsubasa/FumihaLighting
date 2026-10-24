@@ -28,7 +28,6 @@ from homeassistant.core import (
     HomeAssistant,
     callback,
 )
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import async_call_later
 from homeassistant.loader import async_get_loaded_integration
 from homeassistant.util import dt as dt_util
@@ -88,6 +87,7 @@ from .const import (
     STANDALONE_LUX_URL_PATH,
     URL_BASE,
 )
+from .light_registry import build_light_zone_index
 from .lux.const import (
     LUX_STALE_AFTER_S,
     TARGET_MAX_LUX,
@@ -372,8 +372,17 @@ def _fmt_time(t) -> str | None:
     return t.strftime("%H:%M") if t is not None else None
 
 
-def _serialize_anl_manager(mgr) -> dict:
-    """One manager snapshot; sync reads only, safe in a handler."""
+def _serialize_anl_manager(mgr, hass: HomeAssistant | None = None) -> dict:
+    """One manager snapshot; sync reads only, safe in a handler.
+
+    V1.7.0 反查推导：day_ci_virtual_light 键废除（移交对象由反查表推导，
+    页面不再展示组级虚拟灯）；逐灯携带 ci_zone_name（B2 归属标注，逐灯弹
+    窗「由恒照度区域 X 接管」小字与 ∉表禁用态的数据源）——仅对「清单内
+    且 ∈ 反查表」的灯给出，反查失败静默为 None（失效告警由 manager 动作
+    路径负责）。
+    """
+    index = build_light_zone_index(hass) if hass is not None else {}
+    ci_lights = set(mgr.day_ci_lights)
     lights = []
     for entity_id, machine in mgr.machines.items():
         lights.append(
@@ -385,6 +394,12 @@ def _serialize_anl_manager(mgr) -> dict:
                 "target": list(machine.target) if machine.target else None,
                 "applied": list(machine.applied) if machine.applied else None,
                 "last_error": machine.last_error,
+                # B2：恒照度区域归属（清单内 ∧ ∈index 才有值）
+                "ci_zone_name": (
+                    index[entity_id]["zone_name"]
+                    if entity_id in ci_lights and entity_id in index
+                    else None
+                ),
             }
         )
     snap = mgr.anchor_snapshot()
@@ -415,9 +430,8 @@ def _serialize_anl_manager(mgr) -> dict:
         # V1.6.0 单灯化：day_ci_enabled 布尔键废除，快照携带接管灯清单
         # （诊断面，页面只读 day_ci_active 生效值）
         "day_ci_lights": list(mgr.day_ci_lights),
-        "day_ci_virtual_light": mgr.day_ci_virtual_light or None,
-        # 生效判据（F-061 + F-065）：日间模式开 + CI 配置开且灯已配才报
-        # True，页面不得拿 day_ci_enabled 谎报恒照度已接管
+        # 生效判据（F-061 + F-065 + V1.7.0 反查）：日间模式开 + CI 清单非空
+        # 才报 True（逐灯有效性由 ci_zone_name 表达，页面不得拿它谎报接管）
         "day_ci_active": mgr.ci_configured(),
         "respect_manual": mgr.respect_manual,
     }
@@ -435,7 +449,7 @@ class AnlSnapshotView(HomeAssistantView):
         hass = request.app["hass"]
         payload = []
         for mgr in _anl_managers(hass).values():
-            payload.append(_serialize_anl_manager(mgr))
+            payload.append(_serialize_anl_manager(mgr, hass))
         payload.sort(key=lambda m: m["title"])
         return web.json_response({"managers": payload})
 
@@ -531,10 +545,11 @@ class AnlConfigView(HomeAssistantView):
         # 旧 CI 配置快照（F-057/F-058）：归还判据与「存量值放行」都以改动
         # 前的合并值为准；400 路径必须发生在归还之前（校验失败绝不动灯）。
         # V1.6.0 单灯化：生效清单走读入迁移判据（entry_effective_day_ci_
-        # lights 单一来源）——存量 day_ci_enabled=true 的条目同样构成引用
+        # lights 单一来源）——存量 day_ci_enabled=true 的条目同样构成引用。
+        # V1.7.0 反查推导：虚拟灯配置键废除，归还判据按反查表推导的 zone
+        # 集合差集（见归还块）
         old_ci_lights = entry_effective_day_ci_lights(merged)
-        old_virtual = merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
-        # ANL-F-106：跨字段校验门控的存量第三输入（day_enabled 改前值）。
+        # ANL-F-106：跨字段校验门控的存量输入（day_enabled 改前值）。
         old_day_enabled = bool(merged.get(CONF_DAY_ENABLED))
 
         if "times" in patch:
@@ -552,41 +567,25 @@ class AnlConfigView(HomeAssistantView):
             if err is not None:
                 return _error(400, err)
             merged.update(clean)
-            # 恒照度虚拟灯身份校验（F-058/F-064）：只校验本次改指的新值，
-            # 存量未变值一律放行（运行时 fallback+告警兜底，防灯具暂缺
-            # 阻塞无关保存）。身份三验走实体注册表：存在 + 本集成平台 +
-            # light 域——states.get 只能验 domain，防不住别家同 domain 灯。
-            virtual = clean.get(CONF_DAY_CI_VIRTUAL_LIGHT)
-            if virtual and virtual != old_virtual:
-                reg_entry = er.async_get(hass).async_get(virtual)
-                if (
-                    reg_entry is None
-                    or reg_entry.platform != DOMAIN
-                    or reg_entry.domain != "light"
-                ):
-                    return _error(
-                        400,
-                        f"day_ci_virtual_light {virtual} "
-                        "不存在或不是本集成的 light 实体",
-                    )
-            # day_ci_lights 注册表身份拒绝（V1.6.0，F-064 同语义）：清单里
-            # 混入本集成的虚拟恒照度灯会让 ANL 驱动与 lux 闭环抢同一盏灯。
-            # shape/灯集子集已在 validate_params 拒绝；此处挡存量条目灯集
-            # 本身就含自家虚拟灯（F-064 前创建）的漏网组合。
+            # day_ci_lights 区域归属校验（V1.7.0 反查推导，A1/A2 同源）：
+            # 清单内每盏灯必须 ∈ light_zone_index——移交对象由系统推导，
+            # 「灯不属于任何恒照度区域」的接管是无效控制，入口逐灯 400
+            # 报名（计划书生效语义：清单保留存储、400 拦无效写入）。本集成
+            # 虚拟恒照度灯不在反查表（表只收 lux 区真实灯）——F-064 的
+            # 「清单混入自家虚拟灯」拒绝由此自然覆盖。shape/灯集子集已在
+            # validate_params 拒绝（schema 层保留格式校验）。
             ci_lights = clean.get(CONF_DAY_CI_LIGHTS)
             if ci_lights:
-                registry = er.async_get(hass)
-                for entity_id in ci_lights:
-                    reg_entry = registry.async_get(entity_id)
-                    if (
-                        reg_entry is not None
-                        and reg_entry.platform == DOMAIN
-                        and reg_entry.domain == "light"
-                    ):
-                        return _error(
-                            400,
-                            f"day_ci_lights 含本集成的虚拟恒照度灯: {entity_id}",
+                index = build_light_zone_index(hass)
+                outside = [e for e in ci_lights if e not in index]
+                if outside:
+                    return _error(
+                        400,
+                        "；".join(
+                            f"灯 {e} 不属于任何恒照度区域" for e in outside
                         )
+                        + "（请先在恒照度侧为该灯配置区域，或取消其接管勾选）",
+                    )
         # overrides 一律在深拷贝副本上改动（ANL-F-026）：merged 是浅拷贝，
         # 嵌套 dict 与 entry.options 同对象——就地 prune/upsert 会在后段
         # 校验 400 时构成"已改内存、未触发 reload"的静默部分写入。
@@ -654,85 +653,90 @@ class AnlConfigView(HomeAssistantView):
                 del overrides[k]
             # 深拷副本统一单点落盘（空表也写——清除语义需要覆盖 data 旧值）
             merged[CONF_OVERRIDES] = overrides
-        # 死键不再向 options 固化（ANL-F-022/029 + V1.6.0 单灯化）：无任何
-        # 消费方——day_ci_enabled 由读入迁移消费，落盘侧按死键惯例 pop
+        # 死键不再向 options 固化（ANL-F-022/029 + V1.6.0 单灯化 + V1.7.0
+        # 反查推导）：无任何消费方——day_ci_enabled 由读入迁移消费、
+        # day_ci_virtual_light 由反查表取代，落盘侧按死键惯例 pop
         for dead in (
             CONF_EXTRA_ENABLED,
             CONF_CUSTOM_PER_LIGHT,
             CONF_EXTRA_COUNT,
             CONF_DAY_CI_ENABLED,
+            CONF_DAY_CI_VIRTUAL_LIGHT,
         ):
             merged.pop(dead, None)
-        # CI 跨字段校验（F-065/F-061 + V1.6.0，merged 级连续两查）：CI 是
-        # 日间子功能，接管清单非空而 day_enabled 关、或清单非空而虚拟灯为
-        # 空，都是「页面谎报已接管」的配置——入口就 400，绝不静默落盘。
-        # ANL-F-106：校验只打本次改动面——仅当 patch 触碰判据输入（三键
+        # CI 跨字段校验（F-065/F-061，V1.7.0 反查后仅剩一查）：CI 是日间
+        # 子功能，接管清单非空而 day_enabled 关是「页面谎报已接管」的配置
+        # ——入口就 400，绝不静默落盘（虚拟灯空查随键废除而消失）。
+        # ANL-F-106：校验只打本次改动面——仅当 patch 触碰判据输入（两键
         # 唯一入口是 params 分节，_section 按提交键透传）、或解析后组合≠
-        # 存量组合时执行（存量值放行，F-058 虚拟灯身份同纪律）：flow 携带
-        # 侧不看 day_enabled（_carry_gui_keys），day_ci_lights≠[] +
-        # day_enabled=False 的失效组合（F-077 失效配置语义）可合法存量，
-        # 未触碰判据输入的保存（逐灯弹窗只发 overrides）不得被无关 400
-        # 阻塞；组合变化（主动关日间/清虚拟灯）或显式提交判据键仍 400。
+        # 存量组合时执行（存量值放行）：flow 携带侧不看 day_enabled
+        # （_carry_gui_keys），day_ci_lights≠[] + day_enabled=False 的失效
+        # 组合（F-077 失效配置语义）可合法存量，未触碰判据输入的保存
+        # （逐灯弹窗只发 overrides）不得被无关 400 阻塞；组合变化（主动关
+        # 日间）或显式提交判据键仍 400。
         ci_inputs_touched = "params" in patch and any(
             k in patch["params"]
             for k in (
                 CONF_DAY_ENABLED,
                 CONF_DAY_CI_LIGHTS,
-                CONF_DAY_CI_VIRTUAL_LIGHT,
             )
         )
         ci_combo_changed = (
             bool(merged.get(CONF_DAY_CI_LIGHTS)),
             bool(merged.get(CONF_DAY_ENABLED)),
-            bool(merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""),
-        ) != (bool(old_ci_lights), old_day_enabled, bool(old_virtual))
+        ) != (bool(old_ci_lights), old_day_enabled)
         if (
             (ci_inputs_touched or ci_combo_changed)
             and merged.get(CONF_DAY_CI_LIGHTS)
             and not merged.get(CONF_DAY_ENABLED)
         ):
             return _error(400, "day_ci_lights 需要先启用日间模式（day_enabled）")
-        if (
-            (ci_inputs_touched or ci_combo_changed)
-            and merged.get(CONF_DAY_CI_LIGHTS)
-            and not (merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or "")
-        ):
-            return _error(400, "day_ci_lights 已配置但 day_ci_virtual_light 为空")
         # 存量迁移回填（ANL-F-102）：patch 未携带 day_ci_lights（旧前端或
-        # 非 UI 调用只改时间/参数）且旧生效清单非空、日间仍开、存量虚拟灯
-        # 已配置（ANL-F-107：与上方校验/归还判据同口径——回填放校验后不
-        # 是摘出射程的通行证，「清单非空+虚拟灯空」绝不落盘）→ 按旧清单
+        # 非 UI 调用只改时间/参数）且旧生效清单非空、日间仍开 → 按旧清单
         # 回填，防死键 pop 把存量 CI 静默清零。显式提交空列表（新 UI 主动
         # 关闭）不在回填之列，用户语义优先。回填值是存量已生效配置，按
-        # 「存量值放行」惯例不再加卡。
+        # 「存量值放行」惯例不再加卡（V1.7.0：虚拟灯前提随键废除而消失，
+        # 区域缺失不阻断回填——运行时按失效告警+跳过语义处理）。
         if (
             CONF_DAY_CI_LIGHTS not in merged
             and old_ci_lights
             and merged.get(CONF_DAY_ENABLED)
-            and (merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or "")
         ):
             merged[CONF_DAY_CI_LIGHTS] = old_ci_lights
-        # CI 停用或改指 → 归还旧虚拟灯（F-057）：best-effort turn_off
-        # （lux off=纯放手），失败 WARNING 不阻断保存；全部校验通过后才
-        # 动灯，且 reload 场景（CI 保持开启、灯未变）零调用。F-067：其他
-        # anl 条目仍引用同一虚拟灯时跳过归还（关掉会静默终止别组的日间
-        # 闭环），INFO 可观测。V1.6.0：引用判据=生效清单非空（读入迁移）
-        # 且新配置仍引用同一虚拟灯（day_enabled 关的失效配置不构成引用，
+        # CI 停用或改指 → 归还旧 zone 虚拟灯（F-057；V1.7.0 反查推导）：
+        # best-effort turn_off（lux off=纯放手），失败 WARNING 不阻断保存；
+        # 全部校验通过后才动灯，且 reload 场景（CI 保持开启、灯未变）零
+        # 调用。F-067：其他 anl 条目仍引用同一虚拟灯时跳过归还（关掉会
+        # 静默终止别组的日间闭环），INFO 可观测。引用判据=生效清单经反查
+        # 表推导的 zone 集合差集（day_enabled 关的失效配置不构成引用，
         # F-077 同源——flow 侧 _async_release_stale_virtual 同语义）。
-        if old_ci_lights and old_virtual and not (
-            merged.get(CONF_DAY_ENABLED)
-            and merged.get(CONF_DAY_CI_LIGHTS)
-            and (merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or "") == old_virtual
-        ):
+        if old_ci_lights:
+            index = build_light_zone_index(hass)
+            old_zones = {
+                index[entity_id]["virtual_entity_id"]
+                for entity_id in old_ci_lights
+                if entity_id in index
+            }
+            new_lights = (
+                entry_effective_day_ci_lights(merged)
+                if merged.get(CONF_DAY_ENABLED)
+                else []
+            )
+            new_zones = {
+                index[entity_id]["virtual_entity_id"]
+                for entity_id in new_lights
+                if entity_id in index
+            }
             # F-083：归还统一走 async_release_virtual_light（lux mode 守卫
             # + 跨条目检查 + best-effort turn_off，anl/manager.py 单一来源）；
             # F-090：配置侧挂点启用 calibrating 有界延迟归还
-            await async_release_virtual_light(
-                hass,
-                old_virtual,
-                exclude_entry_id=entry.entry_id,
-                retry_on_calibrating=True,
-            )
+            for virtual in sorted(old_zones - new_zones):
+                await async_release_virtual_light(
+                    hass,
+                    virtual,
+                    exclude_entry_id=entry.entry_id,
+                    retry_on_calibrating=True,
+                )
         hass.config_entries.async_update_entry(entry, options=merged)
         return web.json_response({"ok": True, "pruned_override_extras": pruned})
 

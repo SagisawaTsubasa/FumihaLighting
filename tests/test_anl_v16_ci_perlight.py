@@ -48,20 +48,23 @@ from custom_components.fumiha_lighting.anl.manager import (
 )
 
 SECOND = "light.second"
+VIRT2 = "light.virt2"
 
 # 计划步时刻（fixed 锚点 22:00/06:00 → 12:00 解析为 day）
 WHEN_DAY = datetime(2026, 10, 2, 12, 0)
 
 
 def make_mixed_manager(**extra_overrides) -> NightLightManager:
-    """双灯组：light.bath 在接管清单、light.second 归日间直控。"""
+    """双灯组：light.bath 在接管清单（反查种子→VIRT）、light.second 归日
+    间直控。V1.7.0：移交对象经 light_registry 推导，桩喂 lux 桶+注册表。"""
     overrides = {
         CONF_LIGHTS: [LIGHT, SECOND],
         CONF_DAY_CI_LIGHTS: [LIGHT],
-        CONF_DAY_CI_VIRTUAL_LIGHT: VIRT,
     }
     overrides.update(extra_overrides)
-    return make_manager(**overrides)
+    m = make_manager(**overrides)
+    stubs.seed_light_zone(m.hass, "lux-test", LIGHT, "卫生间", VIRT)
+    return m
 
 
 def _record(calls):
@@ -282,10 +285,11 @@ def test_transitions_active_mixed_group_day_side_band_alive():
     stubs._FakeClock.now_dt = WHEN_DAY
     m = make_mixed_manager()
     assert m.transitions_active is True
-    # 全部灯被接管 → 仅剩日侧带不谎报
+    # 全部灯被接管 → 仅剩日侧带不谎报（SECOND 也要 ∈ 反查表才算接管）
     m2 = make_ci_manager(
         **{CONF_LIGHTS: [LIGHT, SECOND], CONF_DAY_CI_LIGHTS: [LIGHT, SECOND]}
     )
+    stubs.seed_light_zone(m2.hass, "lux-test2", SECOND, "干区", VIRT2)
     assert m2.transitions_active is False
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)
 
@@ -309,19 +313,14 @@ def test_band_params_day_side_alive_for_non_ci_light():
 
 
 def test_web_post_day_ci_lights_rejects_own_virtual_light():
-    """清单混入本集成虚拟灯 → 400（F-064 同语义；挡 F-064 前存量灯集）。"""
+    """清单混入本集成虚拟灯 → 400（F-064 同语义新形态）：虚拟灯不在反查
+    表（表只收 lux 区真实灯）→ zone 归属校验逐灯报名拒绝。"""
     hass = _recording_hass()
     entry = _config_entry(
         data={"kind": "anl", "lights": [LIGHT, "light.virtX"],
-              CONF_DAY_ENABLED: True,
-              CONF_DAY_CI_VIRTUAL_LIGHT: "light.virtX"}
+              CONF_DAY_ENABLED: True}
     )
     _anl_bucket(hass, _config_manager(entry))
-    import conftest as stubs_mod
-
-    stubs_mod._ENTITY_REGISTRY._entities["light.virtX"] = SimpleNamespace(
-        entity_id="light.virtX", platform="fumiha_lighting", domain="light"
-    )
     resp = run(
         web.AnlConfigView().post(
             FakeRequest(hass, {"entry_id": "anl1",
@@ -329,7 +328,7 @@ def test_web_post_day_ci_lights_rejects_own_virtual_light():
                                    "day_ci_lights": ["light.virtX"]}}})
         )
     )
-    assert resp.status == 400 and "虚拟恒照度灯" in resp.payload["error"]
+    assert resp.status == 400 and "不属于任何恒照度区域" in resp.payload["error"]
     assert recorded == []  # 校验失败绝不落盘
 
 
@@ -380,13 +379,15 @@ def test_web_post_legacy_other_entry_still_counts_as_reference():
 
 
 def test_remove_entry_legacy_shape_releases_virtual():
-    """删条目归还判据走读入迁移（day_ci_enabled=true 存量形状 → 归还）。"""
+    """删条目归还判据走读入迁移（day_ci_enabled=true 存量形状 → 归还）；
+    V1.7.0：待归还虚拟灯由生效清单经反查表推导。"""
     hass = FakeHass()
     hass.states = SimpleNamespace(
         get=lambda eid: SimpleNamespace(state="on", attributes={"mode": "active"})
         if eid == VIRT
         else None
     )
+    stubs.seed_light_zone(hass, "lux-x", LIGHT, "卫生间", VIRT)
     anl_entry = SimpleNamespace(
         entry_id="anl1",
         data={"kind": "anl", "lights": [LIGHT], CONF_DAY_ENABLED: True,
@@ -398,13 +399,14 @@ def test_remove_entry_legacy_shape_releases_virtual():
 
 
 def _legacy_active_hass_entry(data):
-    """ANL-F-102 钉共用：存量形状条目 + active mode 虚拟灯桩。"""
+    """ANL-F-102 钉共用：存量形状条目 + active mode 虚拟灯桩 + 反查种子。"""
     hass = _recording_hass()
     hass.states = SimpleNamespace(
         get=lambda eid: SimpleNamespace(state="on", attributes={"mode": "active"})
         if eid == VIRT
         else None
     )
+    stubs.seed_light_zone(hass, "lux-x", LIGHT, "卫生间", VIRT)
     _anl_bucket(hass, _config_manager(_config_entry(data=data)))
     return hass
 
@@ -499,6 +501,8 @@ def _reconfigure_flow_to_settings(entry, lights, settings):
         if eid == VIRT
         else None
     )
+    # V1.7.0 反查推导：归还/保留判据按 zone 集合差集——桩喂 LIGHT→VIRT
+    stubs.seed_light_zone(flow.hass, "lux-x", LIGHT, "卫生间", VIRT)
     run(flow.async_step_reconfigure(None))
     run(flow.async_step_anl_reconfigure({"lights": lights}))
     run(flow.async_step_time_details({
@@ -534,7 +538,8 @@ def test_reconfigure_carries_day_ci_lights_new_shape():
     )
     assert result["type"] == "abort"
     assert flow._reconfigure_entry.data[CONF_DAY_CI_LIGHTS] == [LIGHT]
-    assert flow._reconfigure_entry.data[CONF_DAY_CI_VIRTUAL_LIGHT] == VIRT
+    # V1.7.0：虚拟灯死键不再携带（移交对象改反查表推导，全量收敛时消失）
+    assert CONF_DAY_CI_VIRTUAL_LIGHT not in flow._reconfigure_entry.data
 
 
 def test_reconfigure_prunes_carried_ci_lights_by_new_light_set():
@@ -602,10 +607,10 @@ def test_reconfigure_legacy_ci_entry_survives_without_silent_reset():
     flow, result = _reconfigure_flow_to_settings(entry, [LIGHT], {**_SETTINGS})
     assert result["type"] == "abort"
     saved = flow._reconfigure_entry.data
-    # 旧键不固化（死键），新键以展开形态落盘
+    # 旧键不固化（死键），新键以展开形态落盘；虚拟灯死键随全量收敛消失
     assert CONF_DAY_CI_ENABLED not in saved
     assert saved[CONF_DAY_CI_LIGHTS] == [LIGHT]
-    assert saved[CONF_DAY_CI_VIRTUAL_LIGHT] == VIRT
+    assert CONF_DAY_CI_VIRTUAL_LIGHT not in saved
     # ANL-F-103：CI 保留 → 归还判据须命中（零服务调用）
     assert flow.hass.services.calls == []
     # 运行时判据：迁移语义下 CI 仍配置开
@@ -649,6 +654,7 @@ def test_web_post_overrides_only_survives_stale_day_off_ci_combo():
               CONF_DAY_ENABLED: False,
               CONF_DAY_CI_LIGHTS: [LIGHT], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT}
     )
+    stubs.seed_light_zone(hass, "lux-x", LIGHT, "卫生间", VIRT)
     _anl_bucket(hass, _config_manager(entry))
     resp = run(
         web.AnlConfigView().post(
@@ -677,6 +683,7 @@ def test_web_post_params_partial_save_survives_stale_combo():
         data={"kind": "anl", "lights": [LIGHT], CONF_DAY_ENABLED: False,
               CONF_DAY_CI_LIGHTS: [LIGHT], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT}
     )
+    stubs.seed_light_zone(hass, "lux-x", LIGHT, "卫生间", VIRT)
     _anl_bucket(hass, _config_manager(entry))
     resp = run(
         web.AnlConfigView().post(
@@ -699,6 +706,7 @@ def test_web_post_explicit_stale_day_off_ci_combo_still_400():
         data={"kind": "anl", "lights": [LIGHT], CONF_DAY_ENABLED: False,
               CONF_DAY_CI_LIGHTS: [LIGHT], CONF_DAY_CI_VIRTUAL_LIGHT: VIRT}
     )
+    stubs.seed_light_zone(hass, "lux-x", LIGHT, "卫生间", VIRT)
     _anl_bucket(hass, _config_manager(entry))
     resp = run(
         web.AnlConfigView().post(
@@ -711,10 +719,11 @@ def test_web_post_explicit_stale_day_off_ci_combo_still_400():
     assert recorded == []  # 校验失败绝不落盘
 
 
-def test_web_post_times_only_no_backfill_without_virtual():
-    """ANL-F-107 负向钉：存量 day_ci_enabled=true + 虚拟灯空 + times-only
-    保存 → 回填缺虚拟灯前提不成立 → day_ci_lights 不落盘（「清单非空+
-    虚拟灯空」组合绝不静默写入；无虚拟灯可归还 → 零服务调用）。"""
+def test_web_post_times_only_backfills_legacy_ci_without_virtual_key():
+    """ANL-F-102 回填钉（V1.7.0 修订）：存量 day_ci_enabled=true（无虚拟灯
+    键的更老存量也同形状）+ times-only 保存 → 按旧生效清单回填保留 CI；
+    虚拟灯前提随键废除消失——区域缺失不阻断回填，运行时按失效告警+跳过
+    语义处理（清单保留存储是 A 面生效语义，不由保存面裁剪）。"""
     hass = _recording_hass()
     entry = _config_entry(
         data={"kind": "anl", "lights": [LIGHT], CONF_DAY_ENABLED: True,
@@ -729,9 +738,10 @@ def test_web_post_times_only_no_backfill_without_virtual():
     )
     assert resp.payload["ok"] is True
     saved = hass.data[web.DOMAIN]["anl"]["anl1"].entry.options
-    assert CONF_DAY_CI_LIGHTS not in saved  # 不回填
+    assert saved[CONF_DAY_CI_LIGHTS] == [LIGHT]  # 回填保留
     assert CONF_DAY_CI_ENABLED not in saved  # 死键照常清理
-    assert hass.services.calls == []  # 虚拟灯未配置 → 无归还对象
+    assert CONF_DAY_CI_VIRTUAL_LIGHT not in saved  # 虚拟灯死键照常清理
+    assert hass.services.calls == []  # 区域缺失 → 无归还对象（差集空）
 
 
 def test_ensure_virtual_on_failure_log_messages_readable(caplog):
@@ -742,10 +752,11 @@ def test_ensure_virtual_on_failure_log_messages_readable(caplog):
 
     manager_logger = "custom_components.fumiha_lighting.anl.manager"
     m = make_ci_manager()
+    zone = m._ci_zones()[0]  # 反查推导的 zone（V1.7.0 A1）
     # 预检失败路径（F-068）：unavailable →「开启失败，改回落日间参数直控」
     m.hass.states.mapping[VIRT] = _FakeState("unavailable")
     with caplog.at_level(logging.DEBUG, logger=manager_logger):
-        assert run(m._async_ensure_virtual_on()) is False
+        assert run(m._async_ensure_zone_on(zone)) is False
     assert any(
         "开启失败，改回落日间参数直控" in r.getMessage()
         for r in caplog.records
@@ -753,7 +764,7 @@ def test_ensure_virtual_on_failure_log_messages_readable(caplog):
     )
     caplog.clear()
     with caplog.at_level(logging.DEBUG, logger=manager_logger):
-        assert run(m._async_ensure_virtual_on()) is False  # 节流第二响 DEBUG
+        assert run(m._async_ensure_zone_on(zone)) is False  # 节流第二响 DEBUG
     assert any(
         "开启失败，改回落日间参数直控" in r.getMessage()
         for r in caplog.records
@@ -761,10 +772,11 @@ def test_ensure_virtual_on_failure_log_messages_readable(caplog):
     )
     # 服务失败路径：「开启失败：」/「开启仍失败：」
     m2 = make_ci_manager()
+    zone2 = m2._ci_zones()[0]
     m2.hass.states.mapping[VIRT] = _FakeState("off")
     m2.hass.services = _RecordingServices([], fail=True)
     with caplog.at_level(logging.DEBUG, logger=manager_logger):
-        assert run(m2._async_ensure_virtual_on()) is False
+        assert run(m2._async_ensure_zone_on(zone2)) is False
     assert any(
         "开启失败：" in r.getMessage()
         for r in caplog.records
@@ -772,7 +784,7 @@ def test_ensure_virtual_on_failure_log_messages_readable(caplog):
     )
     caplog.clear()
     with caplog.at_level(logging.DEBUG, logger=manager_logger):
-        assert run(m2._async_ensure_virtual_on()) is False
+        assert run(m2._async_ensure_zone_on(zone2)) is False
     assert any(
         "开启仍失败：" in r.getMessage()
         for r in caplog.records

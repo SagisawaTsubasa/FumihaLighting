@@ -213,29 +213,19 @@ def test_validate_params_day_ci_lights_rejects_unknown_and_duplicate():
 
 
 
-def test_validate_params_day_ci_virtual_light_empty_normalized():
-    """CI 关时 GUI 全量键提交发空串/None = 未配置，放行并归一 ""。"""
+def test_validate_params_day_ci_virtual_light_key_retired():
+    """V1.7.0 反查推导：day_ci_virtual_light 死键化——校验器删除，patch
+    携带该键按未知字段 400（旧前端/非 UI 调用不得再写入移交对象）。"""
     clean, err = validate_params({"day_ci_virtual_light": ""}, LIGHTS)
-    assert err is None and clean["day_ci_virtual_light"] == ""
+    assert clean is None and "未知字段" in err and "day_ci_virtual_light" in err
+    clean, err = validate_params({"day_ci_virtual_light": "light.virt"}, LIGHTS)
+    assert clean is None and "未知字段" in err
     clean, err = validate_params({"day_ci_virtual_light": None}, LIGHTS)
-    assert err is None and clean["day_ci_virtual_light"] == ""
-
-
-def test_validate_params_day_ci_virtual_light_entity_ok():
-    clean, err = validate_params({"day_ci_virtual_light": " light.virt "}, LIGHTS)
-    assert err is None and clean["day_ci_virtual_light"] == "light.virt"
-
-
-def test_validate_params_day_ci_virtual_light_rejects_bad_values():
-    clean, err = validate_params({"day_ci_virtual_light": 5}, LIGHTS)
-    assert clean is None and "day_ci_virtual_light" in err
-    # 纯空白串走 _entity_check 同逻辑 → 拒绝
-    clean, err = validate_params({"day_ci_virtual_light": "   "}, LIGHTS)
-    assert clean is None and "非空实体 ID" in err
+    assert clean is None and "未知字段" in err
 
 
 def test_validate_params_day_ci_keys_absent_skipped():
-    """patch 语义：缺省键跳过，clean 不含两键。"""
+    """patch 语义：缺省键跳过，clean 不含 day_ci_lights（虚拟灯键已废除）。"""
     clean, err = validate_params({"brightness": 30}, LIGHTS)
     assert err is None
     assert "day_ci_lights" not in clean

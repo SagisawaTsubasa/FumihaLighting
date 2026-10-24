@@ -23,6 +23,10 @@ import pytest as _pytest
 
 Any = _Any  # 桩记录列表的注解用
 
+# light_registry.seed_light_zone 消费（与 lux/const.py DOMAIN 同值；conftest
+# 不 import 项目代码，字面量单一来源注释挂靠）
+DOMAIN = "fumiha_lighting"
+
 ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = ROOT
 LUX_PKG = ROOT / "custom_components" / "fumiha_lighting" / "lux"
@@ -98,11 +102,14 @@ class _ConfigFlowBase:
     def async_show_form(
         self, step_id, data_schema=None, errors=None, description_placeholders=None
     ):
+        # description_placeholders 透传（真 HA 契约）：V1.7.0 A2 查重错误带
+        # zone_name 占位，测试断言消费
         return {
             "type": "form",
             "step_id": step_id,
             "errors": errors,
             "data_schema": data_schema,
+            "description_placeholders": description_placeholders,
         }
 
     def async_create_entry(self, title, data):
@@ -351,8 +358,31 @@ _ENTITY_REGISTRY = _EntityRegistryStub()
 def _reset_entity_registry():
     """跨测试隔离：注册表条目桩不清理会让 A 测试塞的虚拟灯泄漏到 B。"""
     _ENTITY_REGISTRY._entities.clear()
+    _ENTITY_REGISTRY._entries_for.clear()
     yield
     _ENTITY_REGISTRY._entities.clear()
+    _ENTITY_REGISTRY._entries_for.clear()
+
+
+def seed_light_zone(
+    hass, entry_id: str, light_entity: str, zone_name: str, virtual_entity_id: str
+) -> None:
+    """测试桩：为 light_registry.build_light_zone_index 造 lux 桶 runtime +
+    虚拟灯注册表条目（V1.7.0 反查表引入后，凡消费反查表的用例先调本助手）。
+
+    runtime 桩只带反查表面消费的三个属性（entry_id/light_entity/zone_name）。
+    """
+    bucket = hass.data.setdefault(DOMAIN, {}).setdefault("lux", {})
+    bucket[entry_id] = _types.SimpleNamespace(
+        entry_id=entry_id, light_entity=light_entity, zone_name=zone_name
+    )
+    _ENTITY_REGISTRY._entries_for[entry_id] = [
+        _types.SimpleNamespace(
+            unique_id=f"{entry_id}-light",
+            entity_id=virtual_entity_id,
+            domain="light",
+        )
+    ]
 
 
 def _async_entries_for_config_entry(registry, entry_id):

@@ -65,6 +65,9 @@ def make_manager(**entry_overrides) -> NightLightManager:
         hass=SimpleNamespace(), entry=make_entry(**entry_overrides)
     )
     manager.hass = SimpleNamespace(
+        # data 桶：light_registry 反查表消费面（A3 防护/CI 推导）真机 hass
+        # 恒有 hass.data——桩补空桶，反查空表=无恒照度区域
+        data={},
         states=_FakeStates(),
         async_create_task=lambda coro: asyncio.get_event_loop().create_task(coro),
         # F-086：归还统一走 async_release_virtual_light——跨条目检查读
@@ -459,12 +462,19 @@ class _RecordingServices:
 
 
 def make_ci_manager(**extra_overrides):
+    """CI 组桩：清单非空 + 反查表种子（LIGHT→VIRT 映射，V1.7.0 A1）。
+
+    反查推导后 manager 的移交对象经 light_registry 查询——桩必须同时喂
+    lux 桶 runtime 与注册表条目，否则接管集合恒空（接管面测试全哑）。
+    """
     overrides = {
         CONF_DAY_CI_LIGHTS: [LIGHT],
-        CONF_DAY_CI_VIRTUAL_LIGHT: VIRT,
     }
     overrides.update(extra_overrides)
-    return make_manager(**overrides)
+    manager = make_manager(**overrides)
+    manager.hass.data = {}  # SimpleNamespace 桩补 data 桶（seed 写入面）
+    stubs.seed_light_zone(manager.hass, "lux-test", LIGHT, "卫生间", VIRT)
+    return manager
 
 
 def test_day_trigger_ci_hands_over_to_virtual_light():

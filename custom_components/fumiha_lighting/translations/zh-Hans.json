@@ -91,6 +91,7 @@
       "entity_missing": "在 Home Assistant 中找不到该实体。",
       "light_no_brightness": "这盏灯不支持亮度调节。",
       "light_is_virtual": "这盏灯是 Fumiha Lighting 恒照度功能生成的虚拟灯；请选择真实灯具。",
+      "light_in_other_zone": "该灯已属恒照度区域「{zone_name}」——一盏灯只能由一个区域接管。",
       "unique_id_mismatch": "新的灯 + 传感器组合已被其他条目使用。",
       "no_lights": "请至少选择一盏灯"
     },

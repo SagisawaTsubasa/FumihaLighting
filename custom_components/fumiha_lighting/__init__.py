@@ -24,15 +24,13 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.service import async_extract_entity_ids
 
-from .anl.const import (
-    CONF_DAY_CI_VIRTUAL_LIGHT,
-    SERVICE_TRIGGER_NOW,
-)
+from .anl.const import SERVICE_TRIGGER_NOW
 from .anl.manager import (
     async_release_virtual_light,
     entry_effective_day_ci_lights,
 )
 from .const import CONF_KIND, DOMAIN, KIND_ANL, KIND_LUX
+from .light_registry import build_light_zone_index
 from .lux.const import CONF_LIGHT_ENTITY, SERVICE_CALIBRATE
 from .lux.runtime import ZoneRuntime
 from .lux.store import ZoneStorage
@@ -116,25 +114,29 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     # 不触发——卸载路径（async_unload_entry→manager.stop）故意不动灯，防
     # 正常 reload 把日间恒照度闭环关掉。best-effort：失败 WARNING 不阻断
     # 删除（lux off=纯放手，对真实灯零下发）。
+    # V1.7.0 反查推导（A1）：day_ci_virtual_light 配置键废除——待归还虚拟灯
+    # 由生效 CI 清单经反查表推导（清单内灯 ∉ 表的区域不构成移交，无灯可还）。
     merged = {**entry.data, **entry.options}
-    virtual = merged.get(CONF_DAY_CI_VIRTUAL_LIGHT) or ""
-    # V1.6.0 单灯化：引用判据=生效 CI 灯清单非空（读入迁移单一来源，含存量
-    # day_ci_enabled=true → 灯集全集）——与 web/flow 归还挂点同判据
-    if not (entry_effective_day_ci_lights(merged) and virtual):
+    ci_lights = entry_effective_day_ci_lights(merged)
+    if not ci_lights:
         return
-    # F-083：归还统一走 async_release_virtual_light（lux mode 守卫 + 跨条
-    # 目检查——删除本条目不应关掉别组的日间闭环——+ best-effort turn_off，
-    # anl/manager.py 单一来源）。本钩子只在删除触发、reload 不触发——卸载
-    # 路径（async_unload_entry→manager.stop）故意不动灯，防正常 reload 把
-    # 日间恒照度闭环关掉（F-057）；启动/重载侧的归还对账在 anl_async_
-    # setup_entry（F-081）。
-    # F-090：配置侧挂点启用 calibrating 有界延迟归还
-    await async_release_virtual_light(
-        hass,
-        virtual,
-        exclude_entry_id=entry.entry_id,
-        retry_on_calibrating=True,
-    )
+    index = build_light_zone_index(hass)
+    virtuals = {
+        index[entity_id]["virtual_entity_id"]
+        for entity_id in ci_lights
+        if entity_id in index
+    }
+    for virtual in sorted(virtuals):
+        # F-083：归还统一走 async_release_virtual_light（lux mode 守卫 +
+        # 跨条目检查——删除本条目不应关掉别组的日间闭环——+ best-effort
+        # turn_off，anl/manager.py 单一来源）。
+        # F-090：配置侧挂点启用 calibrating 有界延迟归还
+        await async_release_virtual_light(
+            hass,
+            virtual,
+            exclude_entry_id=entry.entry_id,
+            retry_on_calibrating=True,
+        )
 
 
 # ---------------------------------------------------------------------------

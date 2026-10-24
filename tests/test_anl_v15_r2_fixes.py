@@ -55,6 +55,7 @@ from custom_components.fumiha_lighting.anl.flow import AnlGroupOptionsFlow
 from custom_components.fumiha_lighting.anl.manager import LightState, PlanStep
 
 VIRT = "light.virt"
+VIRT2 = "light.virt2"
 MANAGER_LOGGER = "custom_components.fumiha_lighting.anl.manager"
 WEB_LOGGER = "custom_components.fumiha_lighting.web"
 PKG_LOGGER = "custom_components.fumiha_lighting"
@@ -159,6 +160,8 @@ def test_web_post_ci_on_day_disabled_400():
             CONF_DAY_CI_VIRTUAL_LIGHT: VIRT,
         }
     )  # 刻意不带 day_enabled 键 = 日间模式关
+    # V1.7.0：zone 归属校验先于跨字段 400——种子让清单灯过校验
+    stubs.seed_light_zone(hass, "lux-x", "light.a", "卫生间", VIRT)
     _anl_bucket(hass, _config_manager(entry))
     resp = run(
         web.AnlConfigView().post(
@@ -257,6 +260,8 @@ def test_web_post_release_skipped_when_other_entry_shares_virtual(caplog):
         if eid == VIRT
         else None
     )
+    # V1.7.0 反查语义：共享虚拟灯=两条目清单映射到同一 zone（同灯同种子）
+    stubs.seed_light_zone(hass, "lux-x", "light.a", "卫生间", VIRT)
     hass.config_entries.async_entries = lambda domain: [entry_a, entry_b]
     _anl_bucket(hass, _config_manager(entry_a))
     # F-083：归还助手落 anl/manager.py——「跳过归还」INFO 由 manager logger 发出
@@ -280,6 +285,8 @@ def test_web_post_release_skipped_when_other_entry_shares_virtual(caplog):
 def test_remove_entry_release_skipped_when_other_entry_shares_virtual(caplog):
     """删除 A 条目时 B 仍引用同虚拟灯 → 零 turn_off + INFO。"""
     hass = FakeHass()
+    # V1.7.0 反查语义：B 的清单 light.a 经种子映射到同一 VIRT
+    stubs.seed_light_zone(hass, "lux-x", "light.a", "卫生间", VIRT)
     entry_a = SimpleNamespace(
         entry_id="anl1",
         data={"kind": "anl", "lights": ["light.a"],
@@ -336,6 +343,7 @@ def test_options_flow_release_skipped_when_other_entry_shares_virtual():
     opts = AnlGroupOptionsFlow()
     opts.config_entry = entry_a
     opts.hass = SimpleNamespace(
+        data={},  # 反查表读 hass.data 桶（真机 hass 恒有）
         # 虚拟灯可见（state=on）：预检放行，turn_off 跳过必须由跨条目检查达成
         # （F-083 助手读 attributes["mode"]——本桩不带 mode → 守卫不碰，零
         # turn_off 由 mode 守卫与跨条目检查双重达成）
@@ -347,6 +355,7 @@ def test_options_flow_release_skipped_when_other_entry_shares_virtual():
         services=SimpleNamespace(async_call=_svc_recorder(events)),
         config_entries=SimpleNamespace(async_entries=lambda domain: [entry_a, entry_b]),
     )
+    stubs.seed_light_zone(opts.hass, "lux-x", "light.a", "卫生间", VIRT)
     real_create = opts.async_create_entry
 
     def _recording_create(title, data):
@@ -369,6 +378,7 @@ def test_web_post_release_turns_off_when_reference_is_unique():
         if eid == VIRT
         else None
     )
+    stubs.seed_light_zone(hass, "lux-x", "light.a", "卫生间", VIRT)
     _anl_bucket(hass, _config_manager(_ci_entry()))
     resp = run(
         web.AnlConfigView().post(
@@ -531,19 +541,27 @@ def test_plan_step_callback_guard_uses_actual_now():
 
 
 def test_day_trigger_ci_dual_lights_single_turn_on():
-    """双灯 day+CI（两灯都在接管清单）→ 虚拟灯 turn_on 恰 1 次（轮级
-    去重，F-072），双 machine 归位、零真实灯下发。"""
+    """双灯 day+CI（两灯都在接管清单、各自映射独立 zone）→ 每 zone 轮级
+    至多一次 turn_on（F-072 轮级去重的 V1.7.0 形态：移交对象按 zone 推导），
+    双 machine 归位、零真实灯亮度直控。"""
     m = make_ci_manager(
         **{**CONF_LIGHTS_DUAL, CONF_DAY_CI_LIGHTS: [LIGHT, "light.second"]}
+    )
+    stubs.seed_light_zone(
+        m.hass, "lux-2nd", "light.second", "干区", VIRT2
     )
     svc = []
     m.hass.services = _RecordingServices(svc)
     m.hass.states.mapping[VIRT] = _FakeState("off")
+    m.hass.states.mapping[VIRT2] = _FakeState("off")  # 第二 zone 虚拟灯可用
     calls = []
     m._async_process_light = _record(calls)
     run(m.async_trigger("test"))
-    assert svc == [("light", "turn_on", {"entity_id": VIRT})]
-    assert calls == []  # 真实灯零下发
+    assert svc == [
+        ("light", "turn_on", {"entity_id": VIRT}),
+        ("light", "turn_on", {"entity_id": VIRT2}),
+    ]
+    assert calls == []  # 真实灯零直控（ensure 全成功）
     assert all(mm.state == LightState.IDLE for mm in m.machines.values())
 
 

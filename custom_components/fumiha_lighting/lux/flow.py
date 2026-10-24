@@ -18,6 +18,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import selector
 
 from ..const import CONF_KIND, KIND_LUX
+from ..light_registry import build_light_zone_index
 from .const import (
     CONF_AUTO_TURN_OFF,
     CONF_CAL_STEP_PCT,
@@ -70,25 +71,38 @@ def _user_schema() -> vol.Schema:
 
 
 def _validate_binding(
-    hass: HomeAssistant, user_input: dict[str, Any] | None
-) -> dict[str, str]:
-    """Validate the light/lux binding shared by the user and reconfigure steps."""
+    hass: HomeAssistant, user_input: dict[str, Any] | None,
+    exclude_entry_id: str | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Validate the light/lux binding shared by the user and reconfigure steps.
+
+    V1.7.0 A2 查重：候选灯已属其他恒照度区域（反查表命中且非自身条目）→
+    light_in_other_zone 错误 + zone_name 占位（「同一盏灯换一个传感器即可
+    再建 zone」的互抢在入口拒绝——查重防的是「重复控制」而非「重复配置」）。
+    返回 (errors, description_placeholders)。
+    """
     if user_input is None:
-        return {}
+        return {}, {}
     light_entity: str = user_input[CONF_LIGHT_ENTITY]
     registry_entry = er.async_get(hass).async_get(light_entity)
     state = hass.states.get(light_entity)
     if registry_entry is None and state is None:
-        return {"base": "entity_missing"}
+        return {"base": "entity_missing"}, {}
     if registry_entry is not None and registry_entry.platform == DOMAIN:
-        return {"base": "light_is_virtual"}
+        return {"base": "light_is_virtual"}, {}
+    zone = build_light_zone_index(hass).get(light_entity)
+    if zone is not None and zone["entry_id"] != exclude_entry_id:
+        return (
+            {"base": "light_in_other_zone"},
+            {"zone_name": zone["zone_name"]},
+        )
     # BLE 灯经常离线：只有在线时才做亮度能力校验，离线不拦配置
     online = state is not None and state.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN)
     if online and not _BRIGHTNESS_MODES & set(
         state.attributes.get("supported_color_modes") or []
     ):
-        return {"base": "light_no_brightness"}
-    return {}
+        return {"base": "light_no_brightness"}, {}
+    return {}, {}
 
 
 class LuxZoneFlowMixin:
@@ -99,7 +113,7 @@ class LuxZoneFlowMixin:
     async def async_step_lux_zone(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        errors = _validate_binding(self.hass, user_input)
+        errors, placeholders = _validate_binding(self.hass, user_input)
         if user_input is not None and not errors:
             light_entity: str = user_input[CONF_LIGHT_ENTITY]
             lux_entity: str = user_input[CONF_LUX_ENTITY]
@@ -113,6 +127,7 @@ class LuxZoneFlowMixin:
             step_id="lux_zone",
             data_schema=self.add_suggested_values_to_schema(_user_schema(), user_input),
             errors=errors,
+            description_placeholders=placeholders,
         )
 
     async def async_step_lux_reconfigure(
@@ -120,7 +135,10 @@ class LuxZoneFlowMixin:
     ) -> config_entries.ConfigFlowResult:
         """Re-bind the zone's light/lux sensor or rename it."""
         entry = self._get_reconfigure_entry()
-        errors = _validate_binding(self.hass, user_input)
+        # A2：改绑查重排除自身条目（纯改名/换传感器不触发跨区 400）
+        errors, placeholders = _validate_binding(
+            self.hass, user_input, exclude_entry_id=entry.entry_id
+        )
         if user_input is not None and not errors:
             light_entity: str = user_input[CONF_LIGHT_ENTITY]
             lux_entity: str = user_input[CONF_LUX_ENTITY]
@@ -157,6 +175,7 @@ class LuxZoneFlowMixin:
                 _user_schema(), user_input or entry.data
             ),
             errors=errors,
+            description_placeholders=placeholders,
         )
 
 

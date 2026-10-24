@@ -24,7 +24,6 @@ from .const import (
     CONF_COLOR_TEMP_KELVIN,
     CONF_DAY_BRIGHTNESS,
     CONF_DAY_CI_LIGHTS,
-    CONF_DAY_CI_VIRTUAL_LIGHT,
     CONF_DAY_COLOR_TEMP_KELVIN,
     CONF_DAY_ENABLED,
     CONF_END_MODE,
@@ -157,7 +156,6 @@ CONFIG_KEYS = (
     CONF_DAY_BRIGHTNESS,
     CONF_DAY_COLOR_TEMP_KELVIN,
     CONF_DAY_CI_LIGHTS,
-    CONF_DAY_CI_VIRTUAL_LIGHT,
     CONF_TOLERANCE_BRIGHTNESS,
     CONF_TOLERANCE_KELVIN,
     CONF_VERIFY_DELAY,
@@ -245,27 +243,6 @@ def _entity_check(payload, key):
     return value.strip(), None
 
 
-def _day_ci_virtual_light_check(payload, key):
-    """恒照度虚拟灯实体校验（对 _entity_check 的显式放宽修订）。
-
-    GUI 保存走全量键契约：CI 关时实体字段提交空串/None =「未配置」，
-    必须放行并归一为 ""，否则条件显隐下关掉 CI 的保存会被 400 打断
-    （裸 _entity_check 拒空串，与全量键提交互斥）。非空值走
-    _entity_check 同逻辑（strip、非空字符串）；非 str 且非 None 拒绝。
-    """
-    if key not in payload:
-        return None, None
-    value = payload[key]
-    if value is None or value == "":
-        return "", None
-    if not isinstance(value, str):
-        return None, f"{key} 需为字符串实体 ID 或空串"
-    value = value.strip()
-    if not value:
-        return None, f"{key} 需为非空实体 ID"
-    return value, None
-
-
 def _bool_check(payload, key):
     if key not in payload:
         return None, None
@@ -334,14 +311,16 @@ def validate_times(payload) -> tuple[dict | None, str | None]:
 
 
 def validate_params(payload, lights: set) -> tuple[dict | None, str | None]:
-    """参数分节：亮度/色温（含日间）+ 容差 + 延迟 + 行为开关 + 恒照度键。
+    """参数分节：亮度/色温（含日间）+ 容差 + 延迟 + 行为开关 + 恒照度清单。
 
     lights 必填：day_ci_lights 的灯集子集校验依赖组内灯清单（V1.6.0 单灯
-    化；web 层从条目合并配置取）。day_ci_virtual_light 空串归一语义不变。
+    化；web 层从条目合并配置取）。V1.7.0 反查推导：day_ci_virtual_light
+    键废除（校验器删除，patch 携带该键按未知字段 400）；day_ci_lights 的
+    区域归属校验（∈light_zone_index）在 web 层执行——本模块纯逻辑不
+    import HA，schema 层保留形状/子集格式校验。
     """
     allowed: dict = {k: _num_check(PARAMS_NUMERIC) for k in PARAMS_NUMERIC}
     allowed.update({k: _bool_check for k in PARAMS_BOOL})
-    allowed[CONF_DAY_CI_VIRTUAL_LIGHT] = _day_ci_virtual_light_check
     allowed[CONF_DAY_CI_LIGHTS] = _day_ci_lights_check(lights)
     return _section(payload, allowed, "params")
 

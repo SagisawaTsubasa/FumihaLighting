@@ -33,7 +33,9 @@ class FakeStates:
 
 
 def make_hass(states):
-    return SimpleNamespace(states=FakeStates(states))
+    # data 桶：light_registry 反查表消费面（A2 查重）真机 hass 恒有——
+    # 桩补空桶（空桶=无任何恒照度区域）
+    return SimpleNamespace(states=FakeStates(states), data={})
 
 
 def registry(entry_or_none):
@@ -124,6 +126,7 @@ def test_reconfigure_initial_render_no_crash():
     flow = make_user_flow(make_hass({}))
     flow.context = {"entry_id": "e1"}
     flow._reconfigure_entry = SimpleNamespace(
+        entry_id="e1",
         data=USER_INPUT, unique_id=f"lux:{LIGHT}::{LUX}", title="卫生间"
     )
     result = run(flow.async_step_lux_reconfigure(None))
@@ -220,3 +223,73 @@ def test_options_chain_without_target_lux():
         "max_step_pct",
     }
     assert "target_lux" not in final["data"]
+
+
+# ---------------------------------------------------------------------------
+# V1.7.0 A2：lux flow 保存查重（灯→zone 反查表；一盏灯只归一个区域）
+# ---------------------------------------------------------------------------
+
+
+def _seed_zone(hass, entry_id, light, zone_name, virtual):
+    """等价 conftest.seed_light_zone（本文件不依赖 conftest 直用桩）。"""
+    import conftest as stubs
+
+    stubs.seed_light_zone(hass, entry_id, light, zone_name, virtual)
+
+
+def test_user_rejects_light_already_in_other_zone(monkeypatch):
+    """A2：候选灯已属其他恒照度区域 → light_in_other_zone 400 键 +
+    zone_name 占位（「同灯换传感器再建 zone」的互抢在入口拒绝）。"""
+    hass = make_hass({LIGHT: {"state": "off", "attributes": BRIGHT_MODES}})
+    _seed_zone(hass, "lux-other", LIGHT, "干区", "light.other_virt")
+    flow = make_user_flow(hass)  # er 不打桩：conftest 全局注册表空表路径
+    result = run(flow.async_step_lux_zone(USER_INPUT))
+    assert result["errors"] == {"base": "light_in_other_zone"}
+    assert result["description_placeholders"] == {"zone_name": "干区"}
+
+
+def test_reconfigure_same_light_passes_zone_check_for_own_entry(monkeypatch):
+    """A2：改绑查重排除自身条目——本区自己的灯重存（纯改名/换传感器）
+    不得命中跨区 400。"""
+    hass = make_hass({LIGHT: {"state": "off", "attributes": BRIGHT_MODES}})
+    _seed_zone(hass, "e1", LIGHT, "卫生间", "light.virt")
+    flow = make_user_flow(hass)  # er 不打桩：conftest 全局注册表空表路径
+    flow.context = {"entry_id": "e1"}
+    entry = SimpleNamespace(
+        entry_id="e1",
+        data=dict(USER_INPUT),
+        unique_id=f"lux:{LIGHT}::{LUX}",
+        title="卫生间",
+    )
+    flow._reconfigure_entry = entry
+    result = run(
+        flow.async_step_lux_reconfigure(
+            {"zone_name": "卫浴间", "light_entity": LIGHT, "lux_entity": LUX}
+        )
+    )
+    assert result == {"type": "abort", "reason": "reconfigure_successful"}
+
+
+def test_reconfigure_rebind_to_other_zone_light_rejected(monkeypatch):
+    """A2：改绑到他区灯 → light_in_other_zone（改绑面同判据）。"""
+    hass = make_hass(
+        {LIGHT: {"state": "off", "attributes": BRIGHT_MODES},
+         "light.other": {"state": "off", "attributes": BRIGHT_MODES}}
+    )
+    _seed_zone(hass, "lux-other", "light.other", "干区", "light.other_virt")
+    flow = make_user_flow(hass)  # er 不打桩：conftest 全局注册表空表路径
+    flow.context = {"entry_id": "e1"}
+    entry = SimpleNamespace(
+        entry_id="e1",
+        data=dict(USER_INPUT),
+        unique_id=f"lux:{LIGHT}::{LUX}",
+        title="卫生间",
+    )
+    flow._reconfigure_entry = entry
+    result = run(
+        flow.async_step_lux_reconfigure(
+            {"zone_name": "卫生间", "light_entity": "light.other",
+             "lux_entity": LUX}
+        )
+    )
+    assert result["errors"] == {"base": "light_in_other_zone"}

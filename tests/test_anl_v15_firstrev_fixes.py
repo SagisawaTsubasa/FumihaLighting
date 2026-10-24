@@ -216,6 +216,7 @@ def test_f081_setup_entry_runs_reconcile():
         config_entries=SimpleNamespace(async_entries=lambda domain: []),
     )
     hass.states.mapping[VIRT] = _FakeState("on", mode="active")
+    stubs.seed_light_zone(hass, "lux-x", LIGHT, "卫生间", VIRT)
     entry = make_entry(
         **{CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT}
     )
@@ -265,11 +266,13 @@ def test_f083_web_post_release_skipped_when_calibrating():
     落盘照常。"""
     hass = _recording_hass()
     hass.states = SimpleNamespace(get=lambda eid: _virt_state(eid, "calibrating"))
+    stubs.seed_light_zone(hass, "lux-x", "light.a", "卫生间", VIRT)
     _anl_bucket(hass, _config_manager(_config_entry(
         entry_id="anl1",
         data={"kind": "anl", "lights": ["light.a"], CONF_DAY_ENABLED: True,
               CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
     )))
+    stubs.CALL_LATER_CALLS.clear()
     resp = run(web.AnlConfigView().post(
         FakeRequest(hass, {"entry_id": "anl1",
                            "patch": {"params": {"day_ci_lights": []}}})
@@ -277,6 +280,8 @@ def test_f083_web_post_release_skipped_when_calibrating():
     assert resp.payload["ok"] is True
     assert hass.services.calls == []
     assert recorded[0][1]["options"]["day_ci_lights"] == []
+    # F-090/F-096：校准中排 60s 延迟归还（与 flow/删条目挂点同语义）
+    assert [d for d, _a in stubs.CALL_LATER_CALLS] == [60]
 
 
 def test_f083_options_flow_release_skipped_when_calibrating():
@@ -294,10 +299,12 @@ def test_f083_options_flow_release_skipped_when_calibrating():
         options={},
     )
     opts.hass = SimpleNamespace(
+        data={},  # 反查表读 hass.data 桶（真机 hass 恒有）
         states=SimpleNamespace(get=lambda eid: _virt_state(eid, "calibrating")),
         services=SimpleNamespace(async_call=_recorder(events)),
         config_entries=SimpleNamespace(async_entries=lambda domain: []),
     )
+    stubs.seed_light_zone(opts.hass, "lux-x", "light.a", "卫生间", VIRT)
     run(opts.async_step_init(None))
     run(opts.async_step_anl_init(_TIMES))
     final = run(opts.async_step_settings({**_SETTINGS}))
@@ -314,6 +321,7 @@ def test_f083_remove_entry_release_skipped_when_calibrating():
 
     hass = _recording_hass()
     hass.states = SimpleNamespace(get=lambda eid: _virt_state(eid, "calibrating"))
+    stubs.seed_light_zone(hass, "lux-x", "light.a", "卫生间", VIRT)
     entry = SimpleNamespace(
         entry_id="anl1",
         data={"kind": "anl", "lights": ["light.a"],
@@ -338,6 +346,7 @@ def test_f083_release_helper_direct_mode_guard():
     ):
         calls = []
         hass = SimpleNamespace(
+            data={},  # 反查表读 hass.data 桶（真机 hass 恒有）
             states=SimpleNamespace(get=lambda eid, _m=mode: _virt_state(eid, _m)),
             services=_RecordingServices(calls),
             # F-094：守卫单一来源——助手恒执行引用检查，桩补空表
@@ -418,7 +427,11 @@ def test_f085_ci_day_trigger_only_when_on_any_on_takes_over():
     calls = []
     m._async_process_light = _record(calls)
     run(m.async_trigger("test"))
-    assert svc == [("light", "turn_on", {"entity_id": VIRT})]
+    # B1：接管成功后按日间色温一次性补发真实灯（仅 kelvin，无亮度键）
+    assert svc == [
+        ("light", "turn_on", {"entity_id": VIRT}),
+        ("light", "turn_on", {"entity_id": LIGHT, "color_temp_kelvin": 4000}),
+    ]
     assert calls == []  # 接管成功：真实灯零下发
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
 
@@ -435,9 +448,11 @@ def test_f086_night_trigger_release_skipped_when_other_entry_shares():
     ——排除逻辑早于该过滤的防回归盲区）。"""
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)
     m = make_ci_manager()
+    # V1.7.0 反查语义：共享同一虚拟灯=清单映射到同一 zone → 他条目引用
+    # 同一盏灯 LIGHT（经同一种子映射到 VIRT）
     other = SimpleNamespace(
         entry_id="anl2",
-        data={"kind": "anl", "lights": ["light.z"], CONF_DAY_ENABLED: True,
+        data={"kind": "anl", "lights": [LIGHT], CONF_DAY_ENABLED: True,
               CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
         title="自动夜灯B",
@@ -505,9 +520,10 @@ def test_f089_reconcile_skipped_when_other_entry_shares():
     绕过跨条目守卫，F-089）。"""
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)
     m = make_ci_manager()
+    # V1.7.0 反查语义：共享=清单映射到同一 zone（他条目引用同一盏灯）
     other = SimpleNamespace(
         entry_id="anl2",
-        data={"kind": "anl", "lights": ["light.z"], CONF_DAY_ENABLED: True,
+        data={"kind": "anl", "lights": [LIGHT], CONF_DAY_ENABLED: True,
               CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
         title="自动夜灯B",
@@ -548,9 +564,11 @@ def _calib_states_map():
 
 
 def _calib_hass(states_map):
-    """web POST 用例基座：VIRT 校准中 + async_create_task 收集桩。"""
+    """web POST 用例基座：VIRT 校准中 + async_create_task 收集桩 + 反查
+    种子（V1.7.0：归还判据按 zone 集合推导，light.a→VIRT）。"""
     hass = _recording_hass()
     hass.states = SimpleNamespace(get=lambda eid: states_map.get(eid))
+    stubs.seed_light_zone(hass, "lux-x", "light.a", "卫生间", VIRT)
     tasks = []
     hass.async_create_task = tasks.append
     return hass, tasks
@@ -610,7 +628,7 @@ def test_f090_retry_yields_to_reconfigured_reference():
     _post_disable_ci(hass)  # 此时 async_entries 空表 → retry 排上
     reconfigured = SimpleNamespace(
         entry_id="anl2",
-        data={"kind": "anl", "lights": ["light.z"], CONF_DAY_ENABLED: True,
+        data={"kind": "anl", "lights": ["light.a"], CONF_DAY_ENABLED: True,
               CONF_DAY_CI_ENABLED: True, CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},
         title="自动夜灯B",
@@ -808,7 +826,7 @@ def test_f099_setup_retry_reference_blocks_but_warns(caplog):
     _post_disable_ci(hass)
     hass.config_entries.async_entries = lambda domain: [SimpleNamespace(
         entry_id="anl2",
-        data={"kind": "anl", "lights": ["light.z"],
+        data={"kind": "anl", "lights": ["light.a"],
               CONF_DAY_ENABLED: True, CONF_DAY_CI_ENABLED: True,
               CONF_DAY_CI_VIRTUAL_LIGHT: VIRT},
         options={},

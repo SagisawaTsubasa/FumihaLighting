@@ -91,6 +91,7 @@
       "entity_missing": "Entity not found in Home Assistant.",
       "light_no_brightness": "This light does not support brightness control.",
       "light_is_virtual": "That light is a virtual constant-illuminance light created by Fumiha Lighting itself; pick the real light instead.",
+      "light_in_other_zone": "This light already belongs to constant-illuminance zone \"{zone_name}\"; one light can only be managed by one zone.",
       "unique_id_mismatch": "The new light + sensor pair is already used by another entry.",
       "no_lights": "Please select at least one light"
     },

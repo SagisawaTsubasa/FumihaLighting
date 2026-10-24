@@ -74,22 +74,22 @@
       anchors: [{ time: "23:30", mode: "night" }, { time: "06:56", mode: "day" }],
       lights: [
         { entity_id: "light.bedroom", state: "verified", manual_override: false,
-          mismatch_steps: 0, target: [12, 2700], applied: [12, 2700], last_error: null },
+          mismatch_steps: 0, target: [12, 2700], applied: [12, 2700], last_error: null,
+          // V1.7.0 快照契约：逐灯恒照度区域归属（B2；清单内 ∧ ∈反查表才有值）
+          ci_zone_name: ciStorage ? "卫生间" : null },
         { entity_id: "light.hallway", state: "mismatch", manual_override: true,
-          mismatch_steps: 2, target: [12, 2700], applied: null, last_error: null },
+          mismatch_steps: 2, target: [12, 2700], applied: null, last_error: null,
+          ci_zone_name: null },
       ],
       start_mode: "sunset", end_mode: "sunrise",
       // ANL-F-046：两字段真实分叉——transition_enabled=true（end_transition>0）
       // 而 transitions_active=false（日间关闭 → manager 归零），chip 只能读后者
       transition_enabled: true, transitions_active: false,
       day_enabled: true, respect_manual: true,
-      // web._serialize_anl_manager 契约（V1.6.0 单灯化）：三键随快照下发——
-      // day_ci_lights 接管清单、day_ci_active 生效值（_ci_configured()，可与
-      // 配置分叉）、day_ci_virtual_light（字符串或 null）
+      // web._serialize_anl_manager 契约（V1.7.0 反查推导）：day_ci_lights
+      // 接管清单、day_ci_active 生效值（_ci_configured）——虚拟灯键废除
       day_ci_lights: ciStorage ? ["light.bedroom"] : [],
       day_ci_active: ci,
-      // cibroken：清单配置着但虚拟灯未配（null）→ 生效值 false 的分叉源
-      day_ci_virtual_light: ci ? "light.bedroom_heng_zhao_du_deng" : null,
     }];
   }
   function anlConfig() {
@@ -110,10 +110,9 @@
         transition_enabled: false, start_transition: 0, end_transition: 0,
         transition_interval: 5,
         day_enabled: true, brightness: 25, color_temp_kelvin: 2200,
-        // V1.6.0 契约：config 白名单键换 day_ci_lights（默认空清单；?ci=1
-        // 预勾 bedroom 并预填虚拟灯；?cibroken=1 清单开着但虚拟灯空）
+        // V1.7.0 契约：config 白名单键换 day_ci_lights（默认空清单；?ci=1
+        // 预勾 bedroom）；虚拟灯键废除（移交对象由反查表推导）
         day_ci_lights: ci ? ["light.bedroom"] : [],
-        day_ci_virtual_light: ci ? "light.bedroom_heng_zhao_du_deng" : "",
         day_brightness: 100, day_color_temp_kelvin: 4000,
         tolerance_brightness: 4, tolerance_kelvin: 150,
         verify_delay: 5, settle_delay: 1,

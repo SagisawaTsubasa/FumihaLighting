@@ -652,13 +652,8 @@ class AnlPage extends HTMLElement {
         numField("params", "color_temp_kelvin", config.color_temp_kelvin, "夜间色温"),
         numField("params", "day_brightness", config.day_brightness, "日间亮度"),
         numField("params", "day_color_temp_kelvin", config.day_color_temp_kelvin, "日间色温"),
-        textInput(
-          "day_ci_virtual_light",
-          config.day_ci_virtual_light,
-          "虚拟恒照度灯",
-          "light.xxx_heng_zhao_du_deng",
-          "选择恒照度虚拟灯（fumiha_lighting 集成）"
-        ),
+        // V1.7.0 反查推导：虚拟灯行删除（CI 面清零）——移交对象由系统经
+        // 灯→区域反查表推导，不再是用户选项；接管入口在逐灯弹窗
         numField("params", "tolerance_brightness", config.tolerance_brightness, "亮度容差"),
         numField("params", "tolerance_kelvin", config.tolerance_kelvin, "色温容差"),
         numField("params", "verify_delay", config.verify_delay, "验证延迟"),
@@ -709,9 +704,7 @@ class AnlPage extends HTMLElement {
       // 亮度恒定本身是逐灯开关（day_ci_lights），不在全局层表达
       show("day_brightness", dayOn);
       show("day_color_temp_kelvin", dayOn);
-      // 虚拟灯行恒随日间模式：清单入口在逐灯弹窗——若此处按 ciAny 藏，
-      // 「先逐灯勾接管→被拦缺虚拟灯→全局无入口补配」会构成死锁
-      show("day_ci_virtual_light", dayOn);
+      // V1.7.0 反查推导：虚拟灯行已删除（移交对象由反查表推导，CI 面清零）
       const extraTrans = extrasRows.some((r) => {
         if (!r.live || !r.transEl) return false;
         const v = parseFloat(r.transEl.value);
@@ -792,16 +785,8 @@ class AnlPage extends HTMLElement {
           "only_when_on",
           "respect_manual",
         ].forEach((k) => pick(params, k));
-        // V1.6.1：清单编辑面在逐灯弹窗——全局保存缺省 day_ci_lights 键
-        //（patch 语义不动存量值）；但存量清单非空时虚拟灯仍是必需
-        //（F-107 同判据：不许「清单非空+虚拟灯空」组合落盘）
-        const ciVirtualLight = inputs.day_ci_virtual_light.read();
-        if (ciAny && !ciVirtualLight) {
-          throw new Error(
-            "日间恒照度需填写虚拟恒照度灯实体（或先在逐灯设置取消全部接管）"
-          );
-        }
-        params.day_ci_virtual_light = ciVirtualLight;
+        // V1.7.0 反查推导：全局保存零 CI 键——day_ci_lights 缺省（编辑面在
+        // 逐灯弹窗，patch 语义不动存量清单）；虚拟灯键已废除不再提交
         const extras = extrasRows.filter((r) => r.live).map((r) => r.read());
         const resp = await kit.api(this._hass).post(CONFIG_URL, {
           entry_id: m.entry_id,
@@ -840,12 +825,12 @@ class AnlPage extends HTMLElement {
     const gid = lt.entity_id;
     const ovr = (config.overrides || {})[gid] || null;
     const dayOn = !!config.day_enabled;
-    // 日间恒照度（V1.5.0 引入，V1.6.0 逐灯化）：本灯在接管清单且组级生效
-    // 时，日间段不渲染——日间段不渲染时保存走保留分支（存储保留，退出
-    // 清单后恢复生效）。F-061：取快照生效值而非 config 存储值——存储可能
-    // 配置着但组级守卫未生效（虚拟灯未配/日间关），生效值才决定日间段
-    // 是否真被恒照度接管（设置弹窗编辑面仍读存储值，不改）
-    const ciOn = !!m.day_ci_active && (m.day_ci_lights || []).includes(gid);
+    // 日间恒照度（V1.5.0 引入，V1.6.0 逐灯化，V1.7.0 反查推导）：本灯真
+    // 被接管（快照生效值 + ∈反查表）时日间段不渲染——日间段不渲染时保存
+    // 走保留分支（存储保留，退出清单后恢复生效）。F-061：生效值才决定
+    // 日间段是否真被恒照度接管；V1.7.0 起逐灯有效性由 ci_zone_name 表达
+    // （清单内但区域已删的灯 ci_zone_name=null → 日间段照常渲染）。
+    const ciOn = !!m.day_ci_active && lt.ci_zone_name != null;
     const dayVisible = dayOn && !ciOn;
     const extras = config.extras || [];
     const controls = [];
@@ -861,16 +846,24 @@ class AnlPage extends HTMLElement {
     // 日间键在后端可选，缺失时回落全局而不是留空阻断保存
     const pick = (key) => (ovr && ovr[key] != null ? ovr[key] : config[key]);
 
-    // 日间恒照度接管（V1.6.1 逐灯开关）：勾选态读存储值 day_ci_lights
-    //（编辑面与数据同源；生效值 ciOn 只决定日间段显隐与接管说明）
+    // 日间恒照度接管（V1.6.1 逐灯开关 + V1.7.0 归属标注）：勾选态读存储
+    // 值 day_ci_lights（编辑面与数据同源；生效值 ciOn 只决定日间段显隐与
+    // 接管说明）。B2：灯卡归属随快照逐灯 ci_zone_name 下发——∈恒照度区域
+    // 的灯标「由区域 X 接管」，∉区域的灯开关禁用（接管是无效控制）；
+    // 存量勾选但区域已删的灯保持可取消（禁用只挡新勾选）。
     const ciList = (config.day_ci_lights || []).slice();
     const ciListOriginal = ciList.includes(gid);
+    const ciZone = lt.ci_zone_name || null;
     const ciCb = kit.el("input", {
       type: "checkbox",
       "data-anl-ci-toggle": "1",
       ...(ciListOriginal ? { checked: true } : {}),
+      ...(!ciZone && !ciListOriginal ? { disabled: true } : {}),
     });
-    const ciRow = dlgRow("日间恒照度接管", ciCb);
+    const ciHint = ciZone
+      ? "由恒照度区域「" + ciZone + "」接管"
+      : "此灯不属于任何恒照度区域";
+    const ciRow = dlgRow("日间恒照度接管", ciCb, ciHint);
 
     const followCb = kit.el("input", {
       type: "checkbox",
@@ -961,9 +954,8 @@ class AnlPage extends HTMLElement {
           if (wantCi && !dayOn) {
             throw new Error("日间恒照度需先在全局设置启用日间模式");
           }
-          if (wantCi && !(config.day_ci_virtual_light || "")) {
-            throw new Error("日间恒照度需先在全局设置填写虚拟恒照度灯实体");
-          }
+          // V1.7.0 反查推导：虚拟灯前置校验废除——区域归属由服务端 zone
+          // 归属校验兜底（∉区域的灯开关本页已禁用；存量勾选可取消）
           const nextList = wantCi
             ? ciList.concat([gid])
             : ciList.filter((e) => e !== gid);

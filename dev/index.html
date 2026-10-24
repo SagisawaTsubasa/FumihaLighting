@@ -45,6 +45,18 @@
   // （7s，真实 reload 是数百 ms，拉长只为让「跨过一次轮询」的断言确定性
   // 落在窗口内，不因保存恰逢 tick 边缘而假红/假绿）
   var reloadgapUntil = 0;
+  // R3 ANL-F-161 钉：弹窗打开期间让 overview 载荷变一次（decisions 换行）
+  // ——下一轮轮询 _render() replaceChildren 重建卡片（chip 节点被替换成
+  // 新节点），保存必须重查在 DOM 的芯片再写，不得写闭包持有的游离节点
+  var luxMutated = false;
+  window.__bumpLuxPayload = function () { luxMutated = true; };
+  // R3 ANL-F-162 收敛判据钉：?reloadgapstale=1 — POST 后第一张 overview 是
+  // 「保存前已发出、保存后才落地」的旧快照（条目在、link_group 仍旧值），
+  // 随后到窗口（12s）结束都返回空 zones（真出桶窗）。旧码以「条目在」清
+  // grace，会在旧快照处提前清掉、空窗内闪空态；新判据（条目在且
+  // link_group 已等于保存值）则撑到真组到达或 15s 超时
+  var reloadgapStalePending = false;
+  var luxGroupBeforePost = "";
   // ANL-F-151：名单/同组按 luxLinkState.group 派生（web 层同算法：换组
   // 后 link_members 只剩本区、link_peers 归 None）——硬编码会让「换组后
   // 重开弹窗名单应更新」这条核心价值面在 L2 假绿
@@ -52,8 +64,9 @@
     if (!luxLinkState.group) return null;
     return luxLinkState.group === "卫生间" ? ["卫生间", "干区"] : ["卫生间"];
   }
-  function luxLinkPeers() {
-    return luxLinkState.group === "卫生间" ? ["干区"] : null;
+  function luxLinkPeers(forGroup) {
+    var g = forGroup === undefined ? luxLinkState.group : forGroup;
+    return g === "卫生间" ? ["干区"] : null;
   }
 
   function luxZones() {
@@ -68,7 +81,11 @@
       lux_stale: false,
       curve: { source: "calibrated", max_lux: 186.3, slope_20_80: 2.41,
         points: [[0, 0], [10, 18.2], [30, 112.4], [55, 176.9], [80, 185.1], [100, 186.3]] },
-      decisions: ["22:41:03 [lux] lux=42 环境=42 需求=108 → set 45%"],
+      // R3 ANL-F-161 钉：__bumpLuxPayload() 后换行——载荷变化经渲染门
+      // 触发卡片重建，行文可被 Playwright 等待断言
+      decisions: [luxMutated
+        ? "22:41:03 [lux] 载荷已变更（ANL-F-161 钉）"
+        : "22:41:03 [lux] lux=42 环境=42 需求=108 → set 45%"],
       ambient_lux_est: 42.5, needed_lux: 107.5,
       last_adjustment: "2026-10-13T12:00:00+08:00",
       light_entity: "light.bath", lux_entity: "sensor.bath_lux",
@@ -168,10 +185,18 @@
         // 响应契约对齐 web.LuxLinkGroupView.post
         if (path.indexOf("/api/fumiha_lighting/lux/link_group") === 0) {
           var linkBody = JSON.parse((options && options.body) || "{}");
+          luxGroupBeforePost = luxLinkState.group;
           luxLinkState.group = String(linkBody.link_group || "").trim();
           luxLinkState.cross_fade = linkBody.cross_fade;
           luxLinkState.max_step_pct = linkBody.max_step_pct;
           if (params.has("reloadgap")) reloadgapUntil = Date.now() + 7000;
+          if (params.has("reloadgapstale")) {
+            reloadgapUntil = Date.now() + 12000;
+            reloadgapStalePending = true;
+          }
+          // R3 ANL-F-162 超时钉：出桶窗口（30s）跨过 15s grace——超时后
+          // 必须恢复渲染门（空态出现），不得无限期抱着旧 DOM
+          if (params.has("reloadgaplong")) reloadgapUntil = Date.now() + 30000;
           return new Response(JSON.stringify({
             ok: true,
             link_group: luxLinkState.group || null,
@@ -202,7 +227,15 @@
         }), { status: 200 });
       }
       if (path.indexOf("/api/fumiha_lighting/lux/overview") === 0) {
-        // F-150 reloadgap 钉（见 reloadgapUntil 声明处）
+        // F-150 reloadgap 钉（见 reloadgapUntil 声明处）；reloadgapstale
+        // 先发一张旧快照（条目在、link_group 保存前旧值）再进空窗
+        if (params.has("reloadgapstale") && reloadgapStalePending) {
+          reloadgapStalePending = false;
+          var staleZones = luxZones();
+          staleZones[0].link_group = luxGroupBeforePost;
+          staleZones[0].link_peers = luxLinkPeers(luxGroupBeforePost);
+          return new Response(JSON.stringify({ zones: staleZones }), { status: 200 });
+        }
         if (Date.now() < reloadgapUntil) {
           return new Response(JSON.stringify({ zones: [] }), { status: 200 });
         }

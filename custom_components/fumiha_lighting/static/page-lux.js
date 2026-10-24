@@ -72,6 +72,7 @@ class LuxBalancePage extends HTMLElement {
     this._failStreak = 0;
     this._lastSavedEntryId = null; // ANL-F-155 reload 窗口 grace 判定源
     this._lastSavedAt = 0;
+    this._lastSavedGroup = null; // ANL-F-162 grace 收敛判据：保存响应的组标签
   }
 
   set hass(h) {
@@ -144,6 +145,7 @@ class LuxBalancePage extends HTMLElement {
     this._targetDrafts = {};
     this._lastSavedEntryId = null;
     this._lastSavedAt = 0;
+    this._lastSavedGroup = null;
 
     const root = this.shadowRoot;
     root.innerHTML = "";
@@ -208,15 +210,24 @@ class LuxBalancePage extends HTMLElement {
     // zones 里），grace 内保留现有 DOM 与 _zones 不渲染空态——旧码会把
     // 卡片闪没最长 5s；条目回来或超时后正常收敛
     if (this._lastSavedEntryId) {
-      const savedMissing = !zones.some(
-        (z) => z.entry_id === this._lastSavedEntryId
+      // ANL-F-162：「条目仍在」≠ reload 已完成——保存前已发出、保存后才
+      // 落地的 overview（或 reload 尚未 pop 的快照）会先命中一次条目在而
+      // link_group 仍旧值，此时清 grace 会在随后的真出桶窗口闪空态。收敛
+      // 判据=条目在且 link_group 已等于保存值（POST 响应与 _serialize_lux_
+      // zone 对空组都发 null，两侧 || "" 归一后比较）；15s 超时无条件放行，
+      // 兜住条目被删等永不收敛的场景
+      const savedZone = zones.find(
+        (zone) => zone.entry_id === this._lastSavedEntryId
       );
-      if (savedMissing && Date.now() - this._lastSavedAt < RELOAD_GRACE_MS) {
+      const notConverged =
+        !savedZone || (savedZone.link_group || "") !== this._lastSavedGroup;
+      if (notConverged && Date.now() - this._lastSavedAt < RELOAD_GRACE_MS) {
         this._renderConn();
         return;
       }
       this._lastSavedEntryId = null;
       this._lastSavedAt = 0;
+      this._lastSavedGroup = null;
     }
     const json = JSON.stringify(zones);
     if (json !== this._payloadJson || !this._rendered) {
@@ -388,7 +399,20 @@ class LuxBalancePage extends HTMLElement {
           if (saved) {
             this._lastSavedEntryId = z.entry_id;
             this._lastSavedAt = Date.now();
-            chip.textContent = this._linkChipText(saved);
+            // ANL-F-162：grace 收敛判据（_refresh 拿 overview 的 link_group
+            // 与保存值比对；响应空组为 null，归一成空串）
+            this._lastSavedGroup = saved.link_group || "";
+            // ANL-F-161：保存 await 期间任何载荷变化都会 _render()
+            // replaceChildren 重建全部卡片（弹窗挂 shadowRoot 不受影响，
+            // 用户可跨重渲染继续保存）——闭包里的 chip 可能已是游离节点，
+            // 直接写=静默落在不可见 DOM，可见 chip 停旧组而 toast 已宣称
+            // 已保存。按 entry_id 重查当前在 DOM 的 chip 再写；查不到
+            //（区出桶/卡片重建中）则跳过乐观更新，等 5s 轮询收敛
+            const live = this._body
+              && this._body.querySelector(
+                '[data-zone="' + z.entry_id + '"] [data-action="link-group"]'
+              );
+            if (live) live.textContent = this._linkChipText(saved);
           }
         } catch (err) {
           kit.ack(this.shadowRoot, {

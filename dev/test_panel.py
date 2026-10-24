@@ -158,6 +158,40 @@ READ_LINK_DIALOG_JS = """() => {
   return null;
 }"""
 
+# ---- R3 钉共用：联动组弹窗保存 + 可见 chip 精确文案断言 ---------------------
+# （V1.7.1 R3 四个新钉页共用，值经 Playwright arg 传入、免字符串插值。）
+# SAVE_LINK_GROUP_JS(g=组标签)：向当前打开的联动组弹窗写标签并点保存，
+# 弹窗须已开；WAIT_LINK_CHIP_JS(t=chip 完整文案)：可见卡片内在 DOM 芯片
+# 的精确全文案断言（R3 新钉组均为无同组成员新组）
+SAVE_LINK_GROUP_JS = """(g) => {
+  const p = document.getElementById('hub');
+  for (const el of p.shadowRoot.querySelectorAll('*')) {
+    const d = el.shadowRoot && el.shadowRoot.querySelector('dialog.fx-dialog');
+    if (d && d.querySelector('[data-lux-link-members]')) {
+      const inp = [...d.querySelectorAll('input')].find(
+        (x) => x.getAttribute('aria-label') === '联动组标签');
+      inp.value = g;
+      [...d.querySelectorAll('button')].find(
+        (b) => b.textContent === '保存').click();
+      return true;
+    }
+  }
+  return false;
+}"""
+
+WAIT_LINK_CHIP_JS = """(t) => {
+  const p = document.getElementById('hub');
+  for (const el of p.shadowRoot.querySelectorAll('*')) {
+    const sr = el.shadowRoot;
+    const card = sr && sr.querySelector('[data-zone="lux1"]');
+    if (card) {
+      const chip = card.querySelector('[data-action="link-group"]');
+      return !!chip && chip.textContent === t;
+    }
+  }
+  return false;
+}"""
+
 # F-062：读当前设置弹窗里两个过渡输入的 title（CI 跳过提示 / 置灰提示）
 READ_TRANS_TITLES_JS = """() => {
   const p = document.getElementById('hub');
@@ -1561,6 +1595,167 @@ def run_checks(browser, base: str) -> None:
         reloadgap_ok,
     )
     page8.close()
+
+    # ---- R3 ANL-F-161：弹窗打开期间载荷变化一次（decisions 换行触发
+    # replaceChildren 重建卡片，闭包里的 chip 从此游离）→ 保存必须重查在
+    # DOM 的芯片再写——旧码把文案写进游离节点，可见 chip 停旧组而 toast
+    # 已宣称已保存。?reloadgap=1 压住保存后的轮询重渲染（7s 空窗 > 4s 断
+    # 言窗），可见 chip 的新文案只能来自保存路径的重查写入
+    page9 = browser.new_page(viewport={"width": 1280, "height": 900})
+    page9.goto(base + "/?reloadgap=1")
+    wait_page_dom(page9, '[data-zone="lux1"]')
+    page9.evaluate(LUX_CHIP_CLICK_JS)
+    page9.wait_for_function(WAIT_LINK_DIALOG_JS, timeout=4000)
+    page9.evaluate("() => window.__bumpLuxPayload()")
+    page9.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const sr = el.shadowRoot;
+            const card = sr && sr.querySelector('[data-zone="lux1"]');
+            if (card && card.textContent.includes('载荷已变更')) return true;
+          }
+          return false;
+        }""",
+        timeout=8000,
+    )
+    check("lux R3 F-161: fixture bump re-rendered card while dialog open", True)
+    page9.evaluate(SAVE_LINK_GROUP_JS, "卫生间M")
+    page9.wait_for_function(
+        WAIT_LINK_CHIP_JS, arg="联动组「卫生间M」（暂无同组成员）", timeout=4000
+    )
+    check(
+        "lux R3 F-161: save re-queries live chip after cross-render save",
+        True,
+    )
+    page9.close()
+
+    # ---- R3 ANL-F-162：grace 提前清除——「条目仍在」不是收敛判据，须条
+    # 目在且 link_group 已等于保存值；本页钉超时侧：?reloadgaplong=1 出桶
+    # 窗 30s 跨过 15s grace，超时后必须恢复渲染门（空态出现），不得无限
+    # 期抱旧 DOM。旧码（条目在即清）与本场景相反侧，但同属 F-155 残留面
+    page10 = browser.new_page(viewport={"width": 1280, "height": 900})
+    page10.goto(base + "/?reloadgaplong=1")
+    wait_page_dom(page10, '[data-zone="lux1"]')
+    page10.evaluate(LUX_CHIP_CLICK_JS)
+    page10.wait_for_function(WAIT_LINK_DIALOG_JS, timeout=4000)
+    page10.evaluate(SAVE_LINK_GROUP_JS, "卫生间L")
+    page10.wait_for_function(
+        WAIT_LINK_CHIP_JS, arg="联动组「卫生间L」（暂无同组成员）", timeout=4000
+    )
+    # 保持侧（<15s）：出桶窗内条目缺失，grace 必须抱住现有 DOM
+    page10.wait_for_timeout(3000)
+    hold_ok = page10.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            const sr = el.shadowRoot;
+            if (sr && sr.querySelector('[data-zone="lux1"]')) {
+              return !sr.textContent.includes('尚无区域');
+            }
+          }
+          return false;
+        }"""
+    )
+    check("lux R3 F-162: grace holds card while entry missing (<15s)", hold_ok)
+    # 超时侧（>15s）：grace 到点放行，空态出现=渲染门恢复
+    page10.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            if (el.shadowRoot
+              && el.shadowRoot.textContent.includes('尚无区域')) return true;
+          }
+          return false;
+        }""",
+        timeout=20000,
+    )
+    check("lux R3 F-162: grace times out at 15s and renders empty state", True)
+    page10.close()
+
+    # ---- R3 ANL-F-162 _boot 重置钉：保存置位 grace（未超时）→ _boot
+    #（重连复用同实例的路径，LX-F-003 同族）——grace 必须随之清零，否则
+    # 重连后的首轮 _refresh 命中保持分支，body 停留空白直到 15s 超时
+    page11 = browser.new_page(viewport={"width": 1280, "height": 900})
+    page11.goto(base + "/?reloadgaplong=1")
+    wait_page_dom(page11, '[data-zone="lux1"]')
+    page11.evaluate(LUX_CHIP_CLICK_JS)
+    page11.wait_for_function(WAIT_LINK_DIALOG_JS, timeout=4000)
+    page11.evaluate(SAVE_LINK_GROUP_JS, "卫生间B")
+    page11.wait_for_function(
+        WAIT_LINK_CHIP_JS, arg="联动组「卫生间B」（暂无同组成员）", timeout=4000
+    )
+    page11.evaluate(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            if (el.shadowRoot && el.shadowRoot.querySelector('[data-zone="lux1"]')
+              && el.tagName === 'LUX-BALANCE-PAGE') {
+              el._boot();
+              return true;
+            }
+          }
+          return false;
+        }"""
+    )
+    page11.wait_for_function(
+        """() => {
+          const p = document.getElementById('hub');
+          for (const el of p.shadowRoot.querySelectorAll('*')) {
+            if (el.shadowRoot
+              && el.shadowRoot.textContent.includes('尚无区域')) return true;
+          }
+          return false;
+        }""",
+        timeout=6000,
+    )
+    check("lux R3 F-162: _boot clears reload grace (no stale hold)", True)
+    page11.close()
+
+    # ---- R3 ANL-F-162 收敛判据钉（修复主体）：?reloadgapstale=1 — POST 后
+    # 第一张 overview 是「保存前已发出、保存后才落地」的旧快照（条目在、
+    # link_group 仍旧值），随后 12s 空窗。旧码「条目在即清 grace」会在旧
+    # 快照处提前清掉、空窗内闪空态；新判据（条目在且 link_group 已等于
+    # 保存值）撑到真组到达。no-empty 哨兵以 100ms 间隔全程采样，空态哪怕
+    # 闪现一帧也记得到（5s 轮询相位无关，判定确定）
+    page12 = browser.new_page(viewport={"width": 1280, "height": 900})
+    page12.goto(base + "/?reloadgapstale=1")
+    wait_page_dom(page12, '[data-zone="lux1"]')
+    page12.evaluate(
+        """() => {
+          window.__sawEmptyState = false;
+          const p = document.getElementById('hub');
+          window.__emptyWatch = setInterval(() => {
+            for (const el of p.shadowRoot.querySelectorAll('*')) {
+              if (el.shadowRoot
+                && el.shadowRoot.textContent.includes('尚无区域')) {
+                window.__sawEmptyState = true;
+              }
+            }
+          }, 100);
+          return true;
+        }"""
+    )
+    page12.evaluate(LUX_CHIP_CLICK_JS)
+    page12.wait_for_function(WAIT_LINK_DIALOG_JS, timeout=4000)
+    page12.evaluate(SAVE_LINK_GROUP_JS, "卫生间S")
+    page12.wait_for_function(
+        WAIT_LINK_CHIP_JS, arg="联动组「卫生间S」（暂无同组成员）", timeout=4000
+    )
+    # 跨出桶窗（12s）采样：空态不得闪现（旧码第 2 次轮询必闪）
+    page12.wait_for_timeout(11000)
+    saw_empty = page12.evaluate("() => window.__sawEmptyState")
+    check(
+        "lux R3 F-162: stale snapshot (entry present, old group) never"
+        " clears grace",
+        not saw_empty,
+    )
+    # 窗后终态：卡片在、chip 仍为新文案（收敛渲染或乐观 DOM 存续）
+    converged = page12.evaluate(
+        WAIT_LINK_CHIP_JS, "联动组「卫生间S」（暂无同组成员）"
+    )
+    check("lux R3 F-162: card intact with new group after stale window", converged)
+    page12.close()
 
     # ---- standalone fallback (pages boot without the shell) ------------------
     page3 = browser.new_page(viewport={"width": 1280, "height": 900})

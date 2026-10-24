@@ -91,10 +91,16 @@ class FakeHass:
         )
 
 
+# ANL-F-163：哨兵默认——`body or {}` 会把显式 []/None/0 静默换成 {}，
+# _json_object 的非对象分支从未被这些钉真实消费（假绿）。未传 → {}，
+# 显式传参（含 falsy）原值直达
+_UNSET = object()
+
+
 class FakeRequest:
-    def __init__(self, hass, body=None):
+    def __init__(self, hass, body=_UNSET):
         self.app = {"hass": hass}
-        self._body = body or {}
+        self._body = {} if body is _UNSET else body
 
     async def json(self):
         return self._body
@@ -496,15 +502,30 @@ def test_link_group_post_rejects_invalid_values():
         {**base, "max_step_pct": float("inf")},
         {**base, "max_step_pct": None},
         {**base, "link_group": 42},
-        # ANL-F-158：缺 link_group 键 ≠ 空串——静默停用是「键 miss 静默降级」，
-        # 须 400（留空停用请显式传空串，test_link_group_post_empty_group_disables）
-        {"entry_id": "lux1", "cross_fade": 0.5, "max_step_pct": 20},
     ):
         resp = run(web.LuxLinkGroupView().post(FakeRequest(hass, bad)))
         assert resp.status == 400, bad
+    # ANL-F-158：缺 link_group 键 ≠ 空串——静默停用是「键 miss 静默降级」，
+    # 须 400（留空停用请显式传空串，test_link_group_post_empty_group_disables）。
+    # ANL-F-163：缺键与非对象 body 是两条防线，分别断文案——桩吞参或分支
+    # 互串（如缺键被 str(None) 吞成空串、非对象被桩换成 {}）都即刻红
+    resp = run(
+        web.LuxLinkGroupView().post(
+            FakeRequest(
+                hass,
+                {"entry_id": "lux1", "cross_fade": 0.5, "max_step_pct": 20},
+            )
+        )
+    )
+    assert resp.status == 400
+    assert resp.payload["error"] == "缺少 link_group（留空请显式传空串）"
     for bad_body in ([], None, "x"):
         resp = run(web.LuxLinkGroupView().post(FakeRequest(hass, bad_body)))
         assert resp.status == 400, bad_body
+        # ANL-F-163：FakeRequest 哨兵默认后 []/None 原值直达 _json_object
+        # 非对象分支（旧 `body or {}` 会把 falsy body 换成 {} 走缺键 400
+        # =假绿），断文案钉死该分支被真实消费
+        assert resp.payload["error"] == "请求体不是合法 JSON 对象", bad_body
     resp = run(  # entry_id 非字符串 → 400（unhashable 防线）
         web.LuxLinkGroupView().post(
             FakeRequest(hass, {**base, "entry_id": ["x"]})
@@ -808,6 +829,9 @@ def test_anl_config_post_rejects_non_object_body():
             web.AnlConfigView().post(FakeRequest(hass, bad_body))
         )
         assert resp.status == 400, bad_body
+        # ANL-F-163：哨兵默认后 []/None 原值直达 _json_object 非对象分支，
+        # 断文案钉死该分支被真实消费（与「patch 缺失」400 是两条防线）
+        assert resp.payload["error"] == "请求体不是合法 JSON 对象", bad_body
     # entry_id 非字符串 → 400（unhashable 防线）
     resp = run(
         web.AnlConfigView().post(

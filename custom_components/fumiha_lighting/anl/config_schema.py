@@ -186,18 +186,44 @@ def normalize_time(value) -> str | None:
     return None
 
 
-def _clean_num(key: str, value, spec: tuple):
-    """单个数值字段校验。返回 (value, error)；int（settle_delay 为 float）。"""
-    lo, hi, _step, _default, _unit = spec
+def _finite_number(value) -> float | None:
+    """任意标量 → 有限 float；不可安全转换返回 None（不抛）。
+
+    ANL-F-156 数值口径单点：bool 是 int 子类（float(True)=1.0 混过类型门）
+    → 显式拒；超大整数（如 10**400）float() 抛 OverflowError，不在
+    (TypeError, ValueError) 内、漏捕即 500 → 一并归入 None；NaN/Inf 由
+    isfinite 拒（ANL-F-019 同语义）。消费方：LuxTargetView / _finite_or_none
+    （web.py）/ _clean_num（下方）三处统一。
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None, f"{key} 需为数字"
-    if not math.isfinite(value):  # ANL-F-019：NaN/Inf 穿过比较会 500 或落库
-        return None, f"{key} 需为有限数字"
-    if value < lo or value > hi:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _clean_num(key: str, value, spec: tuple):
+    """单个数值字段校验。返回 (value, error)；int（settle_delay 为 float）。
+
+    ANL-F-156：类型/溢出门统一走 _finite_number——旧码 `math.isfinite(10**400)`
+    的 int→float 转换抛 OverflowError → AnlConfigView 500。
+    """
+    lo, hi, _step, _default, _unit = spec
+    f = _finite_number(value)
+    if f is None:
+        # 分口径报错（既有钉文案）：bool/非数值=「需为数字」，NaN/Inf/
+        # 超出 float 域=「需为有限数字」
+        non_numeric = isinstance(value, bool) or not isinstance(
+            value, (int, float)
+        )
+        return None, f"{key} 需为{'数字' if non_numeric else '有限数字'}"
+    if f < lo or f > hi:
         return None, f"{key} 需在 {lo:g}–{hi:g} 之间"
     if key in FLOAT_FIELDS:
-        return float(value), None
-    return int(round(value)), None
+        return float(f), None
+    return int(round(f)), None
 
 
 def _num_check(spec_by_key: dict):

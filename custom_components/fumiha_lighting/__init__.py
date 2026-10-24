@@ -31,7 +31,7 @@ from .anl.manager import (
 )
 from .const import CONF_KIND, DOMAIN, KIND_ANL, KIND_LUX
 from .light_registry import build_light_zone_index
-from .lux.const import CONF_LIGHT_ENTITY, SERVICE_CALIBRATE
+from .lux.const import CONF_LIGHT_ENTITY, MODE_CALIBRATING, SERVICE_CALIBRATE
 from .lux.runtime import ZoneRuntime
 from .lux.store import ZoneStorage
 from .web import async_setup_web, async_unload_web
@@ -67,6 +67,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    # ANL-F-160（R2）：options 流保存经本监听器 reload——校准进行中时 reload
+    # 取消 _cal_task 且新 runtime 无痕（cal_last_error=None），15min~3h 的
+    # sweep 静默作废。原生流没有面板弹窗的同款警示（ANL-F-149 只覆盖
+    # page-lux.js 编辑器），至少落 WARNING 让中止可归因。
+    runtime = (hass.data.get(DOMAIN) or {}).get("lux", {}).get(entry.entry_id)
+    if getattr(runtime, "mode", None) == MODE_CALIBRATING:
+        _LOGGER.warning(
+            "%s: 配置保存中止校准（条目重载取消校准任务，已采集数据弃用）",
+            getattr(runtime, "zone_name", entry.entry_id),
+        )
     await hass.config_entries.async_reload(entry.entry_id)
 
 

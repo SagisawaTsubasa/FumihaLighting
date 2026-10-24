@@ -27,6 +27,9 @@ const LINK_URL = "/api/fumiha_lighting/lux/link_group";
 const POLL_SLOW_MS = 5000;
 const POLL_FAST_MS = 1000; // while any zone is calibrating
 const FAIL_STREAK_ERROR_CARD = 3; // consecutive failures before the error card
+// ANL-F-155：保存联动组 → entry reload 是异步任务，轮询可能落进出桶窗口
+//（zones 短暂缺刚保存的条目）——此窗内保留现有 DOM 不渲染空态
+const RELOAD_GRACE_MS = 15000;
 
 async function ensureKit() {
   if (window.FUMIHA && window.FUMIHA.kit) return;
@@ -67,6 +70,8 @@ class LuxBalancePage extends HTMLElement {
     this._conn = "idle"; // idle | ok | err
     this._lastOk = null; // Date of last successful overview
     this._failStreak = 0;
+    this._lastSavedEntryId = null; // ANL-F-155 reload 窗口 grace 判定源
+    this._lastSavedAt = 0;
   }
 
   set hass(h) {
@@ -137,6 +142,8 @@ class LuxBalancePage extends HTMLElement {
     this._zones = [];
     this._confirmingCalibrate = false;
     this._targetDrafts = {};
+    this._lastSavedEntryId = null;
+    this._lastSavedAt = 0;
 
     const root = this.shadowRoot;
     root.innerHTML = "";
@@ -197,6 +204,20 @@ class LuxBalancePage extends HTMLElement {
       return;
     }
 
+    // ANL-F-155：保存后的轮询若撞上 reload 出桶窗口（刚保存的条目不在
+    // zones 里），grace 内保留现有 DOM 与 _zones 不渲染空态——旧码会把
+    // 卡片闪没最长 5s；条目回来或超时后正常收敛
+    if (this._lastSavedEntryId) {
+      const savedMissing = !zones.some(
+        (z) => z.entry_id === this._lastSavedEntryId
+      );
+      if (savedMissing && Date.now() - this._lastSavedAt < RELOAD_GRACE_MS) {
+        this._renderConn();
+        return;
+      }
+      this._lastSavedEntryId = null;
+      this._lastSavedAt = 0;
+    }
     const json = JSON.stringify(zones);
     if (json !== this._payloadJson || !this._rendered) {
       this._payloadJson = json;
@@ -361,9 +382,14 @@ class LuxBalancePage extends HTMLElement {
           // entry reload 是随后调度的异步任务，立即 GET 会撞旧 runtime
           // （载荷不变→渲染门不重绘=旧 chip）或 unload 窗口（区出桶=
           // 空态闪 5s）；保存响应（三键+link_peers）直接乐观更新 chip，
-          // 5s 轮询是唯一真相
+          // 5s 轮询是唯一真相。ANL-F-155：reload 出桶窗口由 _refresh 的
+          // grace 兜住（记保存事件，窗口内轮询缺本区不渲染空态）
           const saved = await this._openLinkGroupDialog(z);
-          if (saved) chip.textContent = this._linkChipText(saved);
+          if (saved) {
+            this._lastSavedEntryId = z.entry_id;
+            this._lastSavedAt = Date.now();
+            chip.textContent = this._linkChipText(saved);
+          }
         } catch (err) {
           kit.ack(this.shadowRoot, {
             ok: false,

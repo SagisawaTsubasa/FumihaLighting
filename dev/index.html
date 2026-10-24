@@ -39,10 +39,12 @@
   // V1.7.1 联动组编辑器有状态夹具：POST 保存改写 luxLinkState，overview
   // GET 随之反映——L2 才能钉「保存后 chip 即时更新」全链
   var luxLinkState = { group: "卫生间", cross_fade: 0.5, max_step_pct: 20 };
-  // F-150 reloadgap 钉：?reloadgap=1 时 POST 后第一次 overview 返回空
-  // zones（模拟 reload 出桶窗口）——旧码保存后的立即 _refresh() 会当场
-  // 吃下空态；修后无立即 GET，该分支由 5s 轮询消费
-  var reloadgapPending = false;
+  // F-150 reloadgap 钉：?reloadgap=1 时保存后 overview 在窗口内返回空
+  // zones（模拟 reload 出桶窗口）。R2 ANL-F-155：单发布尔钉只证明「无立即
+  // GET」（400ms 内 5s 轮询从未发生，空分支从未被消费）——改为时间窗
+  // （7s，真实 reload 是数百 ms，拉长只为让「跨过一次轮询」的断言确定性
+  // 落在窗口内，不因保存恰逢 tick 边缘而假红/假绿）
+  var reloadgapUntil = 0;
   // ANL-F-151：名单/同组按 luxLinkState.group 派生（web 层同算法：换组
   // 后 link_members 只剩本区、link_peers 归 None）——硬编码会让「换组后
   // 重开弹窗名单应更新」这条核心价值面在 L2 假绿
@@ -169,7 +171,7 @@
           luxLinkState.group = String(linkBody.link_group || "").trim();
           luxLinkState.cross_fade = linkBody.cross_fade;
           luxLinkState.max_step_pct = linkBody.max_step_pct;
-          if (params.has("reloadgap")) reloadgapPending = true;
+          if (params.has("reloadgap")) reloadgapUntil = Date.now() + 7000;
           return new Response(JSON.stringify({
             ok: true,
             link_group: luxLinkState.group || null,
@@ -200,9 +202,8 @@
         }), { status: 200 });
       }
       if (path.indexOf("/api/fumiha_lighting/lux/overview") === 0) {
-        // F-150 reloadgap 钉（见 reloadgapPending 声明处）
-        if (reloadgapPending) {
-          reloadgapPending = false;
+        // F-150 reloadgap 钉（见 reloadgapUntil 声明处）
+        if (Date.now() < reloadgapUntil) {
           return new Response(JSON.stringify({ zones: [] }), { status: 200 });
         }
         return new Response(JSON.stringify({ zones: luxZones() }), { status: 200 });

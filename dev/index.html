@@ -39,6 +39,9 @@
     : "/fumiha_lighting/page-anl.js?ver=1.0.0";
   var failApi = params.has("failapi");
   window.__servicePosts = [];
+  // V1.7.1 联动组编辑器有状态夹具：POST 保存改写 luxLinkState，overview
+  // GET 随之反映——L2 才能钉「保存后 chip 即时更新」全链
+  var luxLinkState = { group: "卫生间", cross_fade: 0.5, max_step_pct: 20 };
 
   function luxZones() {
     // ?cal=1 → 校准进行中态（取消按钮依赖此渲染，FL-IMP-26）
@@ -57,7 +60,8 @@
       last_adjustment: "2026-10-13T12:00:00+08:00",
       light_entity: "light.bath", lux_entity: "sensor.bath_lux",
       // V1.3.0 联动组（web._serialize_lux_zone 契约）：组标签+同组成员名单
-      link_group: "卫生间", link_peers: ["干区"],
+      //（V1.7.1 起组标签读 luxLinkState，编辑保存后即时反映）
+      link_group: luxLinkState.group, link_peers: ["干区"],
     }];
   }
   function anlManagers() {
@@ -147,6 +151,20 @@
       }
       if (method === "POST") {
         window.__servicePosts.push({ path: path, body: options && options.body });
+        // V1.7.1 联动组编辑器 POST：写有状态夹具（overview 随之反映），
+        // 响应契约对齐 web.LuxLinkGroupView.post
+        if (path.indexOf("/api/fumiha_lighting/lux/link_group") === 0) {
+          var linkBody = JSON.parse((options && options.body) || "{}");
+          luxLinkState.group = String(linkBody.link_group || "").trim();
+          luxLinkState.cross_fade = linkBody.cross_fade;
+          luxLinkState.max_step_pct = linkBody.max_step_pct;
+          return new Response(JSON.stringify({
+            ok: true,
+            link_group: luxLinkState.group || null,
+            cross_fade: luxLinkState.cross_fade,
+            max_step_pct: luxLinkState.max_step_pct,
+          }), { status: 200 });
+        }
         // R1 发现 11：?caldone=1 模拟「校准刚好自行结束」——取消端点返回
         // cancelled:false（真实端点 web.py:354 契约），page-lux.js 的
         // FL-IMP-24 分支在 L2 从此可达
@@ -176,7 +194,9 @@
         // link_peers 排除自身分工不同）
         return new Response(JSON.stringify({
           ok: true, zone_name: "卫生间",
-          link_group: "卫生间", cross_fade: 0.5, max_step_pct: 20,
+          link_group: luxLinkState.group,
+          cross_fade: luxLinkState.cross_fade,
+          max_step_pct: luxLinkState.max_step_pct,
           link_members: ["卫生间", "干区"],
         }), { status: 200 });
       }

@@ -23,6 +23,7 @@ const SELF_VER = new URL(import.meta.url).search;
 const LOCAL_TOKENS_HREF = "/fumiha_lighting/tokens.css" + SELF_VER;
 const LOCAL_KIT_SRC = "/fumiha_lighting/kit.js" + SELF_VER;
 const OVERVIEW_URL = "/api/fumiha_lighting/lux/overview";
+const LINK_URL = "/api/fumiha_lighting/lux/link_group";
 const POLL_SLOW_MS = 5000;
 const POLL_FAST_MS = 1000; // while any zone is calibrating
 const FAIL_STREAK_ERROR_CARD = 3; // consecutive failures before the error card
@@ -297,19 +298,9 @@ class LuxBalancePage extends HTMLElement {
     if (z.curve && z.curve.source === "manual") {
       chips.push(kit.el("span", { class: "cx-tag", text: "手动系数曲线" }));
     }
-    if (z.link_group) {
-      // V1.3.0 联动组：组标签+组内成员名单（ambient 已扣除对方贡献）
-      chips.push(
-        kit.el("span", {
-          class: "cx-tag",
-          text:
-            "联动组「" + z.link_group + "」" +
-            (z.link_peers && z.link_peers.length
-              ? "：与 " + z.link_peers.join("、") + " 交叉扣除"
-              : "（暂无同组成员）"),
-        })
-      );
-    }
+    // V1.7.1 联动组面板内编辑：chip 可点开编辑弹窗（三键原藏在原生
+    // options 流第 2 页「校准与降级」）；未设组给弱提示 chip 同样可点
+    chips.push(this._linkChip(z));
     if (z.ambient_lux_est != null) {
       chips.push(
         kit.el("span", {
@@ -339,6 +330,194 @@ class LuxBalancePage extends HTMLElement {
       this._decisionsSection(z)
     );
     return kit.el("div", { class: "fx-card", "data-zone": z.entry_id }, ...children);
+  }
+
+  /* ---- link group editor chip + dialog (V1.7.1) -------------------------- */
+
+  _linkChip(z) {
+    const kit = window.FUMIHA.kit;
+    const text = z.link_group
+      ? // V1.3.0 联动组：组标签+组内成员名单（ambient 已扣除对方贡献）
+        "联动组「" + z.link_group + "」" +
+        (z.link_peers && z.link_peers.length
+          ? "：与 " + z.link_peers.join("、") + " 交叉扣除"
+          : "（暂无同组成员）")
+      : "联动组未设置（点击配置）";
+    return kit.el("button", {
+      class: "cx-tag",
+      type: "button",
+      "data-action": "link-group",
+      text,
+      title: "编辑联动组（组标签 / 交叉系数 / 缓变步幅）",
+      // button 无 UA 重置，补 border/cursor 对齐 span.cx-tag 观感
+      style: { border: "none", cursor: "pointer" },
+      onclick: async () => {
+        try {
+          // 保存成功即时刷新 chip（reload 落地前的轮询兜底，5s 一轮）
+          if (await this._openLinkGroupDialog(z)) this._refresh();
+        } catch (err) {
+          kit.ack(this.shadowRoot, {
+            ok: false,
+            label: "打开联动组编辑",
+            reason: String(err && err.message ? err.message : err),
+          });
+        }
+      },
+    });
+  }
+
+  async _openLinkGroupDialog(z) {
+    const kit = window.FUMIHA.kit;
+    // 先 GET 现值+组员名单（服务端 link_members 契约）再开弹窗——名单是
+    // 本编辑器超越原生 options 流对话框的价值面，不从 overview 缓存拼
+    let cur;
+    try {
+      cur = await kit
+        .api(this._hass)
+        .get(LINK_URL + "?entry_id=" + encodeURIComponent(z.entry_id));
+    } catch (err) {
+      kit.ack(this.shadowRoot, {
+        ok: false,
+        label: "读取联动组",
+        reason: String(err && err.message ? err.message : err),
+      });
+      return false;
+    }
+    // 行样式与 page-anl dlgRow 同款（两页弹窗观感一致）
+    const row = (label, control) =>
+      kit.el(
+        "div",
+        {
+          style: {
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "10px",
+            margin: "5px 0",
+          },
+        },
+        kit.el("span", { text: label, style: { flex: "1" } }),
+        control
+      );
+    // 客户端范围与 options flow selector 同源（lux/flow.py：cross_fade
+    // 0.1~1.0 step 0.05 / max_step_pct 5~50 step 5；服务端同范围二次校验）
+    const groupInp = kit.el("input", {
+      class: "cx-input",
+      type: "text",
+      value: cur.link_group || "",
+      placeholder: "如：卫生间（留空停用）",
+      style: { width: "180px" },
+      "aria-label": "联动组标签",
+    });
+    const fadeInp = kit.el("input", {
+      class: "cx-input",
+      type: "number",
+      min: "0.1",
+      max: "1.0",
+      step: "0.05",
+      value: String(cur.cross_fade ?? 0.5),
+      "aria-label": "交叉系数",
+    });
+    const stepInp = kit.el("input", {
+      class: "cx-input",
+      type: "number",
+      min: "5",
+      max: "50",
+      step: "5",
+      value: String(cur.max_step_pct ?? 20),
+      "aria-label": "缓变步幅（%）",
+    });
+    const membersNote = kit.el("div", {
+      class: "cx-note",
+      "data-lux-link-members": "1",
+      style: { margin: "2px 0 5px" },
+      text: cur.link_group
+        ? "组内成员：" +
+          (cur.link_members || [cur.zone_name]).map(
+            (n) => (n === cur.zone_name ? n + "（本区）" : n)
+          ).join("、")
+        : "联动组未设置——给需要互认的区域填同一标签即成组",
+    });
+    return new Promise((resolve) => {
+      const errLine = kit.el("div", {
+        class: "fx-error",
+        style: { display: "none", marginTop: "8px", whiteSpace: "pre-wrap" },
+      });
+      const saveBtn = kit.el("button", { class: "cx-btn primary", text: "保存" });
+      const cancelBtn = kit.el("button", { class: "cx-btn", text: "取消" });
+      const dlg = kit.el(
+        "dialog",
+        { class: "fx-dialog", style: { minWidth: "360px", maxWidth: "92vw" } },
+        kit.el("h2", { text: z.zone_name + " — 联动组", style: { marginTop: "0" } }),
+        membersNote,
+        row("联动组标签", groupInp),
+        row("交叉系数（0.1–1.0）", fadeInp),
+        row("缓变步幅（5–50，%）", stepInp),
+        errLine,
+        kit.el(
+          "div",
+          {
+            style: {
+              display: "flex",
+              justifyContent: "flex-end",
+              gap: "8px",
+              marginTop: "12px",
+            },
+          },
+          cancelBtn,
+          saveBtn
+        )
+      );
+      this.shadowRoot.append(dlg);
+      dlg.showModal();
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        try {
+          dlg.close();
+        } catch (_e) {
+          /* already closed via Esc */
+        }
+        resolve(result);
+      };
+      dlg.addEventListener("close", () => {
+        dlg.remove();
+        if (!settled) {
+          settled = true;
+          resolve(false);
+        }
+      });
+      cancelBtn.addEventListener("click", () => finish(false));
+      saveBtn.addEventListener("click", async () => {
+        errLine.style.display = "none";
+        saveBtn.disabled = true;
+        try {
+          const group = groupInp.value.trim();
+          const fade = parseFloat(fadeInp.value);
+          const step = parseFloat(stepInp.value);
+          // 空值显式报错（ANL-F-034 同哲学）：清空保存却报「已保存」是静默无操作
+          if (!Number.isFinite(fade) || fade < 0.1 || fade > 1.0) {
+            throw new Error("交叉系数需在 0.1–1.0 之间");
+          }
+          if (!Number.isFinite(step) || step < 5 || step > 50) {
+            throw new Error("缓变步幅需在 5–50 之间");
+          }
+          await kit.api(this._hass).post(LINK_URL, {
+            entry_id: z.entry_id,
+            link_group: group,
+            cross_fade: fade,
+            max_step_pct: step,
+          });
+          kit.ack(this.shadowRoot, { ok: true, label: "联动组已保存，正在应用" });
+          finish(true);
+        } catch (e) {
+          errLine.textContent = String(e && e.message ? e.message : e);
+          errLine.style.display = "";
+          saveBtn.disabled = false;
+        }
+      });
+    });
   }
 
   _targetRow(z, anyCalibrating) {

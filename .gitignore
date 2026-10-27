@@ -10,3 +10,7 @@ Thumbs.db
 .idea/
 .vscode/
 .backup-pre-*/
+
+.zcode/
+审查报告-*.md
+审计报告-*.md

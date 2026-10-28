@@ -1,0 +1,505 @@
+{
+  "version": 1,
+  "created_at": "2026-10-27T18:01:15Z",
+  "updated_at": "2026-10-28T11:29:39Z",
+  "files": {
+    ".gitattributes": {
+      "role": "index",
+      "sha256": "21fa16a2122e2b0360b47502c577428b645437e08e9e87ffba661f84853cb476",
+      "size": 291,
+      "normalized_sha256": "21fa16a2122e2b0360b47502c577428b645437e08e9e87ffba661f84853cb476"
+    },
+    ".github/workflows/validate.yml": {
+      "role": "index",
+      "sha256": "b5a9b84357fbc8b6335a8ab8029c2c1a9bdff8a06d725ed059bf23c9f9eba7b5",
+      "size": 2183,
+      "normalized_sha256": "b5a9b84357fbc8b6335a8ab8029c2c1a9bdff8a06d725ed059bf23c9f9eba7b5"
+    },
+    ".gitignore": {
+      "role": "index",
+      "sha256": "6d42fb646b7c5fab160bb6e35ee153d095f7d6b9234b7ac2f1e267bc3b5bf877",
+      "size": 176,
+      "normalized_sha256": "6d42fb646b7c5fab160bb6e35ee153d095f7d6b9234b7ac2f1e267bc3b5bf877"
+    },
+    "AGENTS.md": {
+      "role": "index",
+      "sha256": "ddb50101a5be7eb54bde0bdccb2ce15fbac13a0efed1b2851adc248c7a39bcb7",
+      "size": 13258,
+      "normalized_sha256": "ddb50101a5be7eb54bde0bdccb2ce15fbac13a0efed1b2851adc248c7a39bcb7"
+    },
+    "LICENSE": {
+      "role": "index",
+      "sha256": "9c0e85af7766dffc5d5acdf284bc720841e6caceee2a688d018a8339f41aa759",
+      "size": 1072,
+      "normalized_sha256": "9c0e85af7766dffc5d5acdf284bc720841e6caceee2a688d018a8339f41aa759"
+    },
+    "README.md": {
+      "role": "index",
+      "sha256": "fa5db409581a54f236b74af2b53fffa88e72f00fa80f2c601280a6a5cf6a77c5",
+      "size": 20964,
+      "normalized_sha256": "498cfd2d1b916beb018ea7a7ac71c3fb181e88f88ac0a1ef65b9f9ad5138356d"
+    },
+    "aoci.code.txt": {
+      "role": "index",
+      "sha256": "0d337007b3f2db42a6edb9099a23dc7821e647e231c5c602ab55ba07f46e51b3",
+      "size": 20468,
+      "normalized_sha256": "0d337007b3f2db42a6edb9099a23dc7821e647e231c5c602ab55ba07f46e51b3"
+    },
+    "aoci.meta.txt": {
+      "role": "index",
+      "sha256": "fbc304fa05182547e96f1f8404c7c30ad6c366bba9589523f1019c2c1da0427c",
+      "size": 1989,
+      "normalized_sha256": "fbc304fa05182547e96f1f8404c7c30ad6c366bba9589523f1019c2c1da0427c"
+    },
+    "aoci.txt": {
+      "role": "index",
+      "sha256": "19b251ead6fe8467f3e3da731cdcf01433f96ccc9d066360ed72a3f9ae03913c",
+      "size": 303,
+      "normalized_sha256": "19b251ead6fe8467f3e3da731cdcf01433f96ccc9d066360ed72a3f9ae03913c"
+    },
+    "custom_components/fumiha_lighting/__init__.py": {
+      "role": "index",
+      "sha256": "c8e479416330afb8791a693a4569292f10d0201f402fd767790608cf2efe8b44",
+      "size": 13272,
+      "normalized_sha256": "c8e479416330afb8791a693a4569292f10d0201f402fd767790608cf2efe8b44"
+    },
+    "custom_components/fumiha_lighting/anl/__init__.py": {
+      "role": "index",
+      "sha256": "29c2130c3aaeb401a6f7c291f17e4dc05daef8f9987a68db84dd84c26f0542f4",
+      "size": 2011,
+      "normalized_sha256": "6e957f91ea12834bbe44ed7ddd410d212d804ae1aeac2746566910b6b9256e02"
+    },
+    "custom_components/fumiha_lighting/anl/config_schema.py": {
+      "role": "index",
+      "sha256": "27cbf3c574f33d9854665ea7e42f463382a24f9badf8abdfacb6950107f5b62d",
+      "size": 18146,
+      "normalized_sha256": "27cbf3c574f33d9854665ea7e42f463382a24f9badf8abdfacb6950107f5b62d"
+    },
+    "custom_components/fumiha_lighting/anl/const.py": {
+      "role": "index",
+      "sha256": "9675b26a15f2160ea72684a83c51db14e7cf9794deb0fb758d199de1e67570d9",
+      "size": 3124,
+      "normalized_sha256": "9675b26a15f2160ea72684a83c51db14e7cf9794deb0fb758d199de1e67570d9"
+    },
+    "custom_components/fumiha_lighting/anl/flow.py": {
+      "role": "index",
+      "sha256": "7754ed20b2677a59e91e71ae2d5c0c3ac5210ce9363220b74ad59cdf7c9c1395",
+      "size": 22695,
+      "normalized_sha256": "7754ed20b2677a59e91e71ae2d5c0c3ac5210ce9363220b74ad59cdf7c9c1395"
+    },
+    "custom_components/fumiha_lighting/anl/manager.py": {
+      "role": "index",
+      "sha256": "b0f60fec804d1f00af83e7f40231a0b4135d8f2a9277112e4414de632991e8a7",
+      "size": 97925,
+      "normalized_sha256": "b0f60fec804d1f00af83e7f40231a0b4135d8f2a9277112e4414de632991e8a7"
+    },
+    "custom_components/fumiha_lighting/anl/schedule.py": {
+      "role": "index",
+      "sha256": "aeec93e20103bdd05f3af233eb334273a2326b18cb5046f12f913ef0dfc63a9f",
+      "size": 2265,
+      "normalized_sha256": "aeec93e20103bdd05f3af233eb334273a2326b18cb5046f12f913ef0dfc63a9f"
+    },
+    "custom_components/fumiha_lighting/brand/icon.png": {
+      "role": "index",
+      "sha256": "f656de034c4c8dbcc47714f2ab81d8b1669fe069df1e35f87123d065fd5ef171",
+      "size": 2043
+    },
+    "custom_components/fumiha_lighting/brand/icon@2x.png": {
+      "role": "index",
+      "sha256": "3dba2a35399bb1f844e8ed5ff12e2efceeba1758939b0d3b40b43ca3a8673fcc",
+      "size": 4438
+    },
+    "custom_components/fumiha_lighting/brand/logo.png": {
+      "role": "index",
+      "sha256": "3d2c7c2e1544441a84a45f65652f7cbe17c2da5d58cee469e40a0856f2a560cb",
+      "size": 953
+    },
+    "custom_components/fumiha_lighting/brand/logo@2x.png": {
+      "role": "index",
+      "sha256": "f656de034c4c8dbcc47714f2ab81d8b1669fe069df1e35f87123d065fd5ef171",
+      "size": 2043
+    },
+    "custom_components/fumiha_lighting/button.py": {
+      "role": "index",
+      "sha256": "45e9632f301b941bdfca659260354758ce1ccdadd673fdae9cf5a52f44061f70",
+      "size": 376,
+      "normalized_sha256": "45e9632f301b941bdfca659260354758ce1ccdadd673fdae9cf5a52f44061f70"
+    },
+    "custom_components/fumiha_lighting/config_flow.py": {
+      "role": "index",
+      "sha256": "2c4e0e52b6ae3d1e96c7c9b30116652aae2da98285bffeefaa4ea58401908036",
+      "size": 2797,
+      "normalized_sha256": "2c4e0e52b6ae3d1e96c7c9b30116652aae2da98285bffeefaa4ea58401908036"
+    },
+    "custom_components/fumiha_lighting/const.py": {
+      "role": "index",
+      "sha256": "c6655a5af0ba916d9b8f61f70db39c9ef774528d5db3def63930d38dd4e2c735",
+      "size": 1185,
+      "normalized_sha256": "09d44bb3195d02853bcfcd5f765fb1586cb3760fecd6a4d3a4bc0a137c0d2566"
+    },
+    "custom_components/fumiha_lighting/light.py": {
+      "role": "index",
+      "sha256": "569171747c4baa8475e1baa1b919e912c578057608bfa6749fb8131725f50021",
+      "size": 373,
+      "normalized_sha256": "569171747c4baa8475e1baa1b919e912c578057608bfa6749fb8131725f50021"
+    },
+    "custom_components/fumiha_lighting/light_registry.py": {
+      "role": "index",
+      "sha256": "8bc2a5173c93bb20db5ef6e9e44a300d8944b5efe825d66bf95ef19362c5d715",
+      "size": 4581,
+      "normalized_sha256": "8bc2a5173c93bb20db5ef6e9e44a300d8944b5efe825d66bf95ef19362c5d715"
+    },
+    "custom_components/fumiha_lighting/lux/__init__.py": {
+      "role": "index",
+      "sha256": "e54d9b481bf5d0b3edc800a54b9b4f96be8fce4868540a387c09526973a543b7",
+      "size": 2708,
+      "normalized_sha256": "e54d9b481bf5d0b3edc800a54b9b4f96be8fce4868540a387c09526973a543b7"
+    },
+    "custom_components/fumiha_lighting/lux/button.py": {
+      "role": "index",
+      "sha256": "da0a73e5fc062ec5fb0b939482090eba57b738d27a74a36b28c00222a3570989",
+      "size": 2108,
+      "normalized_sha256": "75b432cb1dfd69e206f20a29cc8f8404cc689aa4268810db765354c63d5e464d"
+    },
+    "custom_components/fumiha_lighting/lux/const.py": {
+      "role": "index",
+      "sha256": "4b1fd0b51d325cd10bc27a5a0c299a248dd45c2a161b85c5bccda22d5a54bbff",
+      "size": 3891,
+      "normalized_sha256": "5d86fd5027996b2d37579cdf9d50c716e59bdfa5620256d81fd88ee77cab24cf"
+    },
+    "custom_components/fumiha_lighting/lux/flow.py": {
+      "role": "index",
+      "sha256": "1931b51086bf4c927fe2e998f9ffd21b1a6eb17b4296119d218542e2cb96c42e",
+      "size": 13771,
+      "normalized_sha256": "d6d4e7c89862d8580b84172f12269b15f7ac77dab0db3894cd9119b3f4088186"
+    },
+    "custom_components/fumiha_lighting/lux/light.py": {
+      "role": "index",
+      "sha256": "c26e86a1d1483bfa36473fa5a3f3755d7bafbca07840cd4bec7f41b58a49d113",
+      "size": 3276,
+      "normalized_sha256": "c26e86a1d1483bfa36473fa5a3f3755d7bafbca07840cd4bec7f41b58a49d113"
+    },
+    "custom_components/fumiha_lighting/lux/logic.py": {
+      "role": "index",
+      "sha256": "35bbf90c560233c9ac283b54b137c96c1a94aaa6fc2651883aac8d2c442e4fd1",
+      "size": 7118,
+      "normalized_sha256": "35bbf90c560233c9ac283b54b137c96c1a94aaa6fc2651883aac8d2c442e4fd1"
+    },
+    "custom_components/fumiha_lighting/lux/number.py": {
+      "role": "index",
+      "sha256": "6cd61fda8c00818c3dd06c61b1f4c8a498c8d9855ef0a247574e4a15735dcafb",
+      "size": 2995,
+      "normalized_sha256": "6cd61fda8c00818c3dd06c61b1f4c8a498c8d9855ef0a247574e4a15735dcafb"
+    },
+    "custom_components/fumiha_lighting/lux/runtime.py": {
+      "role": "index",
+      "sha256": "0a18d35887fecb62ac79ac2d8c452f6633bb384da3f8efc5446c09b188b9550a",
+      "size": 64115,
+      "normalized_sha256": "6ad154a4bb79d0328fe88d952c6a7ca1ea7aa355b3b391d6c1239e3f0d34b097"
+    },
+    "custom_components/fumiha_lighting/lux/sensor.py": {
+      "role": "index",
+      "sha256": "0103d55ab0832682e773ea2e78ae3f9e451bc4512f1fd1eed19022e4cdc7401b",
+      "size": 1870,
+      "normalized_sha256": "0103d55ab0832682e773ea2e78ae3f9e451bc4512f1fd1eed19022e4cdc7401b"
+    },
+    "custom_components/fumiha_lighting/lux/store.py": {
+      "role": "index",
+      "sha256": "e493b0494f57c5dc049efcd96e73f4876775aa5b2d38111ba6add8b1c8f9817b",
+      "size": 8002,
+      "normalized_sha256": "51da663639ad10dbb10753acab5a31b58b037299de72e708c609252bc81ea67e"
+    },
+    "custom_components/fumiha_lighting/manifest.json": {
+      "role": "index",
+      "sha256": "01f58103b6187aad62f139dd9db2a362ba1c93c2066d78f091fd18a9898ae7e6",
+      "size": 519,
+      "normalized_sha256": "2ece7552c800d79b21c6b2a4bd709f4968f5947379ba2e521d223afea8226091"
+    },
+    "custom_components/fumiha_lighting/number.py": {
+      "role": "index",
+      "sha256": "5f7b51844ea9417a23596a6e473d971020db6be43887d02004a174a6dabfa5bb",
+      "size": 376,
+      "normalized_sha256": "5f7b51844ea9417a23596a6e473d971020db6be43887d02004a174a6dabfa5bb"
+    },
+    "custom_components/fumiha_lighting/sensor.py": {
+      "role": "index",
+      "sha256": "ea9e99dc4431d4bd12461e938159a27d005419793d63b315d7c1684eaee1d97c",
+      "size": 376,
+      "normalized_sha256": "ea9e99dc4431d4bd12461e938159a27d005419793d63b315d7c1684eaee1d97c"
+    },
+    "custom_components/fumiha_lighting/services.yaml": {
+      "role": "index",
+      "sha256": "72ba7187631435453008f1b8c65ade8acc565a1c77948f980d4b90dad2144030",
+      "size": 1172,
+      "normalized_sha256": "3539f63ca58392cbfb13fb26be892087cadc27c465ea10aabe3d44c32d958ca1"
+    },
+    "custom_components/fumiha_lighting/static/kit.js": {
+      "role": "index",
+      "sha256": "410a8bd9ba2ab17e01cfb4296b542c847957006fa2e0bc91f310c0239a2427d3",
+      "size": 10541,
+      "normalized_sha256": "410a8bd9ba2ab17e01cfb4296b542c847957006fa2e0bc91f310c0239a2427d3"
+    },
+    "custom_components/fumiha_lighting/static/page-anl.js": {
+      "role": "index",
+      "sha256": "8ab37af9888315fd83cf55bb5291dd5f203580857a23c4ea585cfdbf05a59dfa",
+      "size": 48156,
+      "normalized_sha256": "8ab37af9888315fd83cf55bb5291dd5f203580857a23c4ea585cfdbf05a59dfa"
+    },
+    "custom_components/fumiha_lighting/static/page-lux.js": {
+      "role": "index",
+      "sha256": "96c4b229b7730015def12da9cd09fdb7c7aff1394eaf3369e0d34b8f295ded4b",
+      "size": 37241,
+      "normalized_sha256": "1a1dec5d580b920c1a89c92965fe605d2d317bdf1f5568452eabf71e8f36fae8"
+    },
+    "custom_components/fumiha_lighting/static/tokens.css": {
+      "role": "index",
+      "sha256": "b1819267af925493f400603418009d989288e82e4383319ed7ec6165c02afb6f",
+      "size": 12973,
+      "normalized_sha256": "b1819267af925493f400603418009d989288e82e4383319ed7ec6165c02afb6f"
+    },
+    "custom_components/fumiha_lighting/strings.json": {
+      "role": "index",
+      "sha256": "14df19dcc917a2a7425cdf52a2c69e638529728737b2ae56eebabe71735d4b4b",
+      "size": 11984,
+      "normalized_sha256": "14df19dcc917a2a7425cdf52a2c69e638529728737b2ae56eebabe71735d4b4b"
+    },
+    "custom_components/fumiha_lighting/translations/en.json": {
+      "role": "index",
+      "sha256": "14df19dcc917a2a7425cdf52a2c69e638529728737b2ae56eebabe71735d4b4b",
+      "size": 11984,
+      "normalized_sha256": "14df19dcc917a2a7425cdf52a2c69e638529728737b2ae56eebabe71735d4b4b"
+    },
+    "custom_components/fumiha_lighting/translations/zh-Hans.json": {
+      "role": "index",
+      "sha256": "f6db2b4375a1805147a5cac12ecb227a6f050c84b9578d74d16fe095e0c3011a",
+      "size": 11076,
+      "normalized_sha256": "f6db2b4375a1805147a5cac12ecb227a6f050c84b9578d74d16fe095e0c3011a"
+    },
+    "custom_components/fumiha_lighting/web.py": {
+      "role": "index",
+      "sha256": "9198402de26bc66229ec7a73e41bbcc7c30885a37adfa73a6c080d8cf73b9b89",
+      "size": 47410,
+      "normalized_sha256": "9198402de26bc66229ec7a73e41bbcc7c30885a37adfa73a6c080d8cf73b9b89"
+    },
+    "dev/index.html": {
+      "role": "index",
+      "sha256": "8ed08c499c494101e4e6c17ca66e30023efe3675d1263ec2d7a7e2325f92e3b9",
+      "size": 20205,
+      "normalized_sha256": "8ed08c499c494101e4e6c17ca66e30023efe3675d1263ec2d7a7e2325f92e3b9"
+    },
+    "dev/serve.py": {
+      "role": "index",
+      "sha256": "78b98b4d796a5c90bc07d1771bf840f6d98611de6e5193c35cd661ae1ab83d9f",
+      "size": 2495,
+      "normalized_sha256": "78b98b4d796a5c90bc07d1771bf840f6d98611de6e5193c35cd661ae1ab83d9f"
+    },
+    "dev/shots/fl-dark-desktop.png": {
+      "role": "index",
+      "sha256": "0c36a3feadcaa9084c17826accd042756358433f3de7542d8deef9f47f5f3395",
+      "size": 40874
+    },
+    "dev/shots/fl-dark-narrow.png": {
+      "role": "index",
+      "sha256": "ede9fcedd7fe78a2358fd7924a229e847676dd3e9b7c841e15e49ff9bba1518c",
+      "size": 29868
+    },
+    "dev/shots/fl-light-desktop.png": {
+      "role": "index",
+      "sha256": "ba7fd9e05e20901c23934c0c10dcf57b65cb0e9e054cb6dc619ba9a4ffec617c",
+      "size": 44839
+    },
+    "dev/shots/fl-light-narrow.png": {
+      "role": "index",
+      "sha256": "cb6cc857c298683604e7c7aa89e9a4aaca604c4d07d79dd19c83715ac088e608",
+      "size": 33587
+    },
+    "dev/test_panel.py": {
+      "role": "observe",
+      "sha256": "bdaa68b38c7708d3b98adca45c4c631078fae553fce82cd88543dacdf56f03c6",
+      "size": 85726,
+      "normalized_sha256": "bdaa68b38c7708d3b98adca45c4c631078fae553fce82cd88543dacdf56f03c6"
+    },
+    "hacs.json": {
+      "role": "index",
+      "sha256": "6bcb4d6d7dfd962a829adac9254f6e6da5cd30689eb6dc229ca44a9ab7b21bb9",
+      "size": 101,
+      "normalized_sha256": "6bcb4d6d7dfd962a829adac9254f6e6da5cd30689eb6dc229ca44a9ab7b21bb9"
+    },
+    "pyproject.toml": {
+      "role": "index",
+      "sha256": "e158f87d9828ddb8025aaf0eb1f1cb029c670fa76fbaba87e899c5b10221d577",
+      "size": 368,
+      "normalized_sha256": "e158f87d9828ddb8025aaf0eb1f1cb029c670fa76fbaba87e899c5b10221d577"
+    },
+    "requirements-dev.txt": {
+      "role": "index",
+      "sha256": "d5d7addbc870f8366504aa1029e83bcb2789b83fe6264c3eaf5e975cef0f8264",
+      "size": 23,
+      "normalized_sha256": "d5d7addbc870f8366504aa1029e83bcb2789b83fe6264c3eaf5e975cef0f8264"
+    },
+    "tests/conftest.py": {
+      "role": "observe",
+      "sha256": "064c057683cf6718bf1962025ad9c4b6cc3319a63a446440f54dab0b120878dd",
+      "size": 17564,
+      "normalized_sha256": "064c057683cf6718bf1962025ad9c4b6cc3319a63a446440f54dab0b120878dd"
+    },
+    "tests/test_anl_config_schema.py": {
+      "role": "observe",
+      "sha256": "c084ff70c7a675a38d4e1bd9e28b457d86f71757d7042af16f886e5aaa08f089",
+      "size": 9397,
+      "normalized_sha256": "c084ff70c7a675a38d4e1bd9e28b457d86f71757d7042af16f886e5aaa08f089"
+    },
+    "tests/test_anl_schedule.py": {
+      "role": "observe",
+      "sha256": "ca5b87345ca669d09775719e3d494679194c2f322d717254443cafffdd933a13",
+      "size": 2362,
+      "normalized_sha256": "e386218e808dcf731576bb1e9edb078053732ba9a175aa7cdcd988c7e9f53b6d"
+    },
+    "tests/test_anl_transitions.py": {
+      "role": "observe",
+      "sha256": "d5486c92368b98cf8eed87f017663aaf83df815a38731d7c4f262237f3792f62",
+      "size": 25828,
+      "normalized_sha256": "d5486c92368b98cf8eed87f017663aaf83df815a38731d7c4f262237f3792f62"
+    },
+    "tests/test_anl_v15_firstrev_fixes.py": {
+      "role": "observe",
+      "sha256": "0daebc5e4259f20fa5f109b3231aeb3c65e2c70a71b1121b32bff6e91cd99751",
+      "size": 36815,
+      "normalized_sha256": "0daebc5e4259f20fa5f109b3231aeb3c65e2c70a71b1121b32bff6e91cd99751"
+    },
+    "tests/test_anl_v15_fixes.py": {
+      "role": "observe",
+      "sha256": "52ff6801c7e80d7b78ad78f5d870efa07f7002a8efbb1414d90b0dfbe31d0d62",
+      "size": 23692,
+      "normalized_sha256": "52ff6801c7e80d7b78ad78f5d870efa07f7002a8efbb1414d90b0dfbe31d0d62"
+    },
+    "tests/test_anl_v15_r2_fixes.py": {
+      "role": "observe",
+      "sha256": "d1f4d1863a699b4dab5798c4f56f5b041f86b4ac0d46fed64ec36e08ffef0cff",
+      "size": 23533,
+      "normalized_sha256": "d1f4d1863a699b4dab5798c4f56f5b041f86b4ac0d46fed64ec36e08ffef0cff"
+    },
+    "tests/test_anl_v16_ci_perlight.py": {
+      "role": "observe",
+      "sha256": "d2750b66829f7082c91ee36d652014a176504699ff5199f36c0ee86d429cfa81",
+      "size": 34216,
+      "normalized_sha256": "d2750b66829f7082c91ee36d652014a176504699ff5199f36c0ee86d429cfa81"
+    },
+    "tests/test_light_registry.py": {
+      "role": "observe",
+      "sha256": "870195be7985b11be0eec091cd074962ed64f4eebb8d32d60ac35fad7ced73a3",
+      "size": 4566,
+      "normalized_sha256": "870195be7985b11be0eec091cd074962ed64f4eebb8d32d60ac35fad7ced73a3"
+    },
+    "tests/test_lux_config_flow.py": {
+      "role": "observe",
+      "sha256": "1489fde580279f3d1b199c9febb4ec1efddf96d29398e15287e05bbc4df8bfea",
+      "size": 14771,
+      "normalized_sha256": "1489fde580279f3d1b199c9febb4ec1efddf96d29398e15287e05bbc4df8bfea"
+    },
+    "tests/test_lux_linkgroup.py": {
+      "role": "observe",
+      "sha256": "994d20ea15a2fbf121634339ce8b715638bf0430eb468ae3493896ec5fcf6ea5",
+      "size": 40277,
+      "normalized_sha256": "994d20ea15a2fbf121634339ce8b715638bf0430eb468ae3493896ec5fcf6ea5"
+    },
+    "tests/test_lux_logic.py": {
+      "role": "observe",
+      "sha256": "8bc4aaa02242b8ad9be55017d884d84f6360c2d52f0138836340a472846a6a76",
+      "size": 6519,
+      "normalized_sha256": "8bc4aaa02242b8ad9be55017d884d84f6360c2d52f0138836340a472846a6a76"
+    },
+    "tests/test_lux_v16_p3_fixes.py": {
+      "role": "observe",
+      "sha256": "17941ffe33f6924bb556d88380c1d87359032f542e19ec84fb2f4acc015113b4",
+      "size": 10385,
+      "normalized_sha256": "42e588fec103b1a52783406915f5be2e097a9eb55c879eec7bfe2e4b0cd5853d"
+    },
+    "tests/test_setup.py": {
+      "role": "observe",
+      "sha256": "247ac0b0479e2288b3a219e6ae2439d7485ba742f2a786751e7dcbfea013b3c3",
+      "size": 12074,
+      "normalized_sha256": "575dc304e0b4006bfcc544cf9e627ab8b0593b3978c0e8cd5632b675dfda80a9"
+    },
+    "tests/test_v170_interplay.py": {
+      "role": "observe",
+      "sha256": "2ad659f053f570d268bd99eaa740306cf63fe9116f82e6ee88943988b0fad300",
+      "size": 17439,
+      "normalized_sha256": "2ad659f053f570d268bd99eaa740306cf63fe9116f82e6ee88943988b0fad300"
+    },
+    "tests/test_web.py": {
+      "role": "observe",
+      "sha256": "19ea0fdceaedc4b5b27ecedaea085f8f5345d4c52eee3d3569df8ddd8b60f002",
+      "size": 112422,
+      "normalized_sha256": "19ea0fdceaedc4b5b27ecedaea085f8f5345d4c52eee3d3569df8ddd8b60f002"
+    }
+  },
+  "managed_scope": {
+    "version": "managed-scope-baseline/v1",
+    "policy_identity": "3b029307ca9a998f7863146b9aae29089dbd7d695d8e543a5334a9ba32f41394",
+    "observe_change_policy": "review_required",
+    "budget_policy_identity": "15e9b37a6c57e9bf03c9df3d0d049eb5b9a7f5540f9d34960408114e2538a32d",
+    "budget_policy": {
+      "version": "cognition-budget-policy/v1",
+      "mode": "enforce",
+      "whole_index": {
+        "target_tokens": 200000,
+        "warning_tokens": 300000,
+        "max_tokens": 400000
+      },
+      "r": [
+        {
+          "min_c": 1,
+          "max_c": 4,
+          "target_tokens": 25,
+          "max_tokens": 50
+        },
+        {
+          "min_c": 5,
+          "max_c": 7,
+          "target_tokens": 45,
+          "max_tokens": 90
+        },
+        {
+          "min_c": 8,
+          "max_c": 8,
+          "target_tokens": 70,
+          "max_tokens": 140
+        },
+        {
+          "min_c": 9,
+          "max_c": 9,
+          "target_tokens": 90,
+          "max_tokens": 180
+        }
+      ],
+      "s": [
+        {
+          "min_c": 1,
+          "max_c": 4,
+          "target_tokens": 20,
+          "max_tokens": 40
+        },
+        {
+          "min_c": 5,
+          "max_c": 7,
+          "target_tokens": 40,
+          "max_tokens": 80
+        },
+        {
+          "min_c": 8,
+          "max_c": 8,
+          "target_tokens": 70,
+          "max_tokens": 140
+        },
+        {
+          "min_c": 9,
+          "max_c": 9,
+          "target_tokens": 100,
+          "max_tokens": 200
+        }
+      ]
+    },
+    "apply_authorization_mode": "off"
+  }
+}

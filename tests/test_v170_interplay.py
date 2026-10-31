@@ -145,7 +145,7 @@ def test_b1_color_temp_write_does_not_disturb_ambient_deduction():
     }
     hass, a, b = _pair_with_states(states)
     b.curve = curve_from_manual(1.0)
-    before = a._external_contribution()
+    before = a._external_contribution()  # V1.7.2 起 (贡献, 键集) 二元组
     decision_before, lux_before = run(a._async_compute_decision())
 
     # B1 补发落地（模拟）：b 区灯色温 2700→4000，亮度不变
@@ -157,7 +157,7 @@ def test_b1_color_temp_write_does_not_disturb_ambient_deduction():
     )
     after = a._external_contribution()
     decision_after, lux_after = run(a._async_compute_decision())
-    assert after == pytest_approx(before)
+    assert after[0] == pytest_approx(before[0])
     assert decision_after.action == decision_before.action
     assert decision_after.pct == decision_before.pct
     assert lux_after == pytest_approx(lux_before)

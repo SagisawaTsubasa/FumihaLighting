@@ -66,6 +66,14 @@ LUX_STALE_AFTER_S = 30 * 60
 LUX_STALE_WARN_INTERVAL_S = 300
 CAL_MIN_USEFUL_LUX = 5.0  # calibrated curve below this is treated as no response
 
+# 命令冷却（V1.7.2 修复 C）：_apply set 下发后的最短间隔——联动组双方互为
+# 触发源时 25 秒内连环决策（2026-10-31 现场诊断：7 次/25s，每次 20% 台阶），
+# 冷却作闭环内滞回抑制决策爆发。既有时间量常量均不适用：scan_interval_s=45
+# 是用户轮询节奏（options 可调）、CAL_CMD_SETTLE_S=2 是 lux 校准每档下发后
+# 的稳定等待（anl 另有自己的 settle_delay）；冷却非用户可调语义，故为模块
+# 常量、不加配置项。
+COMMAND_COOLDOWN_S = 15.0
+
 DECISION_RING_SIZE = 50
 
 SERVICE_CALIBRATE = "calibrate"

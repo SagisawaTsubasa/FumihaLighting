@@ -45,6 +45,7 @@ from .const import (
     CAL_POLL_INTERVAL_S,
     CAL_QUIET_PERIOD_S,
     CAL_TIMEOUT_UPGRADE_STREAK,
+    COMMAND_COOLDOWN_S,
     CONF_AUTO_TURN_OFF,
     CONF_CAL_STEP_PCT,
     CONF_CROSS_FADE,
@@ -76,6 +77,7 @@ from .logic import (
     Decision,
     build_curve,
     calibration_steps,
+    clamp_step,
     combine_passes,
     curve_from_manual,
     decide,
@@ -233,6 +235,14 @@ class ZoneRuntime:
         # 消费——lux= 展示「净值（原始−扣）」，用户可与传感器实体读数对账
         self._last_lux_gross: float = 0.0
         self._last_external_lux: float = 0.0
+        # 联动组扣减平滑（V1.7.2 修复 B）：_lux_window 滤本传感器量化噪声；
+        # 扣减是对方灯 commanded_pct 的暂态信号——对方狩猎时扣减在同值原值
+        # 下横跳（2026-10-31 现场诊断 13↔26），两区扣减互喂成耦合振荡器，
+        # 需独立 5 样本中值窗。_ded_peer_keys 记上次实际计入贡献的对方灯键
+        # 集：键集变化（对方开/关）即清窗，防跨开关暂态滞后（消费=
+        # _prepare_lux，生产=_external_contribution）。
+        self._ded_window: deque[float] = deque(maxlen=5)
+        self._ded_peer_keys: frozenset[str] = frozenset()
         # 协同采样慢组员补录（R1 发现 6）：上一档档位哨兵——None 是合法档位
         # （基线档），object() 哨兵区分「尚无上一档」
         self._cal_cross_prev_pct: float | None = _CAL_CROSS_NO_PREV
@@ -384,8 +394,11 @@ class ZoneRuntime:
             return
         if self.lux_stale:
             # 恢复：清窗防断档前后读数混算（F-104）；只复位数据可信态，
-            # 不复位 WARNING 节流（交替抖动下每事件重来=刷屏，R11 发现 3）
+            # 不复位 WARNING 节流（交替抖动下每事件重来=刷屏，R11 发现 3）。
+            # 扣减窗同清（V1.7.2 修复 B）：不可信期跨越期间对方灯可能已变，
+            # 恢复首帧不沿用断档前的扣减样本。
             self._lux_window.clear()
+            self._ded_window.clear()
         self.lux_stale = False
         self._lux_window.append(lux_now)
         self._schedule_evaluate("lux")
@@ -475,26 +488,32 @@ class ZoneRuntime:
             if other is not self and other.link_group == self.link_group
         ]
 
-    def _external_contribution(self) -> float:
+    def _external_contribution(self) -> tuple[float, frozenset[str]]:
         """组内其他灯对本传感器的当前照度贡献（FL-IMP 联动组）。
 
         交叉曲线优先（校准协同采样产出，键=对方灯实体）；无交叉曲线时
         近似 = 对方主曲线 × cross_fade。灯灭/读不到/亮度未知（三态 None）
         一律按 0 不贡献（R1 发现 3 统一判据）。
+
+        V1.7.2 修复 B：返回 (总贡献, 本次实际计入贡献的对方灯 entity_id
+        集合)——键集供 _prepare_lux 判「对方开/关」以清扣减平滑窗（值抖动
+        平滑滞后是设计意图，但开关状态切换是暂态，历史样本必须作废）。
         """
         total = 0.0
+        contributing: set[str] = set()
         for other in self._linked_runtimes():
             other_pct = _light_pct(
                 self.hass.states.get(other.light_entity), other.commanded_pct
             )
             if not other_pct:  # 灭=0.0 / 未知=None → 不贡献
                 continue
+            contributing.add(other.light_entity)
             cross = self._cross_curves.get(other.light_entity)
             if cross is not None:
                 total += cross.lux_at(other_pct)
             elif other.curve is not None:
                 total += other.curve.lux_at(other_pct) * self._cross_fade
-        return total
+        return total, frozenset(contributing)
 
     def _prepare_lux(self) -> float | None:
         """闭环主路径与开灯首帧共用的照度预处理（R1 发现 2，P2）。
@@ -503,7 +522,8 @@ class ZoneRuntime:
         共用一份判据（旧开灯首帧用原始瞬时值、不扣贡献、不传照度死区，
         组内已有灯亮时首帧显著偏低）。None = 数据不可信（调用方不得拿去
         调灯）。副作用：_mark_lux_stale/恢复清窗、_last_lux_gross 与
-        _last_external_lux 写入（决策环日志对账分量，R1 发现 13）。
+        _last_external_lux 写入（决策环日志对账分量，R1 发现 13）、扣减
+        平滑窗 _ded_window/_ded_peer_keys 维护（V1.7.2 修复 B）。
         """
         lux_state = self.hass.states.get(self.lux_entity)
         stale_reason = _lux_stale_reason(lux_state)
@@ -517,8 +537,10 @@ class ZoneRuntime:
             return None
         if self.lux_stale:
             # 恢复：清窗防断档前后读数混算（F-104）；只复位数据可信态，
-            # 不复位 WARNING 节流（与 _on_lux_event 恢复分支同语义）
+            # 不复位 WARNING 节流（与 _on_lux_event 恢复分支同语义）。
+            # 扣减窗同清（V1.7.2 修复 B，语义同上）
             self._lux_window.clear()
+            self._ded_window.clear()
         self.lux_stale = False
         # V1.2.2 读数滤波：瞬时值含量化噪声，中值窗口压平抖动
         self._lux_window.append(lux_now)
@@ -526,10 +548,19 @@ class ZoneRuntime:
         # V1.3.0 联动组: 扣除组内其他灯的贡献——否则对方的补偿会被本区
         # 当成环境扰动，多灯同房间时互相拉锯（震荡根因）。先中值滤波压平
         # 本传感器噪声，再扣外部贡献（对方灯状态属性无量化抖动问题）。
-        external = self._external_contribution()
+        # V1.7.2 修复 B：扣减值自身独立 5 样本中值平滑——对方狩猎时
+        # commanded_pct 抖动使扣减横跳、两区互喂成耦合振荡器（2026-10-31
+        # 诊断根因 1）；对方开/关（键集变化）清窗立即生效，不留暂态滞后。
+        external, peer_keys = self._external_contribution()
+        if peer_keys != self._ded_peer_keys:
+            self._ded_window.clear()
+            self._ded_peer_keys = peer_keys
+        self._ded_window.append(external)
+        effective_ded = statistics.median(self._ded_window)
         self._last_lux_gross = gross
-        self._last_external_lux = external
-        return max(0.0, gross - external)
+        # 生效扣值入对账分量：决策环「原X−扣Y」的 Y = 实际扣除值（平滑后）
+        self._last_external_lux = effective_ded
+        return max(0.0, gross - effective_ded)
 
     async def _async_compute_decision(
         self,
@@ -594,6 +625,28 @@ class ZoneRuntime:
             if self.mode != MODE_ACTIVE or self._stopped:
                 return  # state moved on / runtime stopping while in flight
             if decision.action == "set":
+                # V1.7.2 修复 C：命令冷却——联动组双方互为触发源时连环决策
+                # （2026-10-31 诊断：25 秒 7 次、每次 20% 台阶），上次下发
+                # 后 COMMAND_COOLDOWN_S 内的 set 决策压成 noop 不下发（闭环
+                # 内滞回）。off 分支不经此（环境已达标就该关，不受冷却钳
+                # 制）。last_adjustment 仅在下发成功处由 dt_util.utcnow()
+                # 写入，与本处取时同源（真机 aware UTC、测试桩同侧 naive），
+                # 相减直接可用；None=本会话尚无下发，不冷却。
+                if self.last_adjustment is not None and (
+                    (dt_util.utcnow() - self.last_adjustment).total_seconds()
+                    < COMMAND_COOLDOWN_S
+                ):
+                    decision = replace(
+                        decision,
+                        action="noop",
+                        pct=None,
+                        reason="command cooldown",
+                    )
+                    line = self._record(trigger, lux_now, decision)
+                    if line is not None:
+                        _LOGGER.debug("%s: %s", self.zone_name, line)
+                    self.notify()
+                    return
                 # V1.3.0 亮度缓变（WP4）：单次决策斜率限制——目标亮度距当前
                 # 超过 max_step_pct 时只走一步（reason 追加「缓变」，pct 修正
                 # 为限幅后值），下轮评估继续逼近；off 决策不受缓变限制（关灯
@@ -601,14 +654,16 @@ class ZoneRuntime:
                 # 上界 100%，不新增配置。亮度未知（current is None，R1 发现
                 # 3）：无基准可限——退化为不限幅直发决策亮度（旧码把未知当
                 # 100% 限幅基准，会对「会调光但不上报」的灯具反向过冲）。
+                # V1.7.2 修复 A：限幅逻辑提取为 logic.clamp_step 纯函数，
+                # 开灯首帧（async_turn_on_requested）复用同一判据。
                 current = self._current_pct()
                 if current is not None:
                     step = self._max_step_pct
-                    ramped = min(decision.pct, current + step)
-                    ramped = max(ramped, current - step)
-                    target_pct = min(
-                        100.0,
-                        max(float(self.opts[CONF_MIN_BRIGHTNESS_PCT]), ramped),
+                    target_pct = clamp_step(
+                        decision.pct,
+                        current,
+                        step,
+                        float(self.opts[CONF_MIN_BRIGHTNESS_PCT]),
                     )
                     if abs(decision.pct - current) > step:
                         decision = replace(
@@ -765,6 +820,25 @@ class ZoneRuntime:
             else:
                 pct = decision.pct
                 recorded = decision
+                # V1.7.2 修复 A：开灯首帧同样过 max_step 缓变（2026-10-31
+                # 诊断根因 5：首帧直跳目标，环境≈0 时每次开灯 set 100%）——
+                # 判据与 _apply 同源 logic.clamp_step；current 为 None（亮
+                # 度未知）直通不限幅，与 _apply 现语义一致。floored 分支
+                # （上方 off→min_pct）不动：明确开灯意图的下限保证。
+                if current is not None:
+                    step = self._max_step_pct
+                    if abs(pct - current) > step:
+                        pct = clamp_step(
+                            pct,
+                            current,
+                            step,
+                            float(self.opts[CONF_MIN_BRIGHTNESS_PCT]),
+                        )
+                        recorded = replace(
+                            recorded,
+                            pct=pct,
+                            reason=f"{recorded.reason}（缓变）",
+                        )
             ok = await self._async_call_light(
                 "turn_on", {ATTR_BRIGHTNESS_PCT: round(pct)}
             )

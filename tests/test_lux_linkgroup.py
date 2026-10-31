@@ -39,6 +39,7 @@ from custom_components.fumiha_lighting.lux.runtime import (
     ZoneRuntime,
 )
 from homeassistant.components.light import ATTR_BRIGHTNESS_PCT
+from homeassistant.util import dt as dt_util
 
 run = asyncio.run
 LOGGER = "custom_components.fumiha_lighting.lux.runtime"
@@ -81,6 +82,9 @@ def _rt(hass, entry_id, light, lux, link="", **extra) -> ZoneRuntime:
             "lux_stale": False,
             "_stale_warn_ts": None,
             "_lux_window": deque(maxlen=5),
+            # 扣减平滑窗（V1.7.2 修复 B，与生产 __init__ 同构）
+            "_ded_window": deque(maxlen=5),
+            "_ded_peer_keys": frozenset(),
             "_off_streak": 0,
             "_apply_lock": asyncio.Lock(),
             "_eval_task": None,
@@ -162,7 +166,8 @@ def test_external_contribution_cross_curve_takes_priority():
     b.curve = curve_from_manual(2.0)  # 主曲线 lux_at(50.2)≈100.4
     cross = curve_from_manual(0.8)  # 交叉曲线 lux_at(50.2)≈40.16
     a._cross_curves["light.b"] = cross
-    assert a._external_contribution() == pytest.approx(40.16, rel=0.001)
+    # V1.7.2 起返回 (贡献, 键集) 二元组，[0] 取贡献值
+    assert a._external_contribution()[0] == pytest.approx(40.16, rel=0.001)
 
 
 def test_external_contribution_approx_fallback():
@@ -170,7 +175,7 @@ def test_external_contribution_approx_fallback():
     states = {"light.b": _state(brightness=128)}
     _, a, b = _pair_with_states(states)
     b.curve = curve_from_manual(2.0)
-    assert a._external_contribution() == pytest.approx(100.4 * 0.5, rel=0.001)
+    assert a._external_contribution()[0] == pytest.approx(100.4 * 0.5, rel=0.001)
 
 
 def test_external_contribution_off_or_missing_is_zero():
@@ -178,21 +183,21 @@ def test_external_contribution_off_or_missing_is_zero():
     states = {"light.b": _state(state="off", brightness=200)}
     _, a, b = _pair_with_states(states)
     b.curve = curve_from_manual(2.0)
-    assert a._external_contribution() == 0.0
+    assert a._external_contribution()[0] == 0.0
 
     states2 = {"light.b": _state(brightness=None)}
     hass2 = _make_hass(states2)
     a2 = _rt(hass2, "a", "light.a", "sensor.a", link="卫")
     b2 = _rt(hass2, "b", "light.b", "sensor.b", link="卫", commanded_pct=30.0)
     b2.curve = curve_from_manual(1.0)
-    assert a2._external_contribution() == pytest.approx(30.0 * 0.5, rel=0.001)
+    assert a2._external_contribution()[0] == pytest.approx(30.0 * 0.5, rel=0.001)
 
     states3 = {"light.b": _state(brightness=128)}
     hass3 = _make_hass(states3)
     a3 = _rt(hass3, "a", "light.a", "sensor.a", link="")
     b3 = _rt(hass3, "b", "light.b", "sensor.b", link="")
     b3.curve = curve_from_manual(2.0)
-    assert a3._external_contribution() == 0.0
+    assert a3._external_contribution()[0] == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +237,7 @@ def test_compute_decision_converges_across_pair_dimming():
     )
     hass_states["light.b"] = _state(brightness=255)
     a._lux_window.clear()
+    a._ded_window.clear()  # V1.7.2 修复 B：扣减中值窗需收敛，稳态演示先清窗
     decision2, lux_now2 = run(a._async_compute_decision())
     assert lux_now2 == pytest.approx(80.2, rel=0.001)  # 180.2 − 100（B 已扣）
     assert decision2.ambient_lux == pytest.approx(30.0, rel=0.001)
@@ -507,10 +513,14 @@ def test_apply_ramps_stepwise_and_marks_reason():
     assert a.commanded_pct == pytest.approx(30.2, rel=0.001)
     assert "缓变" in a.last_decision.reason
 
+    # V1.7.2 修复 C 命令冷却：本测试只钉缓变——每轮把 last_adjustment 拨
+    # 回 16s 前免冷却（冷却行为单钉见 test_apply_command_cooldown）
+    a.last_adjustment = dt_util.utcnow() - timedelta(seconds=16)
     # 第二轮评估（目标仍 100%）：current 30.2 → 限到 50.2（继续逼近）
     run(a._apply("lux", 100.0, Decision("set", 100.0, 30.0, 70.0, "compensation")))
     assert calls[-1] == ("turn_on", {ATTR_BRIGHTNESS_PCT: 50})
 
+    a.last_adjustment = dt_util.utcnow() - timedelta(seconds=16)
     # 逼近到位后（current 50.2 → 目标 65）：差 14.8 < 20 → 不变形不标记
     run(a._apply("lux", 100.0, Decision("set", 65.0, 30.0, 35.0, "compensation")))
     assert calls[-1] == ("turn_on", {ATTR_BRIGHTNESS_PCT: 65})
@@ -687,8 +697,12 @@ def test_turn_on_first_frame_deducts_external_contribution():
     a._async_call_light = _call
     run(a.async_turn_on_requested(None))
     # net = 130.4 − 100.39 = 30 → ambient 30（灯灭自身零贡献）→ needed 120
-    # → set 100%（旧无扣除实现：lux 130.4 > target → off → 兜底 min 5%）
-    assert calls == [("turn_on", {"brightness_pct": 100})]
+    # → set 100%；V1.7.2 修复 A 首帧同样过缓变：current=0（灯灭）→
+    # 0+step(20)=20 下发（旧无扣除实现：lux 130.4 > target → off → 兜底
+    # min 5%——扣除语义由本用例 continue 钉住，缓变语义单钉见
+    # test_turn_on_first_frame_ramps_stepwise）
+    assert calls == [("turn_on", {"brightness_pct": 20})]
+    assert "缓变" in a.last_decision.reason
 
 
 def test_light_pct_unknown_is_none_and_consumers_agree():
@@ -697,7 +711,7 @@ def test_light_pct_unknown_is_none_and_consumers_agree():
     states = {"light.b": _state(brightness=None)}  # ON 但不上报亮度
     hass, a, b = _pair_with_states(states)
     b.curve = curve_from_manual(2.0)
-    assert a._external_contribution() == 0.0  # 未知不贡献
+    assert a._external_contribution()[0] == 0.0  # 未知不贡献
     assert b._current_pct() is None  # 旧码此处判 100
 
     b.mode = "active"
@@ -1036,3 +1050,158 @@ def test_async_remove_serialized_with_saves_and_cleans_lock(monkeypatch):
         assert store_mod._SAVE_LOCKS.get("e1") is None
 
     run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# 联动组狩猎修复（V1.7.2：首帧缓变 × 扣减平滑 × 命令冷却）
+# ---------------------------------------------------------------------------
+
+
+def test_turn_on_first_frame_ramps_stepwise():
+    """V1.7.2 修复 A：开灯首帧过 max_step 缓变——不再直跳目标（2026-10-31
+    诊断根因 5：环境≈0 时每次开灯 set 100%）。"""
+    states = {
+        "sensor.a": SimpleNamespace(state="10.0", attributes={}, last_changed=None),
+        "light.a": _state(state="off"),  # current = 0.0（灭）
+    }
+    hass, a, _b = _pair_with_states(states)
+    a.curve = curve_from_manual(1.0)  # 满档 100 lx
+    calls: list[tuple[str, dict]] = []
+
+    async def _call(service, data):
+        calls.append((service, data))
+        return True
+
+    a._async_call_light = _call
+    # 净照度 10 → ambient 10（灯灭零自贡献）→ needed 140 → set 100；
+    # 首帧 current=0 → clamp 到 0+step(20)=20 下发
+    run(a.async_turn_on_requested(None))
+    assert calls == [("turn_on", {"brightness_pct": 20})]
+    assert a.commanded_pct == pytest.approx(20.0)
+    assert "缓变" in a.last_decision.reason
+
+
+def test_turn_on_first_frame_unknown_pct_passes_through():
+    """V1.7.2 修复 A 三态边界：灯亮但亮度未知（current=None）→ 首帧直通
+    不限幅（与 _apply 未知语义一致，R1 发现 3）。"""
+    states = {
+        "sensor.a": SimpleNamespace(state="10.0", attributes={}, last_changed=None),
+        "light.a": _state(brightness=None),  # ON 无亮度、commanded None
+    }
+    hass, a, _b = _pair_with_states(states)
+    a.curve = curve_from_manual(1.0)
+    calls: list[tuple[str, dict]] = []
+
+    async def _call(service, data):
+        calls.append((service, data))
+        return True
+
+    a._async_call_light = _call
+    run(a.async_turn_on_requested(None))
+    # current None → 无基准可限 → 决策亮度 100 直发，reason 不标缓变
+    assert calls == [("turn_on", {"brightness_pct": 100})]
+    assert "缓变" not in a.last_decision.reason
+
+
+def test_deduction_window_median_smooths_peer_jitter():
+    """V1.7.2 修复 B：同 peer 键集下扣减值 5 样本中值平滑——对方 commanded
+    抖动不再单样本直通（诊断根因 1：扣减 13↔26 横跳两区互喂）。"""
+    states = {
+        "sensor.a": SimpleNamespace(state="200.0", attributes={}, last_changed=None),
+        "light.a": _state(state="off"),
+        "light.b": _state(brightness=255),  # b 贡献 2.0×100×0.5=100
+    }
+    hass, a, b = _pair_with_states(states)
+    b.curve = curve_from_manual(2.0)
+    run(a._async_compute_decision())
+    # 第一评：窗 1 样本 → 扣 100
+    assert a._last_external_lux == pytest.approx(100.0, rel=0.001)
+    # 对方调暗到 50.2%：贡献 50.2——单样本直通会全额跟上，平滑后取中值
+    states["light.b"] = _state(brightness=128)
+    run(a._async_compute_decision())
+    # 窗 [100, 50.2] → 中值 75.1（抖动被压半；键集未变不清窗）
+    assert a._last_external_lux == pytest.approx((100.0 + 50.2) / 2, rel=0.001)
+    assert a._ded_peer_keys == frozenset({"light.b"})
+
+
+def test_deduction_window_cleared_when_peer_turns_off():
+    """V1.7.2 修复 B：peer 开→关（贡献键集变化）→ 清窗，新扣值立即生效
+    （平滑是值抖动的滞后，不是开关状态的滞后）。"""
+    states = {
+        "sensor.a": SimpleNamespace(state="200.0", attributes={}, last_changed=None),
+        "light.a": _state(state="off"),
+        "light.b": _state(brightness=255),
+    }
+    hass, a, b = _pair_with_states(states)
+    b.curve = curve_from_manual(2.0)
+    run(a._async_compute_decision())
+    assert a._ded_peer_keys == frozenset({"light.b"})
+    states["light.b"] = _state(state="off")  # b 关：贡献 0、键集空
+    run(a._async_compute_decision())
+    # 键集变化清窗 → 窗=[0] 扣值立即 0（不清则 median=[100,0]=50 滞后半拍）
+    assert a._last_external_lux == 0.0
+    assert a._ded_peer_keys == frozenset()
+
+
+def test_deduction_window_cleared_on_lux_stale_recovery():
+    """V1.7.2 修复 B：lux stale 恢复清 _lux_window 时同步清 _ded_window
+    （不可信期跨越期间对方灯可能已变，恢复首帧不沿用断档前扣减样本）。"""
+    states = {
+        "sensor.a": SimpleNamespace(state="200.0", attributes={}, last_changed=None),
+        "light.a": _state(state="off"),
+        "light.b": _state(brightness=255),
+    }
+    hass, a, b = _pair_with_states(states)
+    b.curve = curve_from_manual(2.0)
+    run(a._async_compute_decision())
+    assert len(a._ded_window) == 1
+    states["sensor.a"] = SimpleNamespace(state="nan", attributes={}, last_changed=None)
+    run(a._async_compute_decision())  # 坏值 → stale（_prepare_lux 返回 None）
+    assert a.lux_stale is True
+    states["sensor.a"] = SimpleNamespace(
+        state="150.0", attributes={}, last_changed=None
+    )
+    run(a._async_compute_decision())  # 恢复：清窗后重起算
+    assert a.lux_stale is False
+    assert len(a._ded_window) == 1  # 只剩恢复轮新样本
+    assert a._ded_peer_keys == frozenset({"light.b"})  # 键集未变，仅窗被清
+
+
+def test_apply_command_cooldown_suppresses_burst(monkeypatch):
+    """V1.7.2 修复 C：上次下发后 COMMAND_COOLDOWN_S(15s) 内的 set 决策压成
+    noop 不下发（reason="command cooldown"，决策爆发抑制）；off 决策不受
+    冷却限制；冷却过后恢复 set。"""
+    clock = {"t": datetime(2026, 10, 31, 12, 0, 0)}
+    monkeypatch.setattr(dt_util, "utcnow", lambda: clock["t"])
+
+    hass_states = {"light.a": _state(brightness=26)}  # current ≈10.2%
+    a, calls, hass_states = _active_rt_with_light(hass_states, _max_step_pct=20.0)
+
+    # 第一轮：last_adjustment=None（本会话尚无下发）→ 正常 set（缓变 30%）
+    run(a._apply("lux", 100.0, Decision("set", 100.0, 30.0, 70.0, "compensation")))
+    assert calls == [("turn_on", {ATTR_BRIGHTNESS_PCT: 30})]
+    assert a.last_decision.reason == "compensation（缓变）"
+
+    # 5 秒后再来同距 set：冷却内 → noop、零下发
+    clock["t"] += timedelta(seconds=5)
+    run(a._apply("lux", 100.0, Decision("set", 100.0, 30.0, 70.0, "compensation")))
+    assert calls == [("turn_on", {ATTR_BRIGHTNESS_PCT: 30})]  # 不新增
+    assert a.last_decision.action == "noop"
+    assert a.last_decision.reason == "command cooldown"
+
+    # off 决策不受冷却钳制（环境已达标就该关）
+    run(
+        a._apply(
+            "lux",
+            300.0,
+            Decision("off", None, 200.0, -50.0, "ambient at or above target"),
+        )
+    )
+    assert calls[-1] == ("turn_off", {})
+    a.mode = "active"  # off 成功后 IDLE；后续轮手动回 active 继续钉冷却恢复
+
+    # 推进 21 秒（> 15s）→ 恢复 set（current 29.8 → 缓变 49.8）
+    clock["t"] += timedelta(seconds=21)
+    run(a._apply("lux", 100.0, Decision("set", 100.0, 30.0, 70.0, "compensation")))
+    assert calls[-1] == ("turn_on", {ATTR_BRIGHTNESS_PCT: 50})
+    assert "缓变" in a.last_decision.reason

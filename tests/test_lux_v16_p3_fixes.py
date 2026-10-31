@@ -39,6 +39,10 @@ def _bare_runtime(**attrs) -> ZoneRuntime:
     rt.lux_stale = False
     rt._stale_warn_ts = None
     rt._lux_window = deque(maxlen=5)
+    # 扣减平滑窗（V1.7.2 修复 B）：_on_lux_event 恢复分支会清，与生产
+    # __init__ 同构
+    rt._ded_window = deque(maxlen=5)
+    rt._ded_peer_keys = frozenset()
     rt.notify = lambda: None
     rt._schedule_evaluate = lambda _trigger: None
     # 联动组（V1.3.0）默认无组：_linked_runtimes 空返回，协同采样零行为；

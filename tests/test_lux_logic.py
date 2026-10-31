@@ -5,6 +5,7 @@ from logic import (
     Curve,
     build_curve,
     calibration_steps,
+    clamp_step,
     combine_passes,
     curve_from_manual,
     decide,
@@ -102,6 +103,34 @@ class TestDecide:
     def test_deadband_noop_when_on(self):
         decision = decide(linear_curve(1.0), 152, 50, 150, 5, 5)
         assert decision.action == "noop"
+
+
+class TestClampStep:
+    """单步亮度限幅（V1.7.2 修复 A）——_apply 内联限幅提取的纯函数，
+    闭环 set 决策与开灯首帧共用（语义 = 原 runtime._apply，三态含 None）。"""
+
+    def test_ramp_up_limited(self):
+        # 目标 100、当前 50、步 20 → 只到 70
+        assert clamp_step(100.0, 50.0, 20.0, 5.0) == pytest.approx(70.0)
+
+    def test_ramp_down_limited(self):
+        # 目标 0、当前 50 → 只到 30（下界 min_pct=5 不参与，30 > 5）
+        assert clamp_step(0.0, 50.0, 20.0, 5.0) == pytest.approx(30.0)
+
+    def test_none_current_passes_through(self):
+        # 亮度未知（None）：无基准可限，原样返回目标（R1 发现 3 三态）
+        assert clamp_step(65.0, None, 20.0, 5.0) == 65.0
+
+    def test_clamped_to_bounds(self):
+        # 上夹 100：目标 200、当前 90 → min(200,110)=110 → 夹 100
+        assert clamp_step(200.0, 90.0, 20.0, 5.0) == pytest.approx(100.0)
+        # 下夹 min_pct：目标 0、当前 10 → max(0,-10)=0 → 夹 5
+        assert clamp_step(0.0, 10.0, 20.0, 5.0) == pytest.approx(5.0)
+
+    def test_within_band_unchanged(self):
+        # 目标已在 current±step 带内：原值返回，不变形
+        assert clamp_step(65.0, 50.0, 20.0, 5.0) == pytest.approx(65.0)
+        assert clamp_step(40.0, 50.0, 20.0, 5.0) == pytest.approx(40.0)
 
 
 class TestCalibrationSynthesis:

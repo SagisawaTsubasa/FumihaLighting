@@ -117,6 +117,33 @@ def decide(
     return Decision("set", pct, ambient, needed, "compensation")
 
 
+def clamp_step(
+    target_pct: float,
+    current_pct: float | None,
+    max_step_pct: float,
+    min_pct: float,
+) -> float:
+    """单步亮度限幅（V1.7.2 修复 A）：目标亮度距当前超过 ``max_step_pct``
+    时只允许走一步，决策环分多轮逼近——开灯首帧与闭环 set 决策共用
+    （2026-10-31 联动组狩猎诊断根因 5：首帧不过 max_step 直跳目标）。
+
+    三态语义（与 _light_pct 三态对齐，R1 发现 3）：
+    - ``current_pct`` 为 None（亮着但亮度未知）：无基准可限——原样返回
+      ``target_pct``（旧码把未知判 100 作限幅基准会反向过冲）；
+    - 否则 ramped = min(target, current+step) 再 max(ramped, current-step)，
+      最后夹到 [min_pct, 100]（下界 min_brightness_pct、上界 100%，与
+      WP4 既有边界一致，不新增配置）。
+
+    语义出处 = 原 lux/runtime.py ``_apply`` 内联限幅；提取纯函数供
+    ``_apply`` 与 ``async_turn_on_requested`` 两点复用。
+    """
+    if current_pct is None:
+        return float(target_pct)
+    ramped = min(target_pct, current_pct + max_step_pct)
+    ramped = max(ramped, current_pct - max_step_pct)
+    return min(100.0, max(min_pct, ramped))
+
+
 def calibration_steps(step_pct: int) -> list[int]:
     """Sweep percentages for a given step size, always 0→…→100.
 

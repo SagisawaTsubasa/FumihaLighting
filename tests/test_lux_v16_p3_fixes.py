@@ -39,9 +39,9 @@ def _bare_runtime(**attrs) -> ZoneRuntime:
     rt.lux_stale = False
     rt._stale_warn_ts = None
     rt._lux_window = deque(maxlen=5)
-    # 扣减平滑窗（V1.7.2 修复 B）：_on_lux_event 恢复分支会清，与生产
-    # __init__ 同构
-    rt._ded_window = deque(maxlen=5)
+    # 扣减斜率限幅基准（V1.7.2 修复 B/R1-5）：_on_lux_event 恢复分支会重
+    # 置，与生产 __init__ 同构
+    rt._ded_effective = None
     rt._ded_peer_keys = frozenset()
     rt.notify = lambda: None
     rt._schedule_evaluate = lambda _trigger: None

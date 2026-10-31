@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from datetime import time as _time
 from types import SimpleNamespace
@@ -18,12 +19,12 @@ from custom_components.fumiha_lighting.anl.const import CONF_DAY_ENABLED
 from custom_components.fumiha_lighting.config_flow import (
     FumihaLightingConfigFlow,
 )
-from custom_components.fumiha_lighting.lux.const import merged_options
 from custom_components.fumiha_lighting.const import (
     CONF_KIND,
     KIND_ANL,
     KIND_LUX,
 )
+from custom_components.fumiha_lighting.lux.const import merged_options
 
 
 def _json_body(data):
@@ -1806,6 +1807,9 @@ def test_calibrate_cancel_mid_run_restores_active():
             "_eval_task": None,
             "_stale_warn_ts": None,
             "lux_stale": False,
+            "_lux_window": deque(maxlen=5),
+            "_ded_effective": None,
+            "_ded_peer_keys": frozenset(),
             "signal": "fumiha_lighting_lux1_update",
             "notify": lambda: None,
             "_async_sweep": hanging_sweep,
@@ -1884,6 +1888,9 @@ def test_calibrate_cancel_same_tick_uncaptured_light_on_judges_active():
             "_eval_task": None,
             "_stale_warn_ts": None,
             "lux_stale": False,
+            "_lux_window": deque(maxlen=5),
+            "_ded_effective": None,
+            "_ded_peer_keys": frozenset(),
             "signal": "fumiha_lighting_lux1_update",
         }
     )
@@ -1953,6 +1960,9 @@ def test_calibrate_cancel_window2_started_not_captured():
             "_eval_task": None,  # 窗口②挂起点（scenario 内装配真 Task）
             "_stale_warn_ts": None,
             "lux_stale": False,
+            "_lux_window": deque(maxlen=5),
+            "_ded_effective": None,
+            "_ded_peer_keys": frozenset(),
             "signal": "fumiha_lighting_lux1_update",
             "notify": lambda: None,
             "_async_sweep": hanging_sweep,
@@ -2034,6 +2044,9 @@ def test_calibrate_cancel_wakes_suspended_sibling():
             "_eval_task": None,
             "_stale_warn_ts": None,
             "lux_stale": False,
+            "_lux_window": deque(maxlen=5),
+            "_ded_effective": None,
+            "_ded_peer_keys": frozenset(),
             "signal": "fumiha_lighting_lux1_update",
             "notify": lambda: None,
             "_async_sweep": hanging_sweep,
@@ -2065,6 +2078,9 @@ def test_calibrate_cancel_wakes_suspended_sibling():
             "_eval_task": None,
             "_stale_warn_ts": None,
             "lux_stale": False,
+            "_lux_window": deque(maxlen=5),
+            "_ded_effective": None,
+            "_ded_peer_keys": frozenset(),
             "signal": "fumiha_lighting_lux2_update",
             "notify": lambda: None,
             "_schedule_evaluate": _schedule_evaluate,
@@ -2148,6 +2164,9 @@ def test_calibrate_cancel_honors_pending_off_in_finally():
             "_eval_task": None,
             "_stale_warn_ts": None,
             "lux_stale": False,
+            "_lux_window": deque(maxlen=5),
+            "_ded_effective": None,
+            "_ded_peer_keys": frozenset(),
             "signal": "fumiha_lighting_lux1_update",
             "notify": lambda: None,
             "_async_sweep": hanging_sweep,
@@ -2231,6 +2250,9 @@ def test_calibrate_cancel_same_tick_wakes_sibling_via_fallback():
             "_eval_task": None,
             "_stale_warn_ts": None,
             "lux_stale": False,
+            "_lux_window": deque(maxlen=5),
+            "_ded_effective": None,
+            "_ded_peer_keys": frozenset(),
             "signal": "fumiha_lighting_lux1_update",
             "notify": lambda: None,
             "_async_sweep": hanging_sweep,
@@ -2260,6 +2282,9 @@ def test_calibrate_cancel_same_tick_wakes_sibling_via_fallback():
             "_eval_task": None,
             "_stale_warn_ts": None,
             "lux_stale": False,
+            "_lux_window": deque(maxlen=5),
+            "_ded_effective": None,
+            "_ded_peer_keys": frozenset(),
             "signal": "fumiha_lighting_lux2_update",
             "notify": lambda: None,
             "_schedule_evaluate": _schedule_evaluate,
@@ -2326,6 +2351,9 @@ def test_start_calibration_suspends_active_sibling_and_guards():
                 "_eval_task": None,
                 "_stale_warn_ts": None,
                 "lux_stale": False,
+                "_lux_window": deque(maxlen=5),
+                "_ded_effective": None,
+                "_ded_peer_keys": frozenset(),
                 "signal": f"fumiha_lighting_{entry_id}_update",
                 "notify": lambda: None,
                 "_async_sweep": hanging_sweep,
@@ -2422,6 +2450,9 @@ def test_calibrate_cancel_sibling_no_light_write_on_fallback():
             "_eval_task": None,
             "_stale_warn_ts": None,
             "lux_stale": False,
+            "_lux_window": deque(maxlen=5),
+            "_ded_effective": None,
+            "_ded_peer_keys": frozenset(),
             "signal": "fumiha_lighting_lux1_update",
             "notify": lambda: None,
             "_async_sweep": hanging_sweep,
@@ -2452,6 +2483,9 @@ def test_calibrate_cancel_sibling_no_light_write_on_fallback():
             "_eval_task": None,
             "_stale_warn_ts": None,
             "lux_stale": False,
+            "_lux_window": deque(maxlen=5),
+            "_ded_effective": None,
+            "_ded_peer_keys": frozenset(),
             "signal": "fumiha_lighting_lux2_update",
             "notify": lambda: None,
             "_schedule_evaluate": _schedule_evaluate,
@@ -2534,6 +2568,9 @@ def test_calibrate_natural_completion_exits_calibrating():
             "_eval_task": None,  # 空挂起（await eval_task 直落），任务直接进 sweep
             "_stale_warn_ts": None,
             "lux_stale": False,
+            "_lux_window": deque(maxlen=5),
+            "_ded_effective": None,
+            "_ded_peer_keys": frozenset(),
             "signal": "fumiha_lighting_lux1_update",
             "notify": lambda: None,
             "link_group": "",  # 无组：_linked_runtimes 空返回（协同采样零行为）

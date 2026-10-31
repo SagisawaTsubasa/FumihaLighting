@@ -235,13 +235,15 @@ class ZoneRuntime:
         # 消费——lux= 展示「净值（原始−扣）」，用户可与传感器实体读数对账
         self._last_lux_gross: float = 0.0
         self._last_external_lux: float = 0.0
-        # 联动组扣减平滑（V1.7.2 修复 B）：_lux_window 滤本传感器量化噪声；
-        # 扣减是对方灯 commanded_pct 的暂态信号——对方狩猎时扣减在同值原值
-        # 下横跳（2026-10-31 现场诊断 13↔26），两区扣减互喂成耦合振荡器，
-        # 需独立 5 样本中值窗。_ded_peer_keys 记上次实际计入贡献的对方灯键
-        # 集：键集变化（对方开/关）即清窗，防跨开关暂态滞后（消费=
-        # _prepare_lux，生产=_external_contribution）。
-        self._ded_window: deque[float] = deque(maxlen=5)
+        # 联动组扣减斜率限幅（V1.7.2 修复 B，R1-5 改版）：_lux_window 滤本
+        # 传感器量化噪声；扣减是对方灯 commanded_pct 的暂态信号——对方狩猎
+        # 时扣减在同值原值下横跳（2026-10-31 现场诊断 13↔26），两区扣减互
+        # 喂成耦合振荡器。_ded_effective 是生效扣减值（None=无基准直通），
+        # 每拍只允许移动 ±deadband_lux（slew limit）；_ded_peer_keys 记上次
+        # 实际计入贡献的对方灯键集，键集变化（对方开/关）即重置基准（消费=
+        # _prepare_lux，生产=_external_contribution；重置点另见 _wake_active
+        # 与交叉曲线发布/回收——扣减基准换源处一律重置）。
+        self._ded_effective: float | None = None
         self._ded_peer_keys: frozenset[str] = frozenset()
         # 协同采样慢组员补录（R1 发现 6）：上一档档位哨兵——None 是合法档位
         # （基线档），object() 哨兵区分「尚无上一档」
@@ -395,10 +397,10 @@ class ZoneRuntime:
         if self.lux_stale:
             # 恢复：清窗防断档前后读数混算（F-104）；只复位数据可信态，
             # 不复位 WARNING 节流（交替抖动下每事件重来=刷屏，R11 发现 3）。
-            # 扣减窗同清（V1.7.2 修复 B）：不可信期跨越期间对方灯可能已变，
-            # 恢复首帧不沿用断档前的扣减样本。
+            # 扣减基准同重置（V1.7.2 修复 B）：不可信期跨越期间对方灯可能
+            # 已变，恢复首拍不沿用断档前的扣减基准。
             self._lux_window.clear()
-            self._ded_window.clear()
+            self._ded_effective = None
         self.lux_stale = False
         self._lux_window.append(lux_now)
         self._schedule_evaluate("lux")
@@ -417,6 +419,18 @@ class ZoneRuntime:
             self._eval_task = self.hass.async_create_task(self.async_evaluate(trigger))
 
     # ------------------------------------------------------------- closed loop
+
+    def _wake_active(self) -> None:
+        """（重）进 ACTIVE 的统一收口（R1-2，P2）：清读数窗并重置扣减基准。
+
+        IDLE/校准/PASSTHROUGH 期间 ``_prepare_lux`` 不跑——``_ded_effective``
+        冻结在让位前的旧值，慢心跳/断档下 ``_lux_window`` 同样可能是分钟级
+        旧样本（校准挂起 15min~3h 是最强放大器）；恢复闭环若直接沿用，断档
+        前后的读数与扣减混算会把过期贡献当现值。调用点：开灯接管
+        （async_turn_on_requested）、校准收尾回 ACTIVE（_finish_calibration）、
+        对称唤醒挂起区（两处 resume）。"""
+        self._lux_window.clear()
+        self._ded_effective = None
 
     def set_target(self, value: float) -> None:
         # Bounds come from const (single source with number.py / web.py /
@@ -538,9 +552,9 @@ class ZoneRuntime:
         if self.lux_stale:
             # 恢复：清窗防断档前后读数混算（F-104）；只复位数据可信态，
             # 不复位 WARNING 节流（与 _on_lux_event 恢复分支同语义）。
-            # 扣减窗同清（V1.7.2 修复 B，语义同上）
+            # 扣减基准同重置（V1.7.2 修复 B，语义同上）
             self._lux_window.clear()
-            self._ded_window.clear()
+            self._ded_effective = None
         self.lux_stale = False
         # V1.2.2 读数滤波：瞬时值含量化噪声，中值窗口压平抖动
         self._lux_window.append(lux_now)
@@ -548,17 +562,29 @@ class ZoneRuntime:
         # V1.3.0 联动组: 扣除组内其他灯的贡献——否则对方的补偿会被本区
         # 当成环境扰动，多灯同房间时互相拉锯（震荡根因）。先中值滤波压平
         # 本传感器噪声，再扣外部贡献（对方灯状态属性无量化抖动问题）。
-        # V1.7.2 修复 B：扣减值自身独立 5 样本中值平滑——对方狩猎时
-        # commanded_pct 抖动使扣减横跳、两区互喂成耦合振荡器（2026-10-31
-        # 诊断根因 1）；对方开/关（键集变化）清窗立即生效，不留暂态滞后。
+        # V1.7.2 修复 B（R1-5 改版）：扣减斜率限幅（slew limit）——中值窗
+        # 对根因 1 的周期-2 交替抖动是 0 衰减只延迟（分段常值输入原样输出），
+        # 改斜率限幅：生效扣值每拍至多移动 ±deadband_lux，有界斜坡 + 快拍
+        # 率 = 短滞后低带宽低通，断开耦合环靠「扣值慢」（对方狩猎周期内
+        # 扣减跟不上对方 commanded_pct 抖动），配合命令冷却降低环路增益。
+        # Δ 复用 CONF_DEADBAND_LUX（不加新常量）：扣值抖动与传感器量化噪声
+        # 同源（±10 lx 级），deadband_lux 即项目对该量级噪声的既定判据。
+        # None=无基准直通（首拍/键集变化/恢复/唤醒后一拍重取现值）。
         external, peer_keys = self._external_contribution()
         if peer_keys != self._ded_peer_keys:
-            self._ded_window.clear()
+            # 键集变化（对方开/关）：基准作废——平滑只对值抖动滞后，不対
+            # 开关状态切换滞后
             self._ded_peer_keys = peer_keys
-        self._ded_window.append(external)
-        effective_ded = statistics.median(self._ded_window)
+            self._ded_effective = None
+        if self._ded_effective is None:
+            effective_ded = external
+        else:
+            delta = float(self.opts[CONF_DEADBAND_LUX])
+            effective_ded = min(external, self._ded_effective + delta)
+            effective_ded = max(effective_ded, self._ded_effective - delta)
+        self._ded_effective = effective_ded
         self._last_lux_gross = gross
-        # 生效扣值入对账分量：决策环「原X−扣Y」的 Y = 实际扣除值（平滑后）
+        # 生效扣值入对账分量：决策环「原X−扣Y」的 Y = 实际扣除值（限幅后）
         self._last_external_lux = effective_ded
         return max(0.0, gross - effective_ded)
 
@@ -729,6 +755,10 @@ class ZoneRuntime:
             f"→ {decision.action}"
             + (f" {decision.pct:.0f}%" if decision.pct is not None else "")
         )
+        if decision.action == "noop":
+            # R1-4（P3）：noop 决策环可见性——冷却/死区等压制原因统一上环
+            # （set/off 行不变）；去重基于 decision.reason 字段，不受行文本影响
+            line += f"（{decision.reason}）"
         self.decisions.append(line)
         self.last_decision = decision
         return line
@@ -774,11 +804,17 @@ class ZoneRuntime:
                 )
                 if ok:
                     self.commanded_pct = brightness_pct
+                    # R1-3（P3）：手动调光成功下发武装 last_adjustment——
+                    # 闭环冷却随之起算，手动调光后 15s 内不反扑
+                    self.last_adjustment = dt_util.utcnow()
                 self.notify()
                 return
 
             self.mode = MODE_ACTIVE
             self._off_streak = 0
+            # R1-2（P2）：IDLE 期间双窗冻结（校准挂起 15min~3h 最强放大器）
+            # ——接管前统一作废，恢复后重新采样
+            self._wake_active()
             curve = self.curve
             if curve is None:
                 await self._async_call_light("turn_on", {})
@@ -820,30 +856,34 @@ class ZoneRuntime:
             else:
                 pct = decision.pct
                 recorded = decision
-                # V1.7.2 修复 A：开灯首帧同样过 max_step 缓变（2026-10-31
-                # 诊断根因 5：首帧直跳目标，环境≈0 时每次开灯 set 100%）——
-                # 判据与 _apply 同源 logic.clamp_step；current 为 None（亮
-                # 度未知）直通不限幅，与 _apply 现语义一致。floored 分支
-                # （上方 off→min_pct）不动：明确开灯意图的下限保证。
-                if current is not None:
-                    step = self._max_step_pct
-                    if abs(pct - current) > step:
-                        pct = clamp_step(
-                            pct,
-                            current,
-                            step,
-                            float(self.opts[CONF_MIN_BRIGHTNESS_PCT]),
-                        )
-                        recorded = replace(
-                            recorded,
-                            pct=pct,
-                            reason=f"{recorded.reason}（缓变）",
-                        )
+            # V1.7.2 修复 A（R1-1 扩面）：首帧统一过 max_step 缓变（2026-10-31
+            # 诊断根因 5）——floored 同样适用：真灯已亮 100% + 环境达标时
+            # 100%→min_pct 也是单命令大跳，限到 current−step。判据与 _apply
+            # 同源 logic.clamp_step；current 为 None（亮度未知）直通不限幅，
+            # 与 _apply 现语义一致。
+            if current is not None:
+                step = self._max_step_pct
+                if abs(pct - current) > step:
+                    pct = clamp_step(
+                        pct,
+                        current,
+                        step,
+                        float(self.opts[CONF_MIN_BRIGHTNESS_PCT]),
+                    )
+                    recorded = replace(
+                        recorded,
+                        pct=pct,
+                        reason=f"{recorded.reason}（缓变）",
+                    )
             ok = await self._async_call_light(
                 "turn_on", {ATTR_BRIGHTNESS_PCT: round(pct)}
             )
             if ok:
                 self.commanded_pct = pct
+                # R1-3（P3）：首帧成功下发同样武装 last_adjustment——注释
+                # 宣称「仅在下发成功处写入」，实现缺此处；冷却自首帧起算，
+                # 联动组对方随后的连锁评估 15s 内不反扑
+                self.last_adjustment = dt_util.utcnow()
             else:
                 recorded = replace(
                     recorded, reason=f"{recorded.reason} (service failed)"
@@ -910,6 +950,8 @@ class ZoneRuntime:
                 ):
                     _LOGGER.info("%s: 恢复 %s 的闭环", self.zone_name, other.zone_name)
                     other.mode = MODE_ACTIVE
+                    # R1-2（P2）：唤醒即作废双窗（IDLE 挂起期冻结的旧样本/旧基准）
+                    other._wake_active()
                     other.notify()
                     other._schedule_evaluate("resume")
         return True
@@ -1072,6 +1114,8 @@ class ZoneRuntime:
                 ):
                     _LOGGER.info("%s: 恢复 %s 的闭环", self.zone_name, other.zone_name)
                     other.mode = MODE_ACTIVE
+                    # R1-2（P2）：唤醒即作废双窗（IDLE 挂起期冻结的旧样本/旧基准）
+                    other._wake_active()
                     other.notify()
                     other._schedule_evaluate("resume")
 
@@ -1097,6 +1141,10 @@ class ZoneRuntime:
         self._cal_was_on = False
         self._cal_captured = False
         self.cal_progress = ""
+        if self.mode == MODE_ACTIVE:
+            # R1-2（P2）：校准挂起期双窗冻结，回 ACTIVE 前作废（_finish_
+            # calibration 是本区校准收尾的唯一 mode 判定点）
+            self._wake_active()
         self.notify()
 
     async def _async_sweep(self, step: int) -> dict:
@@ -1347,6 +1395,9 @@ class ZoneRuntime:
                     self.light_entity, cross_curve
                 )
                 other._cross_curves[self.light_entity] = cross_curve
+                # R1-2（P2）：扣减基准换源（新交叉曲线）——other 下拍直通
+                # 新曲线贡献，不沿用旧基准下的斜率状态
+                other._ded_effective = None
                 other.notify()
                 _LOGGER.info(
                     "%s: 联动组交叉曲线已产出（%s 侧，最大增量 %.0f lx）",
@@ -1371,6 +1422,9 @@ class ZoneRuntime:
         no-op。改绑/删除挂点：lux/flow reconfigure、根 __init__ 删条目钩子。
         """
         if self._cross_curves.pop(light_entity, None) is not None:
+            # R1-2（P2）：扣减基准换源（曲线回收，回落近似系数）——重置后
+            # 下拍直通新基准贡献
+            self._ded_effective = None
             self.notify()
         await self.storage.async_remove_cross_curve(light_entity)
 

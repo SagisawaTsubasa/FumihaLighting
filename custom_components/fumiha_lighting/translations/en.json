@@ -117,7 +117,7 @@
         "data_description": {
           "scan_interval_s": "Closed-loop re-evaluation period while the light is on.",
           "deadband_pct": "Adjustments smaller than this are skipped to avoid flicker.",
-          "deadband_lux": "Corrections whose illuminance gap is smaller than this are skipped to suppress sensor quantisation noise and prevent brightness hunting.",
+          "deadband_lux": "Corrections whose illuminance gap is smaller than this are skipped to suppress sensor quantisation noise and prevent brightness hunting. Also serves as the link-group deduction slew step (floored at 1).",
           "min_brightness_pct": "Lower bound for computed brightness; guards the unstable low-end LED region.",
           "auto_turn_off": "Turn the light off after two consecutive cycles with ambient at or above target."
         }

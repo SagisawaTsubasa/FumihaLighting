@@ -129,6 +129,7 @@ def test_f104_recovery_resets_stale_and_clears_window():
     """恢复语义保持：坏值期后的首个有效读数清窗+复位 lux_stale。"""
     rt = _bare_runtime()
     rt._lux_window.extend([100.0, 101.0, 102.0])
+    rt._ded_effective = 42.0  # R2 钉：事件路径恢复须同重置扣减斜率基准
 
     def _ev(state):
         return SimpleNamespace(
@@ -140,6 +141,7 @@ def test_f104_recovery_resets_stale_and_clears_window():
     rt._on_lux_event(_ev("42.0"))
     assert rt.lux_stale is False
     assert list(rt._lux_window) == [42.0]  # 恢复后窗从新读数起算
+    assert rt._ded_effective is None  # R2 钉：恢复首拍直通新贡献
 
 
 def test_f104_stale_warn_rewarns_after_interval():

@@ -217,6 +217,14 @@ class ZoneRuntime:
         self._max_step_pct: float = max(
             1.0, min(100.0, float(self.opts[CONF_MAX_STEP_PCT]))
         )
+        # R2-1（P2，ANL-F-140 同型）：扣减 slew 步长构造期夹取——deadband_
+        # lux=0（selector min=0 明文允许）会使 slew 限幅永久冻结（min/max
+        # 夹出 prev 恒等=扣减永不跟踪）、storage 手改负值更无界发散；下限
+        # 1 lx、上限 100 lx（死区量级到宽死区的合理带）。decide() 的死区
+        # 语义（0=关闭死区）不动，仅 slew 步长消费点用本夹取值。
+        self._ded_step: float = max(
+            1.0, min(100.0, float(self.opts[CONF_DEADBAND_LUX]))
+        )
         # 组内其他灯 → 本传感器的贡献曲线（校准协同采样产出），键=对方灯实体
         self._cross_curves: dict[str, Curve] = {}
         # 联动组协同采样暂存（WP3.1，仅校准期存活）：本校准区为 X 时，顺带
@@ -510,8 +518,9 @@ class ZoneRuntime:
         一律按 0 不贡献（R1 发现 3 统一判据）。
 
         V1.7.2 修复 B：返回 (总贡献, 本次实际计入贡献的对方灯 entity_id
-        集合)——键集供 _prepare_lux 判「对方开/关」以清扣减平滑窗（值抖动
-        平滑滞后是设计意图，但开关状态切换是暂态，历史样本必须作废）。
+        集合)——键集供 _prepare_lux 判「对方开/关」以重置扣减斜率基准
+        （值抖动的斜率滞后是设计意图，但开关状态切换是暂态，历史基准必须
+        作废）。
         """
         total = 0.0
         contributing: set[str] = set()
@@ -537,7 +546,7 @@ class ZoneRuntime:
         组内已有灯亮时首帧显著偏低）。None = 数据不可信（调用方不得拿去
         调灯）。副作用：_mark_lux_stale/恢复清窗、_last_lux_gross 与
         _last_external_lux 写入（决策环日志对账分量，R1 发现 13）、扣减
-        平滑窗 _ded_window/_ded_peer_keys 维护（V1.7.2 修复 B）。
+        斜率基准 _ded_effective/_ded_peer_keys 维护（V1.7.2 修复 B）。
         """
         lux_state = self.hass.states.get(self.lux_entity)
         stale_reason = _lux_stale_reason(lux_state)
@@ -579,7 +588,7 @@ class ZoneRuntime:
         if self._ded_effective is None:
             effective_ded = external
         else:
-            delta = float(self.opts[CONF_DEADBAND_LUX])
+            delta = self._ded_step
             effective_ded = min(external, self._ded_effective + delta)
             effective_ded = max(effective_ded, self._ded_effective - delta)
         self._ded_effective = effective_ded
@@ -655,8 +664,9 @@ class ZoneRuntime:
                 # （2026-10-31 诊断：25 秒 7 次、每次 20% 台阶），上次下发
                 # 后 COMMAND_COOLDOWN_S 内的 set 决策压成 noop 不下发（闭环
                 # 内滞回）。off 分支不经此（环境已达标就该关，不受冷却钳
-                # 制）。last_adjustment 仅在下发成功处由 dt_util.utcnow()
-                # 写入，与本处取时同源（真机 aware UTC、测试桩同侧 naive），
+                # 制）。last_adjustment 在闭环 set/开灯首帧/passthrough 三
+                # 处成功下发时由 dt_util.utcnow() 写入（R1-3 补齐后三处齐
+                # 备），与本处取时同源（真机 aware UTC、测试桩同侧 naive），
                 # 相减直接可用；None=本会话尚无下发，不冷却。
                 if self.last_adjustment is not None and (
                     (dt_util.utcnow() - self.last_adjustment).total_seconds()
@@ -1057,6 +1067,10 @@ class ZoneRuntime:
                     "保留原曲线"
                 )
             self.curve = new_curve
+            # R2-2（P3）：「换源一律重置」不变量——本区主曲线变了，组内对方
+            # 按近似系数扣本区贡献的基准随之变，对方的斜率状态作废下拍直通
+            for other in self._linked_runtimes():
+                other._ded_effective = None
             self._cal_committed = True  # 曲线已采纳，此后取消视同完成
             await self.storage.async_save_curve(self.curve)
             # V1.3.0 联动组（WP3.2）：主曲线采纳后产出交叉曲线——失败边界

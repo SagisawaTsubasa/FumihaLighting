@@ -84,6 +84,7 @@ def _rt(hass, entry_id, light, lux, link="", **extra) -> ZoneRuntime:
             "_lux_window": deque(maxlen=5),
             # 扣减斜率限幅基准（V1.7.2 修复 B/R1-5，与生产 __init__ 同构）
             "_ded_effective": None,
+            "_ded_step": 10.0,
             "_ded_peer_keys": frozenset(),
             "_off_streak": 0,
             "_apply_lock": asyncio.Lock(),
@@ -323,9 +324,11 @@ def test_publish_cross_curves_full_pipeline():
             100.0: [130.0],
         }
     }
+    b._ded_effective = 7.0  # R2 钉：扣减基准换源（新交叉曲线）须重置
 
     run(a._async_publish_cross_curves())
 
+    assert b._ded_effective is None  # 换源一律重置：b 下拍直通新曲线贡献
     assert len(store.cross_saved) == 1
     light_entity, curve = store.cross_saved[0]
     assert light_entity == "light.a"
@@ -847,6 +850,26 @@ def test_max_step_pct_clamped_at_construction():
         assert rt._max_step_pct == expected
 
 
+def test_ded_step_clamped_at_construction():
+    """R2-1（P2，ANL-F-140 同型）：扣减 slew 步长构造期夹取 1..100——
+    deadband_lux=0（selector min=0 明文允许）会使 slew 限幅永久冻结
+    （min/max 夹出 prev 恒等=扣减永不跟踪）、手改负值更无界发散；
+    decide() 的死区语义（0=关闭）不受影响。"""
+    for raw, expected in ((0, 1.0), (-10, 1.0), (999, 100.0), (10, 10.0)):
+        hass = _make_hass({})
+        entry = SimpleNamespace(
+            entry_id="e",
+            data={
+                CONF_ZONE_NAME: "z",
+                CONF_LIGHT_ENTITY: "light.a",
+                CONF_LUX_ENTITY: "sensor.a",
+            },
+            options={CONF_DEADBAND_LUX: raw},
+        )
+        rt = ZoneRuntime(hass, entry)
+        assert rt._ded_step == expected
+
+
 def test_cross_fade_clamped_at_construction():
     """ANL-F-140（P3）：cross_fade 消费点夹取 0..1（与 max_step_pct 同族）
     ——.storage 手改后三种静默错扣形态收敛：0=近似兜底失效（组内扣 0 回
@@ -959,6 +982,7 @@ def test_drop_cross_curve_removes_memory_and_disk(monkeypatch):
     a = _rt(hass, "a", "light.a", "sensor.a", link="卫")
     a.storage = store_mod.ZoneStorage(None, "e1")
     a._cross_curves["light.old"] = curve_from_manual(1.0)
+    a._ded_effective = 42.0  # R2 钉：扣减基准换源（曲线回收）须重置
     notified = []
     a.notify = lambda: notified.append(True)
 
@@ -966,6 +990,7 @@ def test_drop_cross_curve_removes_memory_and_disk(monkeypatch):
     assert "light.old" not in a._cross_curves
     assert "light.old" not in a.storage._store.data["cross_curves"]
     assert notified == [True]
+    assert a._ded_effective is None  # 回收回落近似系数，下拍直通新基准
 
     # 幂等：再删同键零写入零 notify
     saves_before = _fake_store_cls.saves

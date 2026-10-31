@@ -1559,7 +1559,7 @@ def test_calibrate_cancel_endpoint_paths():
     rt = ZoneRuntime.__new__(ZoneRuntime)
     rt.__dict__.update(
         {
-        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
+            "link_group": "",  # 无组：联动桩对齐生产 __init__
             "hass": hass,
             "entry_id": "lux1",
             "mode": "idle",
@@ -1597,7 +1597,7 @@ def test_calibrate_cancel_restores_and_sets_no_error():
     real = ZoneRuntime.__new__(ZoneRuntime)  # 跳过 __init__（依赖真 Store/registry）
     real.__dict__.update(
         {
-        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
+            "link_group": "",  # 无组：联动桩对齐生产 __init__
             "hass": hass,
             "opts": {CONF_CAL_STEP_PCT: 5},
             "mode": "idle",
@@ -1675,7 +1675,7 @@ def test_calibrate_cancel_same_tick_honors_pending_off():
     rt = ZoneRuntime.__new__(ZoneRuntime)
     rt.__dict__.update(
         {
-        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
+            "link_group": "",  # 无组：联动桩对齐生产 __init__
             "hass": hass,
             "entry_id": "lux1",
             "mode": "calibrating",
@@ -1729,7 +1729,7 @@ def test_calibrate_cancel_committed_returns_false():
     rt = ZoneRuntime.__new__(ZoneRuntime)
     rt.__dict__.update(
         {
-        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
+            "link_group": "",  # 无组：联动桩对齐生产 __init__
             "hass": hass,
             "entry_id": "lux1",
             "mode": "calibrating",
@@ -1786,7 +1786,7 @@ def test_calibrate_cancel_mid_run_restores_active():
 
     real.__dict__.update(
         {
-        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
+            "link_group": "",  # 无组：联动桩对齐生产 __init__
             "hass": hass,
             "opts": {CONF_CAL_STEP_PCT: 5},
             "mode": "idle",
@@ -1867,7 +1867,7 @@ def test_calibrate_cancel_same_tick_uncaptured_light_on_judges_active():
     rt = ZoneRuntime.__new__(ZoneRuntime)
     rt.__dict__.update(
         {
-        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
+            "link_group": "",  # 无组：联动桩对齐生产 __init__
             "hass": hass,
             "entry_id": "lux1",
             "mode": "idle",
@@ -1939,7 +1939,7 @@ def test_calibrate_cancel_window2_started_not_captured():
     real = ZoneRuntime.__new__(ZoneRuntime)
     real.__dict__.update(
         {
-        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
+            "link_group": "",  # 无组：联动桩对齐生产 __init__
             "hass": hass,
             "opts": {CONF_CAL_STEP_PCT: 5},
             "mode": "active",  # 校准前 ACTIVE（灯亮有曲线）
@@ -2022,7 +2022,7 @@ def test_calibrate_cancel_wakes_suspended_sibling():
     sweeping = ZoneRuntime.__new__(ZoneRuntime)
     sweeping.__dict__.update(
         {
-        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
+            "link_group": "",  # 无组：联动桩对齐生产 __init__
             "hass": hass,
             "opts": {CONF_CAL_STEP_PCT: 5},
             "mode": "idle",
@@ -2057,7 +2057,7 @@ def test_calibrate_cancel_wakes_suspended_sibling():
     sibling = ZoneRuntime.__new__(ZoneRuntime)
     sibling.__dict__.update(
         {
-        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
+            "link_group": "",  # 无组：联动桩对齐生产 __init__
             "hass": hass,
             "entry_id": "lux2",
             "mode": "active",  # ACTIVE 起步——start_calibration 将它挂起为 IDLE
@@ -2095,12 +2095,14 @@ def test_calibrate_cancel_wakes_suspended_sibling():
         assert sweeping.start_calibration() is True
         # start_calibration 把 ACTIVE 副区挂起为 IDLE
         assert sibling.mode == "idle"
+        sibling._ded_effective = 42.0  # R2 钉：挂起期冻结的扣减基准
         await asyncio.sleep(0)
         assert await sweeping.async_cancel_calibration() is True
 
         # 取消收尾对称唤醒副区：IDLE+curve+灯亮 → ACTIVE + resume 调度
         assert sibling.mode == "active"
         assert resumes == ["resume"]
+        assert sibling._ded_effective is None  # R2 钉：唤醒即作废双窗
         # FL-IMP-44: 主区恢复链真实执行（采集步已捕获：was_on=True +
         # orig_pct=200/255*100≈78.4）——不得被 suppress 静默吞掉
         assert len(restored) == 1 and restored[0][0] is True
@@ -2143,7 +2145,7 @@ def test_calibrate_cancel_honors_pending_off_in_finally():
     real = ZoneRuntime.__new__(ZoneRuntime)
     real.__dict__.update(
         {
-        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
+            "link_group": "",  # 无组：联动桩对齐生产 __init__
             "hass": hass,
             "opts": {CONF_CAL_STEP_PCT: 5},
             "mode": "idle",
@@ -2228,7 +2230,7 @@ def test_calibrate_cancel_same_tick_wakes_sibling_via_fallback():
     sweeping = ZoneRuntime.__new__(ZoneRuntime)
     sweeping.__dict__.update(
         {
-        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
+            "link_group": "",  # 无组：联动桩对齐生产 __init__
             "hass": hass,
             "opts": {CONF_CAL_STEP_PCT: 5},
             "mode": "idle",
@@ -2261,7 +2263,7 @@ def test_calibrate_cancel_same_tick_wakes_sibling_via_fallback():
     sibling = ZoneRuntime.__new__(ZoneRuntime)
     sibling.__dict__.update(
         {
-        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
+            "link_group": "",  # 无组：联动桩对齐生产 __init__
             "hass": hass,
             "entry_id": "lux2",
             "mode": "active",  # 亮灯闭环中被 start_calibration 挂起
@@ -2299,12 +2301,14 @@ def test_calibrate_cancel_same_tick_wakes_sibling_via_fallback():
         assert sweeping.start_calibration() is True
         # start_calibration 把 ACTIVE 的 sibling 挂起为 IDLE
         assert sibling.mode == "idle"
+        sibling._ded_effective = 42.0  # R2 钉：挂起期冻结的扣减基准
         # 同刻取消（cancel 先于任务首拍）→ 走兜底而非任务 finally
         assert await sweeping.async_cancel_calibration() is True
 
         # 兜底孪生唤醒块：sibling 恢复 ACTIVE + resume 调度
         assert sibling.mode == "active"
         assert resumes == ["resume"]
+        assert sibling._ded_effective is None  # R2 钉：唤醒即作废双窗
         # 主区自身：未采集 + 自身灯 off → IDLE
         assert sweeping.mode == "idle"
 
@@ -2428,7 +2432,7 @@ def test_calibrate_cancel_sibling_no_light_write_on_fallback():
     sweeping = ZoneRuntime.__new__(ZoneRuntime)
     sweeping.__dict__.update(
         {
-        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
+            "link_group": "",  # 无组：联动桩对齐生产 __init__
             "hass": hass,
             "opts": {CONF_CAL_STEP_PCT: 5},
             "mode": "idle",
@@ -2462,7 +2466,7 @@ def test_calibrate_cancel_sibling_no_light_write_on_fallback():
     sibling = ZoneRuntime.__new__(ZoneRuntime)
     sibling.__dict__.update(
         {
-        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
+            "link_group": "",  # 无组：联动桩对齐生产 __init__
             "hass": hass,
             "entry_id": "lux2",
             "mode": "active",
@@ -2584,6 +2588,8 @@ def test_calibrate_natural_completion_exits_calibrating():
     hass.data.setdefault(web.DOMAIN, {})["lux"] = {}
 
     async def scenario():
+        real._lux_window.extend([1.0, 2.0, 3.0])  # R2 钉：校准挂起期冻结窗
+        real._ded_effective = 42.0
         assert real.start_calibration() is True
         # 等任务自然完成（sweep 立返 + 存盘落点）
         for _ in range(10):
@@ -2599,6 +2605,9 @@ def test_calibrate_natural_completion_exits_calibrating():
         # FL-IMP-46: 恢复链可见（captured 分支：was_on=True + orig_pct≈50.2）
         assert len(restored) == 1 and restored[0][0] is True
         assert abs(restored[0][1] - 50.2) < 0.5
+        # R2 钉：收尾回 ACTIVE 前 _wake_active 作废双窗（挂起期最强放大器）
+        assert not real._lux_window
+        assert real._ded_effective is None
 
     asyncio.run(scenario())
 
@@ -2628,7 +2637,7 @@ def test_idle_never_revives_on_external_light_on():
     rt = ZoneRuntime.__new__(ZoneRuntime)
     rt.__dict__.update(
         {
-        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
+            "link_group": "",  # 无组：联动桩对齐生产 __init__
             "hass": hass,
             "entry_id": "lux1",
             "mode": "idle",
@@ -2680,7 +2689,7 @@ def test_turn_off_requested_leaves_real_light_alone():
     rt = ZoneRuntime.__new__(ZoneRuntime)
     rt.__dict__.update(
         {
-        "link_group": "",  # 无组：_linked_runtimes 空返回（桩形状对齐生产 __init__）
+            "link_group": "",  # 无组：联动桩对齐生产 __init__
             "hass": hass,
             "entry_id": "lux1",
             "mode": "active",

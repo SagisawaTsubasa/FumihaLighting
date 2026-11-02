@@ -8,7 +8,10 @@
 
    Naming: fx-* = structural tokens + shell chrome; cx-* = shared component
    classes (port of the Codex tokens.css component layer). Pages use the
-   cx-* classes; only the shell uses the fx-shell* chrome.
+   cx-* classes plus the fx-page/fx-body structural wrappers; only the shell
+   uses the fx-shell* chrome. This file ships as a verbatim copy in two
+   repos (FumihaHub shell + FumihaLighting standalone fallback, FXH R1 #3) —
+   keep both sides in sync (see the checklist at the .cx-note block).
 
    Contrast note: semantic colors use HA's theme-adjusted --success-color /
    --warning-color / --error-color where available; the hardcoded fallbacks
@@ -235,6 +238,15 @@ body * {
 
 .fx-page {
   display: block;
+  /* 满高嵌入契约（壳侧半边，FXH 滚动条批 2026-11-03）：把内容区高度传给
+   * 挂载进来的页面元素——步骤 1 真机诊断实证高度链断在此处（.fx-page 无
+   * height → 页面元素 :host{height:100%} 退化为 auto → 外层滚动）。页面
+   * 元素自身的滚动由壳挂载时设的 inline overflow 承担（fumiha-hub.js
+   * _mount()），溢出兜底仍留给 .fx-content（加载卡/空态卡不超高，无条）。
+   * 双语义收口（FXH R1 #3）：.fx-page 同时被壳包装层与 FumihaLighting 页内
+   * 包装层（page-lux.js/page-anl.js）使用——本块随全文件与 FumihaLighting
+   * 副本逐字同步（见 .cx-note 块的同步清单），hub/独立两模式几何保持一致。 */
+  height: 100%;
 }
 
 /* page wrapper inside pages: centered column like the two existing panels */
@@ -411,10 +423,13 @@ body * {
   cursor: not-allowed;
 }
 
-/* callout note（V1.7.1 用户反馈：说明文字 10px、删 accent 蓝色竖条；
+/* callout note（V1.7.1 用户反馈跨仓同步 @ 2026-10-24：说明文字 10px、删 accent 蓝色竖条；
  * warn/err 语义色条不是用户投诉面，改由变体自带完整 border-left 保渲染；
  * ANL-F-154：告警文案比正文更小是降级——warn/err 单独回到 11.5px；基础
- * 圆角归一 8px（竖条删除后 0 8px 8px 0 的左直角残留不是用户投诉面） */
+ * 圆角归一 8px（竖条删除后 0 8px 8px 0 的左直角残留不是用户投诉面）。
+ * 本文件与 FumihaLighting/custom_components/fumiha_lighting/static/tokens.css 的
+ * .cx-note/.fx-page/.fx-dialog::backdrop 块保持逐字一致——改任一侧必须同步另一侧并 bump 双仓版本；
+ * .fx-page 的双语义与全文件逐字同步说明见文件头注（FXH R1 #3）） */
 .cx-note {
   background: var(--fx-raise);
   padding: 8px 12px;

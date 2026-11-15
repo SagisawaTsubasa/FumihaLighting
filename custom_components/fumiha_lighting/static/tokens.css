@@ -74,6 +74,11 @@ body * {
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* A1 橡皮筋阻断（用户反馈 2026-11-15：手机上标签栏可上下拖动、松手
+     归位）：壳精确满高永不超高，document 级 overscroll 弹性唯一来源是
+     滚动链上抛——shell 与 .fx-tabs 双向设 overscroll-behavior:none 掐断
+     链路；页面元素侧由 _mount() inline overscrollBehavior:contain 收口 */
+  overscroll-behavior: none;
 }
 
 .fx-topbar {
@@ -179,6 +184,12 @@ body * {
   background: var(--fx-panel);
   border-bottom: 1px solid var(--fx-edge);
   overflow-x: auto;
+  overflow-y: hidden;
+  /* A1：overflow-x:auto 使纵轴 visible 按 CSS Overflow 规范计算为 auto，
+     tab 条成为隐式双轴滚动容器——竖向拖动在手机上经滚动链上抛触发
+     document 橡皮筋。显式 overflow-y:hidden 消除幽灵纵轴，
+     overscroll-behavior:none 掐断横滚到顶/底后的链路（FXH 2026-11-15） */
+  overscroll-behavior: none;
   scrollbar-width: thin;
   flex: none;
 }

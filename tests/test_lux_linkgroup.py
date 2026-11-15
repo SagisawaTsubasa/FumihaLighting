@@ -148,6 +148,17 @@ async def _async_return(value):
     return value
 
 
+def test_cross_curve_peers_readonly_view():
+    """FX-UX-126 决策5：cross_curve_peers 公开只读键集——web 序列化消费面
+    （ANL-F-003 禁调私有家规的公开替代）；键=对方灯实体，与曲线对象无关。"""
+    hass = _make_hass({})
+    a = _rt(hass, "a", "light.a", "sensor.a")
+    assert a.cross_curve_peers == []
+    a._cross_curves["light.b"] = curve_from_manual(0.8)
+    a._cross_curves["light.c"] = curve_from_manual(1.0)
+    assert sorted(a.cross_curve_peers) == ["light.b", "light.c"]
+
+
 # ---------------------------------------------------------------------------
 # _external_contribution 数值面（WP3.3）
 # ---------------------------------------------------------------------------

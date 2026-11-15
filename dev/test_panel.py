@@ -2031,6 +2031,39 @@ def run_checks(browser, base: str) -> None:
         and base_style["backdrop"] == "rgba(0, 0, 0, 0.25)",
         str(base_style),
     )
+    # FX-UX-126 决策5（B 呈现）：交叉曲线可见性钉——①弹窗引导 note（默认
+    # 夹具就绪名单空 →「已就绪：（无…）」）；②区卡 chip 默认缺失态
+    cross_note = page3.evaluate(
+        """() => {
+          const l = document.getElementById('luxpage');
+          const d = l.shadowRoot.querySelector('dialog.fx-dialog');
+          if (!d) return null;
+          for (const n of d.querySelectorAll('.cx-note')) {
+            if (n.textContent.indexOf('交叉曲线') === 0) return n.textContent;
+          }
+          return null;
+        }"""
+    )
+    check(
+        "lux link dialog: cross-curve guidance note (FX-UX-126)",
+        bool(cross_note) and "本区已就绪：（无" in cross_note,
+        str(cross_note),
+    )
+    cross_chip = page3.evaluate(
+        """() => {
+          const l = document.getElementById('luxpage');
+          for (const c of l.shadowRoot.querySelectorAll(
+              '[data-zone="lux1"] .cx-tag')) {
+            if (c.textContent.indexOf('交叉曲线') === 0) return c.textContent;
+          }
+          return null;
+        }"""
+    )
+    check(
+        "lux zone chip: cross-curve missing state by default (FX-UX-126)",
+        cross_chip == "交叉曲线缺失（近似兜底中）",
+        str(cross_chip),
+    )
     page3.evaluate(
         """() => {
           const l = document.getElementById('luxpage');
@@ -2039,6 +2072,41 @@ def run_checks(browser, base: str) -> None:
         }"""
     )
     page3.close()
+
+    # FX-UX-126 决策5（B 呈现）：交叉曲线 chip 就绪态钉（?crossready=1 —
+    # overview 夹具 cross_curve_ready=组员全名单 → chip 亮「就绪」）
+    page3b = browser.new_page(viewport={"width": 1280, "height": 900})
+    page3b.goto(base + "/?standalone=1&crossready=1")
+    page3b.evaluate("""async () => {
+      await import('/fumiha_lighting/page-lux.js?ver=1.0.0');
+      const luxEl = document.createElement('lux-balance-page');
+      luxEl.id = 'luxpage2';
+      document.body.appendChild(luxEl);
+      await new Promise(r => setTimeout(r, 100));
+      document.getElementById('luxpage2').hass = window.__mockHass;
+    }""")
+    try:
+        page3b.wait_for_function(
+            """() => {
+              const l = document.getElementById('luxpage2');
+              if (!l || !l.shadowRoot) return false;
+              for (const c of l.shadowRoot.querySelectorAll(
+                  '[data-zone="lux1"] .cx-tag')) {
+                if (c.textContent.indexOf('交叉曲线') === 0)
+                  return c.textContent === '交叉曲线就绪';
+              }
+              return false;
+            }""",
+            timeout=6000,
+        )
+        check("lux zone chip: cross-curve ready state (FX-UX-126)", True)
+    except Exception as e:
+        check(
+            "lux zone chip: cross-curve ready state (FX-UX-126)",
+            False,
+            detail=type(e).__name__ + ": " + str(e)[:200],
+        )
+    page3b.close()
 
     check("no page errors so far", not errors, "; ".join(errors[:3]))
 

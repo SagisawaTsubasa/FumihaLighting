@@ -1442,6 +1442,14 @@ class ZoneRuntime:
             self.notify()
         await self.storage.async_remove_cross_curve(light_entity)
 
+    # FX-UX-126 决策5（B 呈现）：交叉曲线就绪键集的公开只读视图——web 序
+    # 列化消费（ANL-F-003 家规：web 层禁调私有 _cross_curves）。键=对方灯
+    # 实体：本区能扣减谁的贡献=对方区校准的采样副产物（§WP3.2）。
+    @property
+    def cross_curve_peers(self) -> list[str]:
+        """Light entities this zone holds a ready cross curve for."""
+        return list(self._cross_curves.keys())
+
     def _attr_pct(self, state) -> float | None:
         brightness = state.attributes.get(ATTR_BRIGHTNESS) if state else None
         if isinstance(brightness, (int, float)) and brightness > 0:

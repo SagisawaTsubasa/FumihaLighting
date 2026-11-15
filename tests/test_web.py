@@ -135,6 +135,9 @@ def fake_lux_runtime(entry_id="lux1", zone="卫生间", **overrides):
         last_adjustment=None,
         light_entity="light.bath",
         lux_entity="sensor.bath_lux",
+        # FX-UX-126：交叉曲线就绪键集公开视图（web 序列化直接读）——真
+        # runtime 为 property，桩同形给属性（桩失真=回归网破洞，V1.4.0 教训）
+        cross_curve_peers=[],
     )
     for k, v in overrides.items():
         setattr(rt, k, v)
@@ -268,6 +271,28 @@ def test_lux_overview_link_group_fields():
     assert zones["湿区"]["max_step_pct"] == 30.0
     assert zones["书房"]["cross_fade"] == 0.5
     assert zones["书房"]["max_step_pct"] == 20.0
+
+
+def test_lux_overview_cross_curve_ready_fields():
+    """FX-UX-126 决策5：交叉曲线就绪名单（zone_name）随载荷下发——就绪=
+    本区持有对方灯曲线（cross_curve_peers 键集经 runtimes 映射为区名）；
+    未设组/无就绪恒 None；部分就绪只列就绪者。区卡 chip 与联动组弹窗引导
+    的数据源。桩按真形态分 light_entity（同实体两区会让映射歧义）。"""
+    hass = FakeHass()
+    wet = fake_lux_runtime("lux1", "湿区", light_entity="light.wet")
+    dry = fake_lux_runtime("lux2", "干区", light_entity="light.dry")
+    wet.link_group = "卫"
+    dry.link_group = "卫"
+    wet.cross_curve_peers = ["light.dry"]  # 湿区持有对干区灯的曲线
+    dry.cross_curve_peers = []  # 干区侧未产出（湿区校准未跑）
+    solo = fake_lux_runtime("lux3", "书房")
+    _lux_bucket(hass, wet, dry, solo)
+    resp = run(web.LuxOverviewView().get(FakeRequest(hass)))
+    payload = json.loads(json.dumps(resp.payload, allow_nan=False))
+    zones = {z["zone_name"]: z for z in payload["zones"]}
+    assert zones["湿区"]["cross_curve_ready"] == ["干区"]
+    assert zones["干区"]["cross_curve_ready"] is None
+    assert zones["书房"]["cross_curve_ready"] is None
 
 
 # ---------------------------------------------------------------------------

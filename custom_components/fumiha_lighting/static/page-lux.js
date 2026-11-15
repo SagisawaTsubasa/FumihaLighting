@@ -342,6 +342,23 @@ class LuxBalancePage extends HTMLElement {
     // V1.7.1 联动组面板内编辑：chip 可点开编辑弹窗（三键原藏在原生
     // options 流第 2 页「校准与降级」）；未设组给弱提示 chip 同样可点
     chips.push(this._linkChip(z));
+    // FX-UX-126 决策5（B 呈现）：交叉曲线就绪 chip——本区对组内全部组员
+    // 就绪才亮「就绪」态；缺失（含部分）提示近似兜底。未设组/无组员不显示
+    if (z.link_group && z.link_peers && z.link_peers.length) {
+      const ready = z.cross_curve_ready || [];
+      const missing = z.link_peers.filter((p) => ready.indexOf(p) < 0);
+      chips.push(
+        kit.el("span", {
+          class: "cx-tag",
+          text: missing.length
+            ? "交叉曲线缺失（近似兜底中）"
+            : "交叉曲线就绪",
+          title: missing.length
+            ? "对 " + missing.join("、") + " 的交叉曲线未产出（对方区各跑一次「开始校准」即产出），联动扣减按近似系数兜底"
+            : "组内交叉曲线已全部产出，联动扣减按实测曲线进行",
+        })
+      );
+    }
     if (z.ambient_lux_est != null) {
       chips.push(
         kit.el("span", {
@@ -524,6 +541,23 @@ class LuxBalancePage extends HTMLElement {
           text: "仅显示已加载区域",
         })
       : null;
+    // FX-UX-126 决策5（B 呈现）：交叉曲线引导——联动组无独立校准入口是
+    // 设计事实（曲线=普通区校准的采样副产物），弹窗是唯一讲得清「怎么
+    // 产出」的地方；就绪名单读 overview 区快照（本区能扣减谁=对方区
+    // 校准已跑，z.cross_curve_ready 为 zone_name 名单）
+    const crossNote =
+      cur.link_group && z.link_peers && z.link_peers.length
+        ? kit.el("div", {
+            class: "cx-note",
+            style: { margin: "-3px 0 5px", color: "var(--fx-sub)" },
+            text:
+              "交叉曲线：组内每区各跑一次「开始校准」即产出双向交叉曲线。" +
+              "本区已就绪：" +
+              ((z.cross_curve_ready && z.cross_curve_ready.length)
+                ? z.cross_curve_ready.join("、")
+                : "（无，联动扣减按近似系数兜底）"),
+          })
+        : null;
     // ANL-F-149：校准中保存会经 update listener 触发 entry reload，
     // reload 取消 _cal_task 且新 runtime 无痕（cal_last_error=None）——
     // 15~40 分钟 sweep 被一次点击静默丢弃必须有醒目提示。软提示路线：
@@ -550,6 +584,7 @@ class LuxBalancePage extends HTMLElement {
         calWarn,
         membersNote,
         membersFoot,
+        crossNote,
         row("联动组标签", groupInp),
         row("交叉系数（0.1–1.0）", fadeInp),
         row("缓变步幅（5–50，%）", stepInp),

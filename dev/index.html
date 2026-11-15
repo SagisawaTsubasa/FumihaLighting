@@ -109,6 +109,11 @@
       //（runtime.opts 读穿），grace 三键收敛判据的数据面
       link_group: luxLinkState.group, link_peers: luxLinkPeers(),
       cross_fade: luxLinkState.cross_fade, max_step_pct: luxLinkState.max_step_pct,
+      // FX-UX-126 决策5（B 呈现）：交叉曲线就绪名单（zone_name）——
+      // ?crossready=1 → 组内全就绪（chip「交叉曲线就绪」/引导报就绪名单）；
+      // 默认缺失（chip「缺失（近似兜底中）」/引导「已就绪：（无…）」）
+      cross_curve_ready:
+        params.has("crossready") && luxLinkPeers() ? luxLinkPeers() : null,
     }];
     // R4 ANL-F-166 双区夹具：?twozones=1 — 干区(lux2) 独立联动组状态
     if (params.has("twozones")) {

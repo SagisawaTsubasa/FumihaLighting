@@ -1564,7 +1564,7 @@ class NightLightManager:
             # 否则刚开灯的默认态会被误判成手动调节 (P3 竞态)
             return
         if (
-            machine.state == LightState.SETTING
+            machine.state in (LightState.PENDING, LightState.SETTING)
             and machine.target == (step.brightness, step.kelvin)
         ):
             # FX-UX-126 R1 F-580：锚点步与 anchor trigger/_one 的 in-flight
@@ -1572,7 +1572,12 @@ class NightLightManager:
             # trigger 先执行，service await 让出窗口内计划步读到旧灯态+
             # 未推进的 expected，同参 300s 渐变后发会把 5s 归位反超成分钟
             # 级。同参即让位（归位由 in-flight 命令负责）；目标不同照常
-            # 跟随，不影响带内正常步进。
+            # 跟随，不影响带内正常步进。R2 F-613：PENDING 也让位——A3
+            # 归还 await（lux 区灯直控前归还）在同一窗口让出事件循环，
+            # 该窗口内 target 已提前写（见 _async_process_light）。
+            _LOGGER.debug(
+                "%s step yields to in-flight same-target command", step.entity_id
+            )
             return
         if machine.band_key != step.band_key:
             # 带入口：清接管；预期值仅入口步播种（=起点参数）。
@@ -1903,6 +1908,21 @@ class NightLightManager:
                 else:
                     # 失败不保留播种值 (P2-2)，退回中途入表语义
                     machine.expected = None
+                    # R2 F-612：锚点步是本带最后一步（schedule.py 末位
+                    # append(anchor)），同参守卫让位+带内无后续步——P2b
+                    # 「下一步重试」兜底在锚点失效。verify_delay 后一次
+                    # 有界重试（仍 5s 平滑）；重试只负责把灯归位，成败由
+                    # verify 状态呈现，不再递归失败处理。
+                    self._delay(
+                        self.verify_delay,
+                        lambda _now: self.hass.async_create_task(
+                            self._async_process_light(
+                                entity_id,
+                                *params,
+                                transition_s=_ANCHOR_SNAP_TRANSITION_S,
+                            )
+                        ),
+                    )
 
         # V1.6.0 单灯化：skip=本轮已被 CI 接管的灯（零直控）；其余灯照常
         # 锚点归位（含 CI 灯 ensure 失败的日间参数 fallback）
@@ -1971,6 +1991,11 @@ class NightLightManager:
             return False
         machine = self.machines[entity_id]
         machine.state = LightState.PENDING
+        # R2 F-613：in-flight 标记提前到 PENDING——A3 归还 await 让出事件
+        # 循环的窗口内，计划步同参守卫靠 target 识别本命令。target 语义
+        # =「最近一次试图下发的参数」（matched/SKIPPED 早退也留值，均
+        # 为显示面瞬态，无判定消费点）。
+        machine.target = (brightness, kelvin)
         state = self.hass.states.get(entity_id)
 
         if state is None or state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
@@ -2007,9 +2032,8 @@ class NightLightManager:
             _LOGGER.debug("%s already matches target, no service call", entity_id)
             return True
 
-        # 状态不符，下发控制
+        # 状态不符，下发控制（target 已在 PENDING 入口写：R2 F-613 in-flight 标记）
         machine.state = LightState.SETTING
-        machine.target = (brightness, kelvin)
         service_data = {
             ATTR_ENTITY_ID: entity_id,
             ATTR_BRIGHTNESS: self._to_byte(brightness),
@@ -2038,11 +2062,16 @@ class NightLightManager:
             _LOGGER.error("%s service call failed: %s", entity_id, err)
             return False
 
-        # 延迟验证，避免灯具状态尚未刷新；补偿原生 transition 时长——
-        # verify 与渐变收尾同刻判定会在灯具稍慢时误报 MISMATCH（FX-UX-126
-        # R1 F-580 同源：5s 锚点渐变 vs 5s verify）
+        # 延迟验证，避免灯具状态尚未刷新；补偿原生 transition 时长——verify
+        # 与渐变收尾同刻判定会在灯具稍慢时误报 MISMATCH（R1 F-580：5s 锚点
+        # 渐变 vs 5s verify）。R2 F-611：补偿只用于短渐变（锚点/settle 5s）
+        # ——计划步 300s 渐变的 verify 本是「步进到位性」检查而非整段渐变
+        # 终态检查（下一步 300s 后覆盖），整段补偿会把 SETTING/判定窗口拉到
+        # 305s、带内关灯必出假 MISMATCH；阈值 30s 覆盖锚点/settle 5s，
+        # transition_interval 最小 1min=60s 恒在外。
         self._delay(
-            self.verify_delay + (transition_s or 0),
+            self.verify_delay
+            + (transition_s if transition_s is not None and transition_s <= 30 else 0),
             lambda _now: self.hass.async_create_task(self._async_verify(entity_id)),
         )
         return True
@@ -2053,8 +2082,16 @@ class NightLightManager:
             return
         machine = self.machines[entity_id]
         state = self.hass.states.get(entity_id)
+        if state is None or state.state != STATE_ON:
+            # R2 F-611：verify 窗口内灯已被关（用户关灯/调光）或实体消失
+            # → 不是控制失败，SKIPPED_OFF 直接返回——与计划步 P2a「关灯/
+            # 无亮度上报不判接管」口径对齐（_matches 对 OFF 恒 False，旧
+            # 路径把关灯误报成 MISMATCH+WARNING，页面挂「偏离」红 chip）
+            machine.state = LightState.SKIPPED_OFF
+            _LOGGER.debug("%s verify skipped: light is off/missing", entity_id)
+            return
         target = machine.target or self.params_for(entity_id, MODE_NIGHT)
-        if state is not None and self._matches(state, *target):
+        if self._matches(state, *target):
             machine.state = LightState.VERIFIED
             machine.last_error = None
             machine.applied = target

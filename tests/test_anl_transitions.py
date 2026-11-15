@@ -828,3 +828,86 @@ def test_verify_delay_compensates_transition():
     stubs.CALL_LATER_CALLS.clear()
     run(m._async_process_light(LIGHT, 94, 3915, allow_turn_on=False))
     assert stubs.CALL_LATER_CALLS[-1][0] == 5  # 无 transition 不补偿
+
+
+def test_verify_long_transition_keeps_base_delay(caplog):
+    """R2 F-611：补偿只用于短渐变（≤30s）——计划步 300s 渐变的 verify
+    保持 verify_delay（步进到位性检查），判定窗口不放大到 305s。"""
+    m = make_manager()
+    m.hass.states.mapping[LIGHT] = _FakeState("on", 64, 2200)
+    m.hass.services = _RecordingServices([])
+    stubs.CALL_LATER_CALLS.clear()
+    run(m._async_process_light(
+        LIGHT, 100, 4000, allow_turn_on=False, transition_s=300))
+    assert stubs.CALL_LATER_CALLS[-1][0] == 5  # 300s 不补偿
+
+
+def test_verify_off_light_skipped_not_mismatch(caplog):
+    """R2 F-611：verify 窗口内灯被关（用户关灯/调光）→ SKIPPED_OFF 直接
+    返回、零 WARNING——与计划步 P2a「关灯不判接管」口径对齐（_matches 对
+    OFF 恒 False，旧路径把关灯误报成 MISMATCH+WARNING+「偏离」红 chip）。"""
+    import logging
+
+    m = make_manager()
+    m.hass.states.mapping[LIGHT] = _FakeState("on", 64, 2200)
+    m.hass.services = _RecordingServices([])
+    stubs.CALL_LATER_CALLS.clear()
+    run(m._async_process_light(
+        LIGHT, 100, 4000, allow_turn_on=False, transition_s=300))
+    m.hass.states.mapping[LIGHT] = _FakeState("off")  # verify 到点前关灯
+    tasks = []
+    m.hass.async_create_task = tasks.append
+    logger_name = "custom_components.fumiha_lighting.anl.manager"
+    with caplog.at_level(logging.WARNING, logger=logger_name):
+        stubs.flush_deferred_callbacks()
+        run(tasks[0])
+    assert m.machines[LIGHT].state == LightState.SKIPPED_OFF
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_async_verify_off_direct():
+    """R2 F-611：_async_verify 对 off 灯直测 → SKIPPED_OFF（不 WARNING）。"""
+    m = make_manager()
+    m.hass.states.mapping[LIGHT] = _FakeState("off")
+    run(m._async_verify(LIGHT))
+    assert m.machines[LIGHT].state == LightState.SKIPPED_OFF
+
+
+def test_anchor_failure_bounded_retry():
+    """R2 F-612：锚点 5s 下发失败 → verify_delay 后一次有界重试（仍 5s
+    平滑）——锚点步是带最后一步（同参守卫让位+无后续步），P2b「下一步
+    重试」兜底在锚点失效。"""
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
+    m = make_manager()
+    m.hass.states.mapping[LIGHT] = _FakeState("on", 64, 2200)
+    calls = []
+    m._async_process_light = _record(calls, ok=False)  # 首发失败
+    run(m.async_trigger("anchor"))
+    assert calls == [(LIGHT, 100, 4000, 5)]
+    assert m.machines[LIGHT].expected is None  # 失败退回中途入表语义
+    retry = [c for c in stubs.CALL_LATER_CALLS if c[0] == 5]
+    assert len(retry) == 1  # verify_delay 后重试调度恰一条
+    calls.clear()
+    m._async_process_light = _record(calls)  # 重试成功
+    tasks = []
+    m.hass.async_create_task = tasks.append
+    stubs.flush_deferred_callbacks()
+    run(tasks[0])
+    assert calls == [(LIGHT, 100, 4000, 5)]  # 重试仍带平滑
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
+
+
+def test_anchor_step_yields_in_pending_window():
+    """R2 F-613：A3 归还 await 的 PENDING 窗口内计划步同参让位——守卫
+    条件扩 (PENDING, SETTING)，target 已在 PENDING 入口提前写；旧码只认
+    SETTING，本钉回退即红（F-580 残量在 lux 区灯上复现的防线）。"""
+    m = make_manager()
+    m.hass.states.mapping[LIGHT] = _FakeState("on", 64, 2200)
+    machine = m.machines[LIGHT]
+    machine.state = LightState.PENDING
+    machine.target = (100, 4000)  # _one 在 A3 归还 await 窗口已提前写
+    calls = []
+    m._async_process_light = _record(calls)
+    run(m._async_run_steps(
+        [PlanStep(LIGHT, 100, 4000, BAND_KEY, entrance=True)], WHEN))
+    assert calls == []  # PENDING 同参让位

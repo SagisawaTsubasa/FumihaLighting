@@ -86,6 +86,16 @@
   function luxZones() {
     // ?cal=1 → 校准进行中态（取消按钮依赖此渲染，FL-IMP-26）
     const calibrating = new URLSearchParams(location.search).get("cal") === "1";
+    // R2 F-614：就绪名单态（见下方 cross_curve_ready 注释）
+    var readyNames = null;
+    var readyIds = null;
+    if (params.has("crossready") && luxLinkPeers()) {
+      readyNames = luxLinkPeers();
+      readyIds = ["lux2"];
+    } else if (params.has("samename")) {
+      readyNames = ["干区"];
+      readyIds = null;
+    }
     var zones = [{
       entry_id: "lux1", zone_name: "卫生间", mode: calibrating ? "calibrating" : "active",
       cal_progress: calibrating ? "上行 35%" : "",
@@ -112,13 +122,12 @@
       // 按 id 比对，显示仍用 zone_name
       link_peer_ids: luxLinkPeers() ? ["lux2"] : null,
       cross_fade: luxLinkState.cross_fade, max_step_pct: luxLinkState.max_step_pct,
-      // FX-UX-126 决策5（B 呈现）：交叉曲线就绪名单（zone_name）——
+      // FX-UX-126 决策5（B 呈现）+ R2 F-614：交叉曲线就绪名单——
       // ?crossready=1 → 组内全就绪（chip「交叉曲线就绪」/引导报就绪名单）；
-      // 默认缺失（chip「缺失（近似兜底中）」/引导「已就绪：（无…）」）
-      cross_curve_ready:
-        params.has("crossready") && luxLinkPeers() ? luxLinkPeers() : null,
-      cross_curve_ready_ids:
-        params.has("crossready") && luxLinkPeers() ? ["lux2"] : null,
+      // ?samename=1 → 同名判别夹具（ready 名单含「干区」但 ids 为空：
+      // zone_name 比对误报「就绪」、entry_id 判定正确判「缺失」）；默认缺失
+      cross_curve_ready: readyNames,
+      cross_curve_ready_ids: readyIds,
     }];
     // R4 ANL-F-166 双区夹具：?twozones=1 — 干区(lux2) 独立联动组状态
     if (params.has("twozones")) {

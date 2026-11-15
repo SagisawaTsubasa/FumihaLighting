@@ -2110,6 +2110,45 @@ def run_checks(browser, base: str) -> None:
         )
     page3b.close()
 
+    # R2 F-614：同名区判别钉（?samename=1 — ready 名单含「干区」但 ids
+    # 为空）：entry_id 判定正确报「缺失」；zone_name 比对回退会误报
+    # 「就绪」→ 本钉红。兼钉「有 link_peers 无 ids → 保守判缺失」兜底。
+    page3c = browser.new_page(viewport={"width": 1280, "height": 900})
+    page3c.goto(base + "/?standalone=1&samename=1")
+    page3c.evaluate("""async () => {
+      await import('/fumiha_lighting/page-lux.js?ver=1.0.0');
+      const luxEl = document.createElement('lux-balance-page');
+      luxEl.id = 'luxpage3';
+      document.body.appendChild(luxEl);
+      await new Promise(r => setTimeout(r, 100));
+      document.getElementById('luxpage3').hass = window.__mockHass;
+    }""")
+    try:
+        page3c.wait_for_function(
+            """() => {
+              const l = document.getElementById('luxpage3');
+              if (!l || !l.shadowRoot) return false;
+              for (const c of l.shadowRoot.querySelectorAll(
+                  '[data-zone="lux1"] .cx-tag')) {
+                if (c.textContent.indexOf('交叉曲线') === 0)
+                  return c.textContent === '交叉曲线缺失（近似兜底中）';
+              }
+              return false;
+            }""",
+            timeout=6000,
+        )
+        check(
+            "lux zone chip: samename fixture stays missing by id (FX-UX-126 R2)",
+            True,
+        )
+    except Exception as e:
+        check(
+            "lux zone chip: samename fixture stays missing by id (FX-UX-126 R2)",
+            False,
+            detail=type(e).__name__ + ": " + str(e)[:200],
+        )
+    page3c.close()
+
     check("no page errors so far", not errors, "; ".join(errors[:3]))
 
     shots = [

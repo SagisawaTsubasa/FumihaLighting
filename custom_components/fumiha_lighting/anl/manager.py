@@ -1563,6 +1563,17 @@ class NightLightManager:
             # 开灯监听已在处理（settle delay 中），等其重新播种预期，
             # 否则刚开灯的默认态会被误判成手动调节 (P3 竞态)
             return
+        if (
+            machine.state == LightState.SETTING
+            and machine.target == (step.brightness, step.kelvin)
+        ):
+            # FX-UX-126 R1 F-580：锚点步与 anchor trigger/_one 的 in-flight
+            # 同参下发竞态——_schedule_trigger 先于计划步注册，同刻回调
+            # trigger 先执行，service await 让出窗口内计划步读到旧灯态+
+            # 未推进的 expected，同参 300s 渐变后发会把 5s 归位反超成分钟
+            # 级。同参即让位（归位由 in-flight 命令负责）；目标不同照常
+            # 跟随，不影响带内正常步进。
+            return
         if machine.band_key != step.band_key:
             # 带入口：清接管；预期值仅入口步播种（=起点参数）。
             # 入带时不在曲线上的灯（已处夜间参数/被手动调过）在这里
@@ -1762,7 +1773,12 @@ class NightLightManager:
         拉回一次并重新播种，而不是把下发失败误判成手动调节。
         """
         machine = self.machines.get(entity_id)
-        ok = await self._async_process_light(entity_id, brightness, kelvin)
+        # FX-UX-126 R1 F-579：settle 重发带锚点平滑 transition——无渐变重发
+        # 会在 5s 渐变 ~1s 处截断（锚点归位/自开灯 off→on 事件进 settle 的
+        # 同参场景）；对手动开灯同样更顺滑。
+        ok = await self._async_process_light(
+            entity_id, brightness, kelvin, transition_s=_ANCHOR_SNAP_TRANSITION_S
+        )
         if machine is None:
             return
         if ok:
@@ -2022,9 +2038,11 @@ class NightLightManager:
             _LOGGER.error("%s service call failed: %s", entity_id, err)
             return False
 
-        # 延迟验证，避免灯具状态尚未刷新
+        # 延迟验证，避免灯具状态尚未刷新；补偿原生 transition 时长——
+        # verify 与渐变收尾同刻判定会在灯具稍慢时误报 MISMATCH（FX-UX-126
+        # R1 F-580 同源：5s 锚点渐变 vs 5s verify）
         self._delay(
-            self.verify_delay,
+            self.verify_delay + (transition_s or 0),
             lambda _now: self.hass.async_create_task(self._async_verify(entity_id)),
         )
         return True

@@ -343,10 +343,17 @@ class LuxBalancePage extends HTMLElement {
     // options 流第 2 页「校准与降级」）；未设组给弱提示 chip 同样可点
     chips.push(this._linkChip(z));
     // FX-UX-126 决策5（B 呈现）：交叉曲线就绪 chip——本区对组内全部组员
-    // 就绪才亮「就绪」态；缺失（含部分）提示近似兜底。未设组/无组员不显示
+    // 就绪才亮「就绪」态；缺失（含部分）提示近似兜底。未设组/无组员不显示。
+    // FX-UX-126 R1 F-582：判定按 entry_id（link_peer_ids/cross_curve_ready
+    // _ids 同序名单）——zone_name 无唯一性约束，同名区会让差集误报「就绪」；
+    // ids 缺失时 undefined 命不中 readyIds → 保守判缺失（宁缺勿谎）。
+    // 显示仍用 zone_name（id 对用户无意义）。
     if (z.link_group && z.link_peers && z.link_peers.length) {
-      const ready = z.cross_curve_ready || [];
-      const missing = z.link_peers.filter((p) => ready.indexOf(p) < 0);
+      const readyIds = z.cross_curve_ready_ids || [];
+      const peerIds = z.link_peer_ids || [];
+      const missing = z.link_peers
+        .map((name, i) => ({ name, id: peerIds[i] }))
+        .filter((p) => readyIds.indexOf(p.id) < 0);
       chips.push(
         kit.el("span", {
           class: "cx-tag",
@@ -354,7 +361,7 @@ class LuxBalancePage extends HTMLElement {
             ? "交叉曲线缺失（近似兜底中）"
             : "交叉曲线就绪",
           title: missing.length
-            ? "对 " + missing.join("、") + " 的交叉曲线未产出（对方区各跑一次「开始校准」即产出），联动扣减按近似系数兜底"
+            ? "对 " + missing.map((p) => p.name).join("、") + " 的交叉曲线未产出（对方区各跑一次「开始校准」即产出），联动扣减按近似系数兜底"
             : "组内交叉曲线已全部产出，联动扣减按实测曲线进行",
         })
       );

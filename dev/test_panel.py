@@ -1406,9 +1406,11 @@ def run_checks(browser, base: str) -> None:
         str(ci_state),
     )
 
-    # F-062 钉：CI 开 → 两个过渡输入挂「日侧过渡带被跳过」悬停提示
+    # F-062 钉：CI 开 → 两个过渡输入挂「日侧插值步被跳过」悬停提示
+    # （FX-UX-126 R1 F-581：文案改精确表述——跳过的只是日侧插值步，
+    # 夜间锚点归位不受 start_transition 取值影响，与新口径摘要不互斥）
     trans_titles = page5.evaluate(READ_TRANS_TITLES_JS)
-    ci_skip_note = "日间恒照度开启时，日侧过渡带对被接管的灯跳过，此值暂不生效"
+    ci_skip_note = "日侧插值步对被接管的灯跳过；夜间锚点仍按锚点归位，不受此值影响"
     check(
         "anl ?ci=1: CI on puts skip tooltip on both transition inputs",
         bool(trans_titles) and trans_titles["start"] == ci_skip_note

@@ -723,7 +723,10 @@ class AnlPage extends HTMLElement {
       // F-062（V1.5.0）：CI 开时日侧过渡带对该灯被跳过——两个过渡输入挂
       // 悬停提示，值不禁用（存储保留，CI 关后恢复生效）；天亮过渡的置灰
       // 提示优先（日间模式关时 CI 行已隐藏，无从谈起）
-      const ciTransNote = "日间恒照度开启时，日侧过渡带对被接管的灯跳过，此值暂不生效";
+      // FX-UX-126 R1 F-581：旧文案「此值暂不生效」与新口径 transitions_active
+      // （全 CI 组夜间锚点归位仍生效→摘要报「过渡带开启」）互斥——改精确
+      // 表述：跳过的只是日侧插值步，锚点归位与 start_transition 取值无关
+      const ciTransNote = "日侧插值步对被接管的灯跳过；夜间锚点仍按锚点归位，不受此值影响";
       const ciNoteOn = ciAny && dayOn;
       inputs.start_transition.el.title = ciNoteOn ? ciTransNote : "";
       const endTransInp = inputs.end_transition.el;

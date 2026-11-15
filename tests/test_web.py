@@ -293,6 +293,12 @@ def test_lux_overview_cross_curve_ready_fields():
     assert zones["湿区"]["cross_curve_ready"] == ["干区"]
     assert zones["干区"]["cross_curve_ready"] is None
     assert zones["书房"]["cross_curve_ready"] is None
+    # R1 F-582：身份键名单（entry_id，与 zone_name 名单同序）——同名区按
+    # id 比对的前端数据面；未设组/无组员恒 None
+    assert zones["湿区"]["link_peer_ids"] == ["lux2"]
+    assert zones["湿区"]["cross_curve_ready_ids"] == ["lux2"]
+    assert zones["干区"]["cross_curve_ready_ids"] is None
+    assert zones["书房"]["link_peer_ids"] is None
 
 
 # ---------------------------------------------------------------------------

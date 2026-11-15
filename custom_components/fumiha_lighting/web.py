@@ -198,22 +198,30 @@ def _serialize_lux_zone(runtime, runtimes=None) -> dict:
     link_group = getattr(runtime, "link_group", "") or None
     link_peers = None
     cross_curve_ready = None
+    link_peer_ids = None
+    cross_curve_ready_ids = None
     if link_group and runtimes:
         # FX-UX-126 决策5（B 呈现）：组员单遍收集——link_peers 全名单 +
         # cross_curve_ready 就绪子集（本区持有对方灯的交叉曲线；键集读
         # runtime 公开 property cross_curve_peers，ANL-F-003 禁调私有）。
         # 就绪名单按对方区 zone_name 下发，页面 chip/弹窗引导直接消费。
         peer_zones: list[str] = []
+        peer_ids: list[str] = []
         ready_zones: list[str] = []
+        ready_ids: list[str] = []
         ready_keys = set(runtime.cross_curve_peers)
         for other in runtimes.values():
             if other is runtime or getattr(other, "link_group", "") != link_group:
                 continue
             peer_zones.append(other.zone_name)
+            peer_ids.append(other.entry_id)
             if other.light_entity in ready_keys:
                 ready_zones.append(other.zone_name)
+                ready_ids.append(other.entry_id)
         link_peers = peer_zones or None
         cross_curve_ready = ready_zones or None
+        link_peer_ids = peer_ids or None
+        cross_curve_ready_ids = ready_ids or None
     return {
         "entry_id": runtime.entry_id,
         "zone_name": runtime.zone_name,
@@ -249,6 +257,10 @@ def _serialize_lux_zone(runtime, runtimes=None) -> dict:
         # FX-UX-126 决策5（B 呈现）：交叉曲线就绪名单（zone_name）——区卡
         # chip 与联动组弹窗引导消费；未设组/无就绪曲线恒 None
         "cross_curve_ready": cross_curve_ready,
+        # FX-UX-126 R1 F-582：身份键名单（entry_id，与上面两名单同序）——
+        # zone_name 无唯一性约束，同名区会让就绪差集误报；前端判定按 id
+        "link_peer_ids": link_peer_ids,
+        "cross_curve_ready_ids": cross_curve_ready_ids,
         # ANL-F-164：grace 三键收敛判据的数据面——只调 cross_fade/max_step_
         # pct 的保存组标签不变，旧 overview 快照（保存前已发出、保存后才落
         # 地）的 link_group 与保存值相同，前端只比标签会把旧快照误判收敛清

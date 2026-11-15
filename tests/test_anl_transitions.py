@@ -754,3 +754,77 @@ def test_transitions_active_ci_group_day_target_band_still_gated():
     又落日间接管面，带对全组零生效（行为一致钉）。"""
     m = make_ci_manager(**{CONF_START_TRANSITION: 0})
     assert m.transitions_active is False
+
+
+def test_settle_apply_carries_smooth_transition():
+    """R1 F-579：settle 重发带锚点平滑 transition=5s——无渐变重发会在
+    锚点 5s 渐变 ~1s 处截断（锚点归位/自开灯同参场景的根因修复）。"""
+    m = make_manager()
+    m.hass.states.mapping[LIGHT] = _FakeState("on", 64, 2200)
+    calls = []
+    m._async_process_light = _record(calls)
+    run(m._async_settle_apply(LIGHT, 100, 4000))
+    assert calls == [(LIGHT, 100, 4000, 5)]
+
+
+def test_listener_settle_carries_smooth_transition():
+    """R1 F-579 全链钉：夜间开灯监听（off→on）→ settle_delay 到点 → settle
+    重发夜间参数带 5s 平滑——anl 自开灯 off→on 事件同样进监听（无法区分
+    谁开的灯），5s 归位被 settle 无渐变重发截断的场景不再发生。"""
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)
+    m = make_manager()
+    m.hass.states.mapping[LIGHT] = _FakeState("off")
+    stubs.CALL_LATER_CALLS.clear()
+    event = {
+        "old_state": _FakeState("off"),
+        "new_state": _FakeState("on", 64, 2200),
+        "entity_id": LIGHT,
+    }
+    run(m._async_light_state_changed(SimpleNamespace(data=event)))
+    assert [d for d, _a in stubs.CALL_LATER_CALLS] == [1]  # settle_delay=1s
+    tasks = []
+    m.hass.async_create_task = tasks.append  # 收集 settle 协程（桩忠实度）
+    settle_calls = []
+    m._async_process_light = _record(settle_calls)  # 验下发形态（判别力）
+    stubs.flush_deferred_callbacks()
+    run(tasks[0])
+    assert settle_calls == [(LIGHT, 25, 2200, 5)]  # 夜参数重发带平滑（F-579）
+    assert m.machines[LIGHT].applied == (25, 2200)  # 夜间参数播种
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
+
+
+def test_anchor_step_yields_to_inflight_same_target():
+    """R1 F-580：锚点步与 anchor trigger/_one 的同参 in-flight 竞态——
+    machine.state=SETTING 且 target 同参时计划步让位（零下发），5s 归位
+    不被 300s 计划步渐变反超；目标不同照常跟随不受守卫影响。"""
+    m = make_manager()
+    m.hass.states.mapping[LIGHT] = _FakeState("on", 64, 2200)  # 渐变中旧值
+    machine = m.machines[LIGHT]
+    machine.state = LightState.SETTING
+    machine.target = (100, 4000)  # _one 的 in-flight 同参目标
+    calls = []
+    m._async_process_light = _record(calls)
+    run(m._async_run_steps(
+        [PlanStep(LIGHT, 100, 4000, BAND_KEY, entrance=True)], WHEN))
+    assert calls == []  # 同参让位，零下发
+    machine.target = (94, 3915)  # 上一命令异参 → 守卫不拦
+    run(m._async_run_steps(
+        [PlanStep(LIGHT, 100, 4000, BAND_KEY, entrance=True)], WHEN))
+    assert calls == [(LIGHT, 100, 4000, 300)]
+
+
+def test_verify_delay_compensates_transition():
+    """R1 F-580 同源：verify 延迟按 transition 补偿（5s 渐变 vs 5s verify
+    同刻判定会在过渡收尾稍晚时误报 MISMATCH）；无 transition 保持原值。"""
+    m = make_manager()
+    m.hass.states.mapping[LIGHT] = _FakeState("on", 64, 2200)
+    svc = []
+    m.hass.services = _RecordingServices(svc)
+    stubs.CALL_LATER_CALLS.clear()
+    run(m._async_process_light(
+        LIGHT, 100, 4000, allow_turn_on=False, transition_s=5))
+    assert svc and svc[0][2].get("transition") == 5
+    assert stubs.CALL_LATER_CALLS[-1][0] == 10  # verify 5s + transition 5s
+    stubs.CALL_LATER_CALLS.clear()
+    run(m._async_process_light(LIGHT, 94, 3915, allow_turn_on=False))
+    assert stubs.CALL_LATER_CALLS[-1][0] == 5  # 无 transition 不补偿

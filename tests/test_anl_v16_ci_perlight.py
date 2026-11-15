@@ -157,7 +157,7 @@ def test_trigger_day_mixed_group_takes_over_ci_light_only():
     assert svc == [("light", "turn_on", {"entity_id": VIRT})]
     # CI 灯零直控 + machine 归位；非 CI 灯复活日间参数直控
     assert LIGHT not in [c[0] for c in calls]
-    assert calls == [(SECOND, 100, 4000, None)]
+    assert calls == [(SECOND, 100, 4000, 5)]  # 锚点平滑（FX-UX-126）
     assert m.machines[LIGHT].state == LightState.IDLE
     assert m.machines[LIGHT].expected is None
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)
@@ -174,7 +174,7 @@ def test_trigger_day_mixed_group_ensure_fail_falls_back_per_light():
     m._async_process_light = _record(calls)
     run(m.async_trigger("test"))
     assert svc == []  # 未接管
-    assert sorted(calls) == [(LIGHT, 100, 4000, None), (SECOND, 100, 4000, None)]
+    assert sorted(calls) == [(LIGHT, 100, 4000, 5), (SECOND, 100, 4000, 5)]
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)
 
 
@@ -189,7 +189,7 @@ def test_trigger_night_mixed_group_hands_back_then_drives_both():
     m._async_process_light = _record(calls)
     run(m.async_trigger("test"))
     assert svc == [("light", "turn_off", {"entity_id": VIRT})]
-    assert sorted(calls) == [(LIGHT, 25, 2200, None), (SECOND, 25, 2200, None)]
+    assert sorted(calls) == [(LIGHT, 25, 2200, 5), (SECOND, 25, 2200, 5)]
     stubs._FakeClock.now_dt = WHEN_DAY
 
 
@@ -280,17 +280,17 @@ def test_rebuild_plan_day_side_band_steps_only_for_non_ci_lights():
 
 
 def test_transitions_active_mixed_group_day_side_band_alive():
-    """mixed 组：日侧带对非 CI 灯复活 → chip True（全 CI 组 False 由
-    test_anl_v15_r2_fixes 既有钉覆盖）。"""
+    """mixed 组：日侧带对非 CI 灯复活 → chip True（FX-UX-126 决策6 后全
+    CI 组也 True——start 带锚点步时刻入夜间段，另钉 test_anl_transitions）。"""
     stubs._FakeClock.now_dt = WHEN_DAY
     m = make_mixed_manager()
     assert m.transitions_active is True
-    # 全部灯被接管 → 仅剩日侧带不谎报（SECOND 也要 ∈ 反查表才算接管）
+    # 全部灯被接管 → start 带（target=night）仍生效：锚点步不受 CI 管辖
     m2 = make_ci_manager(
         **{CONF_LIGHTS: [LIGHT, SECOND], CONF_DAY_CI_LIGHTS: [LIGHT, SECOND]}
     )
     stubs.seed_light_zone(m2.hass, "lux-test2", SECOND, "干区", VIRT2)
-    assert m2.transitions_active is False
+    assert m2.transitions_active is True
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 23, 0)
 
 

@@ -561,10 +561,13 @@ def test_snapshot_day_ci_active_follows_configured():
 # ---------------------------------------------------------------------------
 
 
-def test_transitions_active_false_when_ci_filters_all_day_side_bands():
-    """CI 开 + 仅 start/end 过渡（day 侧带全滤）→ transitions_active False。"""
+def test_transitions_active_ci_group_night_target_band_alive():
+    """FX-UX-126 决策6 口径：CI 开 + 仅 start/end 过渡 → transitions_active
+    True——start 带（day→night）锚点步时刻已入夜间段、夜间归位不受 CI
+    管辖，旧口径 from==DAY 一腿把它误并日侧带、全组 CI 时谎报「过渡带关闭」。
+    end 带（target==day）的 has_non_ci 门维持，另钉于 test_anl_transitions。"""
     m = make_ci_manager()
-    assert m.transitions_active is False
+    assert m.transitions_active is True
 
 
 def test_transitions_active_true_without_ci():

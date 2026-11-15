@@ -374,7 +374,7 @@ def test_f084_day_trigger_calibrating_falls_back_to_day_params():
     m._async_process_light = _record(calls)
     run(m.async_trigger("test"))
     assert svc == []  # 校准中不发 turn_on（假成功防线在预检层）
-    assert calls == [(LIGHT, 100, 4000, None)]  # 回落日间参数直控
+    assert calls == [(LIGHT, 100, 4000, 5)]  # 回落日间参数直控（锚点平滑）
     machine = m.machines[LIGHT]
     assert machine.expected == (100, 4000)
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
@@ -474,7 +474,7 @@ def test_f086_night_trigger_release_skipped_when_other_entry_shares():
     m._async_process_light = _record(calls)
     run(m.async_trigger("test"))
     assert svc == []  # 跨条目引用在：归还跳过
-    assert calls == [(LIGHT, 25, 2200, None)]  # 夜间直控照常
+    assert calls == [(LIGHT, 25, 2200, 5)]  # 夜间直控照常（锚点平滑）
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
 
 
@@ -499,7 +499,7 @@ def test_f086_self_entry_does_not_block_release():
     m._async_process_light = _record(calls)
     run(m.async_trigger("test"))
     assert svc == [("light", "turn_off", {"entity_id": VIRT})]  # 自条目不阻塞归还
-    assert calls == [(LIGHT, 25, 2200, None)]  # 夜间直控照常
+    assert calls == [(LIGHT, 25, 2200, 5)]  # 夜间直控照常（锚点平滑）
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
 
 

@@ -116,14 +116,17 @@ def run(coro):
 
 
 def test_band_entry_offcurve_light_taken_over():
-    """入带时已在夜间参数（不在曲线上）→ 判接管，整带不动、零下发。"""
+    """钉②anl 已驱动过（applied 非空）后入口实测偏离 → 判接管、整带不动、
+    零下发（FX-UX-126 决策2 只收窄 applied=None 场景，真手动仍被尊重）。"""
     m = make_manager()
-    m.hass.states.mapping[LIGHT] = _FakeState("on", 64, 2200)  # ≈25%/2200K
+    m.hass.states.mapping[LIGHT] = _FakeState("on", 153, 3100)  # 手动值 60%/3100K
+    machine = m.machines[LIGHT]
+    machine.applied = (94, 3915)  # anl 此前成功下发过（非空=已驱动）
     step = PlanStep(LIGHT, 100, 4000, BAND_KEY, entrance=True)  # 带入口步
     calls = []
     m._async_process_light = _record(calls)
     run(m._async_run_steps([step], WHEN))
-    assert m.machines[LIGHT].manual_override is True
+    assert machine.manual_override is True
     assert calls == []  # 未被拉回曲线
 
 
@@ -147,6 +150,7 @@ def test_manual_change_midband_taken_over():
     machine = m.machines[LIGHT]
     machine.band_key = BAND_KEY
     machine.expected = (94, 3915)  # 上一预期
+    machine.applied = (94, 3915)  # 钉②anl 已驱动过（FX-UX-126：None 时走播种豁免）
     calls = []
     m._async_process_light = _record(calls)
     # 第 1 步偏离：只计数并观测，不纠正——手动值一次都不被拉回 (P1-2)
@@ -169,6 +173,7 @@ def test_state_lag_self_heals_not_takeover():
     machine = m.machines[LIGHT]
     machine.band_key = BAND_KEY
     machine.expected = (94, 3915)
+    machine.applied = (94, 3915)  # 钉②anl 已驱动过（None 时播种基线会吞观测步）
     m.hass.states.mapping[LIGHT] = _FakeState("on", 255, 4000)  # 滞后一步
     calls = []
     m._async_process_light = _record(calls)
@@ -520,7 +525,7 @@ def test_night_trigger_ci_returns_virtual_then_drives_real():
     run(m.async_trigger("test"))
     assert events == [
         ("svc", "light", "turn_off", VIRT),
-        ("process", LIGHT, 25, 2200, None),
+        ("process", LIGHT, 25, 2200, 5),  # 直控带锚点平滑（FX-UX-126）
     ]
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
 
@@ -604,7 +609,7 @@ def test_ci_virtual_service_failure_falls_back_to_day_params(caplog):
     with caplog.at_level(logging.WARNING, logger=logger_name):
         run(m.async_trigger("test"))
     assert svc == []
-    assert calls == [(LIGHT, 100, 4000, None)]  # 日间参数直控
+    assert calls == [(LIGHT, 100, 4000, 5)]  # 日间参数直控（锚点平滑 5s，FX-UX-126）
     machine = m.machines[LIGHT]
     assert machine.expected == (100, 4000)
     assert machine.applied == (100, 4000)
@@ -651,5 +656,101 @@ def test_day_trigger_ci_disabled_direct_control():
     m._async_process_light = _record(calls)
     run(m.async_trigger("test"))
     assert svc == []  # 零虚拟灯调用
-    assert calls == [(LIGHT, 100, 4000, None)]
+    assert calls == [(LIGHT, 100, 4000, 5)]  # 直控带锚点平滑 5s（FX-UX-126）
     assert m.machines[LIGHT].expected == (100, 4000)
+
+
+# ---------------------------------------------------------------------------
+# FX-UX-126（V1.8.0）：C 带口接管事件溯源收窄 + 锚点平滑 + transitions_active 口径
+# ---------------------------------------------------------------------------
+
+
+def test_entry_offcurve_applied_none_seeds_and_steers():
+    """钉①覆盖灯（applied=None 起点）入口偏离不判接管、照常下发渐变步
+    （FX-UX-126 决策2 事件溯源收窄：逐灯参数≠手动参数）。"""
+    m = make_manager()
+    m.hass.states.mapping[LIGHT] = _FakeState("on", 64, 2200)  # ≈25%/2200K
+    calls = []
+    m._async_process_light = _record(calls)
+    run(m._async_run_steps(
+        [PlanStep(LIGHT, 100, 4000, BAND_KEY, entrance=True)], WHEN
+    ))
+    machine = m.machines[LIGHT]
+    assert machine.manual_override is False
+    assert calls == [(LIGHT, 100, 4000, 300)]  # 照常下发，带原生 transition
+    assert machine.expected == (100, 4000)  # 下发成功推进预期
+    assert machine.applied == (100, 4000)
+
+    # 下发失败路径：播种基线可见（expected=观测值）、计数清零、不判接管
+    m2 = make_manager()
+    m2.hass.states.mapping[LIGHT] = _FakeState("on", 64, 2200)
+    m2._async_process_light = _record([], ok=False)
+    run(m2._async_run_steps(
+        [PlanStep(LIGHT, 100, 4000, BAND_KEY, entrance=True)], WHEN
+    ))
+    machine2 = m2.machines[LIGHT]
+    assert machine2.manual_override is False
+    assert machine2.expected == (25, 2200)  # 播种基线=当前观测
+    assert machine2.mismatch_steps == 0
+
+
+def test_band_followthrough_after_seed_steers_with_transition():
+    """钉①后半：入口播种+下发成功后，带内步照常跟随且仍带原生 transition。"""
+    m = make_manager()
+    m.hass.states.mapping[LIGHT] = _FakeState("on", 64, 2200)
+    calls = []
+    m._async_process_light = _record(calls)
+    run(m._async_run_steps(
+        [PlanStep(LIGHT, 100, 4000, BAND_KEY, entrance=True)], WHEN
+    ))
+    # 灯的原生渐变追上入口目标 → 第二步 on_curve，照常下发
+    m.hass.states.mapping[LIGHT] = _FakeState("on", 255, 4000)
+    run(m._async_run_steps([PlanStep(LIGHT, 94, 3915, BAND_KEY)], WHEN))
+    assert calls == [(LIGHT, 100, 4000, 300), (LIGHT, 94, 3915, 300)]
+    assert m.machines[LIGHT].manual_override is False
+
+
+def test_reload_rebuild_entry_exempt():
+    """钉③GUI 保存→条目 reload（manager 重建）后首入口：machines 干净
+    （applied=None）→ 入口偏离豁免接管、照常下发（决策2 根因场景）。"""
+    first = make_manager()
+    first.machines[LIGHT].applied = (60, 3000)  # 上一运行态曾驱动
+    second = make_manager()  # reload：同条目运行态重建
+    assert second.machines[LIGHT].applied is None  # 重建后事件溯源清零
+    second.hass.states.mapping[LIGHT] = _FakeState("on", 153, 3100)
+    calls = []
+    second._async_process_light = _record(calls)
+    run(second._async_run_steps(
+        [PlanStep(LIGHT, 100, 4000, BAND_KEY, entrance=True)], WHEN
+    ))
+    machine = second.machines[LIGHT]
+    assert machine.manual_override is False
+    assert calls == [(LIGHT, 100, 4000, 300)]
+
+
+def test_anchor_snap_sends_smooth_transition():
+    """钉④锚点归位（async_trigger→_one）带原生平滑 transition=5s
+    （FX-UX-126 决策6：直跳生硬修复）。"""
+    stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
+    m = make_manager()
+    m.hass.states.mapping[LIGHT] = _FakeState("on", 64, 2200)
+    calls = []
+    m._async_process_light = _record(calls)
+    run(m.async_trigger("anchor"))
+    assert calls == [(LIGHT, 100, 4000, 5)]  # 秒级平滑而非直跳
+    assert m.machines[LIGHT].expected == (100, 4000)
+
+
+def test_transitions_active_ci_group_night_band_alive():
+    """钉⑤全组 CI + start/end 带 → True（FX-UX-126 决策6：start 带锚点步
+    时刻已入夜间段、夜间归位不受 CI 管辖——旧口径 from==DAY 一腿谎报关闭）。"""
+    m = make_ci_manager()
+    assert m.transitions_active is True
+
+
+def test_transitions_active_ci_group_day_target_band_still_gated():
+    """钉⑤保守面：全组 CI + 仅 end 带（target=day，start_transition=0）→
+    False 不放宽——带内插值步虽是夜侧，CI 灯步进被生成面滤除、06:00 锚点
+    又落日间接管面，带对全组零生效（行为一致钉）。"""
+    m = make_ci_manager(**{CONF_START_TRANSITION: 0})
+    assert m.transitions_active is False

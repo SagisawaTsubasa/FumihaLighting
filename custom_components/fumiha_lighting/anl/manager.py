@@ -124,6 +124,12 @@ _NOT_IN_BAND = object()  # _band_params 哨兵：当前不在任何过渡带内
 # 只有闭环真在跑才归还：idle 无闭环可放；calibrating 时 lux 对 turn_off 只置
 # _cal_pending_off、扫频结束跳过亮度恢复（runtime.py:565-571、738）——此时
 # 打扰会让灯停在校准末档；None（非 lux 灯/属性缺失/实体缺失）一律不动。
+# FX-UX-126 决策6：锚点归位（async_trigger → _one）的原生平滑 transition。
+# 锚点步原本无 transition 直跳——跨过夜锚的归位（含 reload/重建后首触发）
+# 从旧参数瞬变到当前时段参数，观感生硬（用户反馈 2026-11-15）。秒级量级，
+# 与带内插值步的分钟级 transition（transition_interval×60）无关。
+_ANCHOR_SNAP_TRANSITION_S = 5
+
 _CI_HANDBACK_LUX_MODES = ("active", "passthrough")
 
 # F-093/F-099：构成生效引用的条目状态白名单。实证（HA 2026.1.0
@@ -544,8 +550,14 @@ class NightLightManager:
         不反映 end_transition 被 manager 归零的事实）。CI 关时生效带==原始
         带。V1.6.0：日侧带只对非 CI 灯复活——「存在任一灯的生效带」按
         「非日侧带存在」或「日侧带存在且存在非 CI 灯」计；全部灯被 CI 接管
-        时仅剩日侧带不得谎报「过渡中」。单次扫描（每带一次 _mode_at），与
-        anchor_snapshot 同量级；web 层禁调私有（ANL-F-003 家规）。
+        时仅剩日侧带不得谎报「过渡中」。FX-UX-126 决策6：日侧带判据收窄为
+        target==MODE_DAY——start 带（day→night）的锚点步时刻已入夜间段
+        （CI 只在日间接管），夜间归位由 async_trigger 兜底、不受 CI 管辖；
+        旧口径 from==DAY 一腿把 start 带整体误并入日侧带，全组 CI 时谎报
+        「过渡带关闭」。end 带（target==DAY）维持 has_non_ci 门：带内插值
+        步虽是夜侧，CI 灯的步进被生成面滤除、06:00 锚点又落日间接管面，
+        全组零生效时 False 与行为一致。单次扫描，与 anchor_snapshot 同量
+        级；web 层禁调私有（ANL-F-003 家规）。
         """
         if not self._has_transitions:
             return False
@@ -557,9 +569,8 @@ class NightLightManager:
         has_non_ci = any(
             entity_id not in self._ci_light_set() for entity_id in self.machines
         )
-        for anchor_min, target_mode, dur in bands:
-            from_mode = self._mode_at((anchor_min - dur) % 1440)
-            if target_mode == MODE_DAY or from_mode == MODE_DAY:
+        for _anchor_min, target_mode, _dur in bands:
+            if target_mode == MODE_DAY:
                 if has_non_ci:
                     return True
             else:
@@ -1581,7 +1592,22 @@ class NightLightManager:
             on_curve = self._matches(state, *machine.expected) or (
                 machine.applied is not None and self._matches(state, *machine.applied)
             )
-            if not on_curve:
+            if not on_curve and machine.applied is None:
+                # FX-UX-126 决策2（事件溯源收窄）：anl 从未成功驱动过此灯
+                #（applied is None——GUI 保存→条目 reload→machines 重建、
+                # 或运行态首入口）时，实测偏离只是「旧参数渲染结果 vs 该灯
+                # 自己的逐灯曲线」的正常落差，不是手动接管证据（逐灯参数
+                # ≠ 手动参数）。播种当前观测为基线，照常下发本渐变步；
+                # 首次成功下发后（applied 非空）恢复下方原语义（带内首偏
+                # 离不拉回、连续 2 步判接管）。kelvin 观测缺失时以本步
+                # 目标兜底，防 _matches 对 None 相减（灯仅支持亮度时）。
+                machine.mismatch_steps = 0
+                cur_kelvin = state.attributes.get(ATTR_COLOR_TEMP_KELVIN)
+                machine.expected = (
+                    self._to_pct(state.attributes.get(ATTR_BRIGHTNESS)),
+                    cur_kelvin if cur_kelvin is not None else step.kelvin,
+                )
+            elif not on_curve:
                 machine.mismatch_steps += 1
                 # 入口步保持单次判定（既定带入口语义）；带内连续 2 步不符
                 # 才判接管——单步偏差可能只是回读滞后或灯具能力边界 (P2-1)
@@ -1851,7 +1877,9 @@ class NightLightManager:
                 # 锚点归位：清除带内接管，预期基准重置为当前时段参数
                 machine.manual_override = False
                 machine.mismatch_steps = 0
-            ok = await self._async_process_light(entity_id, *params)
+            ok = await self._async_process_light(
+                entity_id, *params, transition_s=_ANCHOR_SNAP_TRANSITION_S
+            )
             if machine is not None:
                 if ok:
                     machine.expected = params

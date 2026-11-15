@@ -105,11 +105,11 @@ def test_a3_release_then_direct_control_not_fought_back():
     m.hass.states.get = _virt_state
 
     run(m.async_trigger("test"))
-    # 归还恰一次 turn_off VIRT（先于直控），LIGHT 按夜间参数直控
+    # 归还恰一次 turn_off VIRT（先于直控），LIGHT 按夜间参数直控（带锚点平滑）
     assert anl_svc == [
         ("light", "turn_off", {"entity_id": VIRT}),
         ("light", "turn_on", {"entity_id": LIGHT, "brightness": 64,
-                              "color_temp_kelvin": 2200}),
+                              "color_temp_kelvin": 2200, "transition": 5}),
     ]
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
 

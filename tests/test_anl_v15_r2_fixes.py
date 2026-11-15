@@ -129,7 +129,7 @@ def test_ci_configured_requires_day_enabled():
     m._async_process_light = _record(calls)
     run(m.async_trigger("test"))
     assert svc == []  # 不开虚拟灯、也不归还（CI 从未接管）
-    assert calls == [(LIGHT, 25, 2200, None)]  # 纯夜间直控
+    assert calls == [(LIGHT, 25, 2200, 5)]  # 纯夜间直控（锚点平滑）
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
 
 
@@ -405,7 +405,7 @@ def test_day_trigger_ci_virtual_missing_falls_back(caplog):
     with caplog.at_level(logging.WARNING, logger=MANAGER_LOGGER):
         run(m.async_trigger("test"))
     assert svc == []  # 未发出 turn_on（假成功防线）
-    assert calls == [(LIGHT, 100, 4000, None)]  # 日间参数 fallback 直控
+    assert calls == [(LIGHT, 100, 4000, 5)]  # 日间参数 fallback 直控（锚点平滑）
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
     caplog.clear()
     with caplog.at_level(logging.DEBUG, logger=MANAGER_LOGGER):
@@ -430,7 +430,7 @@ def test_day_trigger_ci_virtual_unavailable_falls_back(caplog):
     with caplog.at_level(logging.WARNING, logger=MANAGER_LOGGER):
         run(m.async_trigger("test"))
     assert svc == []
-    assert calls == [(LIGHT, 100, 4000, None)]
+    assert calls == [(LIGHT, 100, 4000, 5)]
     assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 1
 
 
@@ -444,7 +444,7 @@ def test_night_trigger_ci_virtual_missing_zero_calls():
     m._async_process_light = _record(calls)
     run(m.async_trigger("test"))
     assert svc == []  # 归还预检失败，不发 turn_off
-    assert calls == [(LIGHT, 25, 2200, None)]
+    assert calls == [(LIGHT, 25, 2200, 5)]
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
 
 
@@ -576,7 +576,7 @@ def test_night_trigger_ci_dual_lights_single_turn_off():
     m._async_process_light = _record(calls)
     run(m.async_trigger("test"))
     assert svc == [("light", "turn_off", {"entity_id": VIRT})]
-    assert calls == [(LIGHT, 25, 2200, None), ("light.second", 25, 2200, None)]
+    assert calls == [(LIGHT, 25, 2200, 5), ("light.second", 25, 2200, 5)]
     stubs._FakeClock.now_dt = datetime(2026, 10, 2, 12, 0)
 
 
